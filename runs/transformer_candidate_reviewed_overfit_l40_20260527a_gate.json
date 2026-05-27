@@ -1,0 +1,22 @@
+{
+  "checkpoint": "models/transformer_candidate_reviewed_overfit_l40_20260527a.pt",
+  "train_metrics": "runs/transformer_candidate_reviewed_overfit_l40_20260527a_metrics.json",
+  "original_eval": "runs/transformer_candidate_reviewed_overfit_l40_20260527a_original_eval.json",
+  "train_review_filter_summary": {
+    "reviewed_examples_before_filter": 2077,
+    "reviewed_without_teacher_distribution": 0,
+    "reviewed_examples_after_filter": 2077
+  },
+  "val_review_filter_summary": {
+    "reviewed_examples_before_filter": 2077,
+    "reviewed_without_teacher_distribution": 0,
+    "reviewed_examples_after_filter": 2077
+  },
+  "evaluated_candidate_width": 235,
+  "candidate_truncation_count": 0,
+  "reviewed_without_teacher_distribution": 0,
+  "original_top1_accuracy": 0.9956668271545498,
+  "original_relaxed_accuracy": 0.999037072701011,
+  "original_play_relaxed_accuracy": 0.9989417989417989,
+  "passed": true
+}

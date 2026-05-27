@@ -912,6 +912,7 @@ Review:
 - [x] Clear completed Kubernetes pods/jobs without touching the running L40 job.
   - Deleted only completed `app=mcr-transformer` jobs: `mcr-transformer-l40-fit-20260527`, `mcr-transformer-l40-highelo-20260527a`, `mcr-transformer-l40-size-20260527a`, `mcr-transformer-l40-sizepush-20260527a`, `mcr-transformer-l40-sizepush2-20260527a`, and `mcr-transformer-l40-sweep-20260527a`.
   - Verified only `mcr-transformer-l40-softdistill-20260527a` remains active on `rci-tide-gpu-06.sdsu.edu` (`NVIDIA L40`).
+  - 2026-05-27 update: after the row-aware run, deleted completed `mcr-transformer-l40-rowaware-20260527a`; current namespace check shows no completed MCR Transformer pods, only the unrelated running `idl-download` helper.
 - [ ] Push the current repo snapshot to GitHub before requesting the GPT Pro review.
 - [ ] Ask GPT Pro for a repo-grounded precision-improvement review and use the advice to choose the next training change.
   - 2026-05-27 GPT Pro review saved to `docs/reviews/gpt-pro-chaga-precision-review-2026-05-27.md`.
@@ -936,8 +937,12 @@ Review:
   - The evaluator and turn graph use the CLI candidate width, defaulting to 235, rather than the checkpoint's training-time `max_candidates`.
   - Current local 4.6M checkpoint original-candidate result: 522 reviewed examples, original top-1 `0.371648`, original top-3 `0.557471`, original relaxed `0.471264`, original PLAY relaxed `0.484211`, candidate truncation `0`, reviewed-without-distribution `0`.
   - Original-candidate graph artifacts: `runs/transformer_chaga0208_l40_eval_mismatch_by_turn_original.svg`, `.png`, `.csv`, and `_summary.json`.
-- [ ] Add a reviewed-only train-on-eval overfit gate; require `>95%` relaxed match before trusting more L40 training.
+- [x] Add a reviewed-only train-on-eval overfit gate; require `>95%` relaxed match before trusting more L40 training.
   - 2026-05-27 GPT Pro follow-up saved to `docs/reviews/gpt-pro-chaga-precision-overfitgate-2026-05-27.md`.
   - Implemented the required harness fixes before the gate: train/eval loads now use independent CHAGA review lookup instances because lookup queues are destructive; reviewed-only filters can keep only rows with original CHAGA candidates; `--require-teacher-distribution` can drop unmapped rows; reviewed-only training now hard-errors unless `--max-candidates 235`.
-  - The overfit gate itself still needs to be run as a Kubernetes L40 job, not as local CPU training.
-- [ ] Add reviewed-only session split and reviewed-oversampled high-ELO experiments before any new size scaling.
+  - Kubernetes-only L40 overfit gate `mcr-transformer-l40-reviewed-overfit-20260527a` passed: 2,077 reviewed rows, full 235 candidate width, zero truncation, original top-1 `0.995667`, top-3 `1.0`, relaxed `0.999037`, PLAY relaxed `0.998942`.
+- [x] Add reviewed-only session split and reviewed-oversampled high-ELO experiments before any new size scaling.
+  - Added row-aware reviewed sampling/loss weights so reviewed rows can use CHAGA teacher CE while unreviewed high-ELO rows keep a smaller hard-label loss.
+  - Kubernetes-only L40 row-aware mixed job `mcr-transformer-l40-rowaware-20260527a` completed on `rci-tide-gpu-02.sdsu.edu` (`NVIDIA-L40`), using 1,517 reviewed and 3,278 unreviewed train examples, 70% reviewed sampling mass, and a 212.4M-parameter Transformer.
+  - Best checkpoint was epoch 9. Corrected original-candidate held-out result: 560 reviewed states, top-1 `0.517857`, top-3 `0.669643`, relaxed `0.605357`, PLAY relaxed `0.592593`, full 235 candidate width, zero truncation. This does not pass the 85% gate.
+  - New row-aware turn graph artifacts: `runs/transformer_candidate_highelo2300_rowaware_l40_20260527a_mismatch_by_turn.svg`, `.png`, `.csv`, and `_summary.json`. It shows 221 relaxed mismatches across 560 reviewed states, relaxed mismatch rate `0.394643`; highest mismatch-count turns include 36, 4, 47, 65, 52, 49, and 38.

@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 
 LAWLORENTZ_DIR = Path(__file__).resolve().parents[1] / "external" / "Chinese-Standard-Mahjong-DRL"
@@ -739,9 +739,33 @@ def filter_reviewed_examples(
     }
 
 
+def reviewed_sampling_weights(
+    examples: list[TransformerExample],
+    *,
+    reviewed_batch_fraction: float | None,
+) -> torch.Tensor | None:
+    if reviewed_batch_fraction is None or reviewed_batch_fraction <= 0.0:
+        return None
+    if reviewed_batch_fraction >= 1.0:
+        raise ValueError("reviewed_batch_fraction must be less than 1.0")
+    reviewed_mask = [is_reviewed_example(example) for example in examples]
+    reviewed_count = sum(1 for value in reviewed_mask if value)
+    unreviewed_count = len(examples) - reviewed_count
+    if reviewed_count == 0 or unreviewed_count == 0:
+        return None
+    reviewed_weight = float(reviewed_batch_fraction) / float(reviewed_count)
+    unreviewed_weight = (1.0 - float(reviewed_batch_fraction)) / float(unreviewed_count)
+    return torch.tensor(
+        [reviewed_weight if reviewed else unreviewed_weight for reviewed in reviewed_mask],
+        dtype=torch.double,
+    )
+
+
 def validate_reviewed_training_args(args: argparse.Namespace) -> None:
     if (args.train_reviewed_only or args.val_reviewed_only) and args.max_candidates < FeatureAgent.ACT_SIZE:
         raise ValueError(f"reviewed-only CHAGA training requires --max-candidates {FeatureAgent.ACT_SIZE}")
+    if args.reviewed_batch_fraction is not None and not 0.0 <= args.reviewed_batch_fraction < 1.0:
+        raise ValueError("--reviewed-batch-fraction must be in [0, 1)")
 
 
 class ReviewTargetLookup:
@@ -925,19 +949,51 @@ def policy_loss_with_optional_teacher(
     *,
     hard_loss_weight: float = 1.0,
     teacher_loss_weight: float = 0.0,
+    reviewed_hard_loss_weight: float | None = None,
+    reviewed_teacher_loss_weight: float | None = None,
+    unreviewed_hard_loss_weight: float | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    hard_loss = F.cross_entropy(logits, batch["target_index"])
+    hard_losses = F.cross_entropy(logits, batch["target_index"], reduction="none")
+    hard_loss = hard_losses.mean()
     has_teacher = batch.get("has_teacher_target")
+    if has_teacher is None:
+        has_teacher = torch.zeros_like(batch["target_index"], dtype=torch.bool)
+    else:
+        has_teacher = has_teacher.bool()
     teacher_loss = logits.new_tensor(0.0)
-    if teacher_loss_weight > 0.0 and has_teacher is not None and bool(has_teacher.any().item()):
+    reviewed_teacher_loss = logits.new_tensor(0.0)
+    if bool(has_teacher.any().item()):
         log_probs = F.log_softmax(logits[has_teacher], dim=1)
         teacher_dist = batch["teacher_target_dist"][has_teacher].to(log_probs.device)
         safe_log_probs = torch.where(teacher_dist > 0.0, log_probs, torch.zeros_like(log_probs))
-        teacher_loss = -(teacher_dist * safe_log_probs).sum(dim=1).mean()
-    loss = hard_loss_weight * hard_loss + teacher_loss_weight * teacher_loss
+        reviewed_teacher_loss = -(teacher_dist * safe_log_probs).sum(dim=1).mean()
+        teacher_loss = reviewed_teacher_loss
+    reviewed_hard_loss = hard_losses[has_teacher].mean() if bool(has_teacher.any().item()) else logits.new_tensor(0.0)
+    unreviewed_mask = ~has_teacher
+    unreviewed_hard_loss = (
+        hard_losses[unreviewed_mask].mean() if bool(unreviewed_mask.any().item()) else logits.new_tensor(0.0)
+    )
+    if (
+        reviewed_hard_loss_weight is not None
+        or reviewed_teacher_loss_weight is not None
+        or unreviewed_hard_loss_weight is not None
+    ):
+        loss = (
+            float(reviewed_hard_loss_weight if reviewed_hard_loss_weight is not None else hard_loss_weight)
+            * reviewed_hard_loss
+            + float(reviewed_teacher_loss_weight if reviewed_teacher_loss_weight is not None else teacher_loss_weight)
+            * reviewed_teacher_loss
+            + float(unreviewed_hard_loss_weight if unreviewed_hard_loss_weight is not None else hard_loss_weight)
+            * unreviewed_hard_loss
+        )
+    else:
+        loss = hard_loss_weight * hard_loss + teacher_loss_weight * teacher_loss
     return loss, {
         "hard_policy_loss": hard_loss.detach(),
         "teacher_policy_loss": teacher_loss.detach(),
+        "reviewed_hard_policy_loss": reviewed_hard_loss.detach(),
+        "reviewed_teacher_policy_loss": reviewed_teacher_loss.detach(),
+        "unreviewed_hard_policy_loss": unreviewed_hard_loss.detach(),
     }
 
 
@@ -1020,10 +1076,20 @@ def train(args: argparse.Namespace) -> dict:
         raise ValueError("no validation examples built")
 
     collate = lambda items: collate_transformer_examples(items, max_candidates=args.max_candidates)
+    train_sampling_weights = reviewed_sampling_weights(
+        train_examples,
+        reviewed_batch_fraction=args.reviewed_batch_fraction,
+    )
+    train_sampler = (
+        WeightedRandomSampler(train_sampling_weights, num_samples=len(train_examples), replacement=True)
+        if train_sampling_weights is not None
+        else None
+    )
     train_loader = DataLoader(
         TransformerRawDataset(train_examples),
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
         num_workers=0,
         collate_fn=collate,
     )
@@ -1064,6 +1130,15 @@ def train(args: argparse.Namespace) -> dict:
         "weight_decay": args.weight_decay,
         "hard_loss_weight": args.hard_loss_weight,
         "teacher_loss_weight": args.teacher_loss_weight,
+        "reviewed_batch_fraction": args.reviewed_batch_fraction,
+        "reviewed_hard_loss_weight": args.reviewed_hard_loss_weight,
+        "reviewed_teacher_loss_weight": args.reviewed_teacher_loss_weight,
+        "unreviewed_hard_loss_weight": args.unreviewed_hard_loss_weight,
+        "train_sampling": {
+            "weighted": train_sampler is not None,
+            "reviewed_examples": sum(1 for example in train_examples if is_reviewed_example(example)),
+            "unreviewed_examples": sum(1 for example in train_examples if not is_reviewed_example(example)),
+        },
         "teacher_temperature": args.teacher_temperature,
         "review_audit_jsonl": args.review_audit_jsonl,
         "monitor_metric": args.monitor_metric,
@@ -1087,6 +1162,9 @@ def train(args: argparse.Namespace) -> dict:
                 batch,
                 hard_loss_weight=args.hard_loss_weight,
                 teacher_loss_weight=args.teacher_loss_weight,
+                reviewed_hard_loss_weight=args.reviewed_hard_loss_weight,
+                reviewed_teacher_loss_weight=args.reviewed_teacher_loss_weight,
+                unreviewed_hard_loss_weight=args.unreviewed_hard_loss_weight,
             )
             value_loss = F.mse_loss(values, batch["value_target"])
             loss = policy_loss + args.value_loss_weight * value_loss
@@ -1174,6 +1252,10 @@ def main() -> int:
     parser.add_argument("--value-loss-weight", type=float, default=0.2)
     parser.add_argument("--hard-loss-weight", type=float, default=1.0)
     parser.add_argument("--teacher-loss-weight", type=float, default=0.0)
+    parser.add_argument("--reviewed-batch-fraction", type=float, default=None)
+    parser.add_argument("--reviewed-hard-loss-weight", type=float, default=None)
+    parser.add_argument("--reviewed-teacher-loss-weight", type=float, default=None)
+    parser.add_argument("--unreviewed-hard-loss-weight", type=float, default=None)
     parser.add_argument("--teacher-temperature", type=float, default=1.0)
     parser.add_argument("--review-audit-jsonl", default=None)
     parser.add_argument("--train-reviewed-only", action="store_true")

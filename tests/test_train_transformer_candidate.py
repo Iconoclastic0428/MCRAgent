@@ -24,6 +24,7 @@ from train_transformer_candidate import (  # noqa: E402
     is_better_checkpoint_metric,
     load_review_target_lookup,
     policy_loss_with_optional_teacher,
+    reviewed_sampling_weights,
     rule_gated_hu_allowed,
     validate_reviewed_training_args,
 )
@@ -259,6 +260,42 @@ def test_policy_loss_uses_soft_teacher_rows_when_available():
     assert combined > hard_only
 
 
+def test_policy_loss_can_weight_reviewed_and_unreviewed_rows_separately():
+    logits = torch.tensor(
+        [
+            [0.0, 5.0, -5.0],
+            [5.0, 0.0, -5.0],
+        ],
+        dtype=torch.float32,
+    )
+    batch = {
+        "target_index": torch.tensor([2, 0], dtype=torch.long),
+        "has_teacher_target": torch.tensor([True, False]),
+        "teacher_target_dist": torch.tensor(
+            [
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            dtype=torch.float32,
+        ),
+    }
+
+    loss, parts = policy_loss_with_optional_teacher(
+        logits,
+        batch,
+        hard_loss_weight=1.0,
+        teacher_loss_weight=0.0,
+        reviewed_hard_loss_weight=0.0,
+        reviewed_teacher_loss_weight=1.0,
+        unreviewed_hard_loss_weight=0.2,
+    )
+
+    assert loss.item() < 0.01
+    assert parts["reviewed_hard_policy_loss"].item() > 5.0
+    assert parts["reviewed_teacher_policy_loss"].item() < 0.01
+    assert parts["unreviewed_hard_policy_loss"].item() < 0.01
+
+
 def test_policy_loss_ignores_zero_teacher_mass_on_padded_negative_infinity_logits():
     logits = torch.tensor([[2.0, 0.0, float("-inf")]], dtype=torch.float32)
     batch = {
@@ -366,6 +403,22 @@ def test_filter_reviewed_examples_uses_candidate_norms_and_distribution_requirem
     assert summary["reviewed_examples_before_filter"] == 2
     assert summary["reviewed_without_teacher_distribution"] == 1
     assert summary["reviewed_examples_after_filter"] == 1
+
+
+def test_reviewed_sampling_weights_target_requested_fraction():
+    reviewed_a = SimpleNamespace(teacher_candidate_norms=("PLAY W1",))
+    reviewed_b = SimpleNamespace(teacher_candidate_norms=("PLAY W2",))
+    unreviewed = SimpleNamespace(teacher_candidate_norms=())
+
+    weights = reviewed_sampling_weights(
+        [reviewed_a, reviewed_b, unreviewed],
+        reviewed_batch_fraction=0.75,
+    )
+
+    assert weights is not None
+    reviewed_mass = float(weights[0] + weights[1])
+    unreviewed_mass = float(weights[2])
+    assert abs(reviewed_mass / (reviewed_mass + unreviewed_mass) - 0.75) < 1e-6
 
 
 def test_reviewed_only_training_requires_full_candidate_width():
