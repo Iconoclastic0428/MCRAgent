@@ -1,0 +1,151 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mcr-transformer-l40-expanded-acceptset-20260527a
+  namespace: nourish-sdsc
+  labels:
+    app: mcr-transformer
+    task: chaga0208-expanded-acceptset
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 43200
+  template:
+    metadata:
+      labels:
+        app: mcr-transformer
+        task: chaga0208-expanded-acceptset
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-L40
+      containers:
+        - name: expanded-acceptset
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+          command:
+            - sh
+            - -lc
+            - |
+              set -eux
+              python -m pip install --no-cache-dir PyMahjongGB
+              python - <<'PY'
+              import torch
+              import MahjongGB
+              print("repo_commit", "60bf212748198bcfcff9d5440b78e89b243ed69a")
+              print("torch", torch.__version__, "cuda", torch.cuda.is_available(), "device_count", torch.cuda.device_count())
+              print("MahjongGB import ok")
+              PY
+              SPLIT=data/processed/chaga0208_all_plus_live_elo2300_cached_reviews/session_split_seed20260527
+              python scripts/check_chaga_training_corpus.py \
+                --train-raw ${SPLIT}/train.prepared.jsonl \
+                --val-raw ${SPLIT}/val.prepared.jsonl \
+                --test-raw ${SPLIT}/test.prepared.jsonl \
+                --train-audit ${SPLIT}/train.audit.jsonl \
+                --val-audit ${SPLIT}/val.audit.jsonl \
+                --test-audit ${SPLIT}/test.audit.jsonl \
+                --train-val-audit ${SPLIT}/train_val.audit.jsonl \
+                --summary-out runs/transformer_candidate_chaga0208_expanded_acceptset_l40_20260527a_corpus_gate.json \
+                --max-candidates 235
+              python scripts/train_transformer_candidate.py \
+                --raw ${SPLIT}/train.prepared.jsonl \
+                --eval-raw ${SPLIT}/val.prepared.jsonl \
+                --review-audit-jsonl ${SPLIT}/train_val.audit.jsonl \
+                --train-reviewed-only \
+                --val-reviewed-only \
+                --require-teacher-distribution \
+                --max-candidates 235 \
+                --hard-loss-weight 0.0 \
+                --teacher-loss-weight 0.0 \
+                --reviewed-hard-loss-weight 0.0 \
+                --reviewed-teacher-loss-weight 0.0 \
+                --reviewed-accept-set-loss-weight 1.0 \
+                --unreviewed-hard-loss-weight 0.0 \
+                --value-loss-weight 0.0 \
+                --teacher-temperature 0.2 \
+                --monitor-metric val_original_relaxed_accuracy \
+                --epochs 50 \
+                --batch-size 48 \
+                --lr 0.0002 \
+                --weight-decay 0.02 \
+                --d-model 1024 \
+                --nhead 16 \
+                --num-layers 16 \
+                --dim-feedforward 4096 \
+                --dropout 0.15 \
+                --out models/transformer_candidate_chaga0208_expanded_acceptset_l40_20260527a.pt \
+                --metrics-out runs/transformer_candidate_chaga0208_expanded_acceptset_l40_20260527a_metrics.json
+              python scripts/evaluate_transformer_chaga_review.py \
+                --checkpoint models/transformer_candidate_chaga0208_expanded_acceptset_l40_20260527a.pt \
+                --raw ${SPLIT}/test.prepared.jsonl \
+                --review-audit-jsonl ${SPLIT}/test.audit.jsonl \
+                --max-candidates 235 \
+                --batch-size 128 \
+                --metrics-out runs/transformer_candidate_chaga0208_expanded_acceptset_l40_20260527a_test_eval.json
+              python - <<'PY'
+              import json
+              from pathlib import Path
+              metrics = json.loads(Path("runs/transformer_candidate_chaga0208_expanded_acceptset_l40_20260527a_test_eval.json").read_text())
+              train = json.loads(Path("runs/transformer_candidate_chaga0208_expanded_acceptset_l40_20260527a_metrics.json").read_text())
+              gate = json.loads(Path("runs/transformer_candidate_chaga0208_expanded_acceptset_l40_20260527a_corpus_gate.json").read_text())
+              summary = {
+                  "checkpoint": "models/transformer_candidate_chaga0208_expanded_acceptset_l40_20260527a.pt",
+                  "repo_commit": "60bf212748198bcfcff9d5440b78e89b243ed69a",
+                  "corpus_gate": "runs/transformer_candidate_chaga0208_expanded_acceptset_l40_20260527a_corpus_gate.json",
+                  "train_metrics": "runs/transformer_candidate_chaga0208_expanded_acceptset_l40_20260527a_metrics.json",
+                  "test_eval": "runs/transformer_candidate_chaga0208_expanded_acceptset_l40_20260527a_test_eval.json",
+                  "train_reviewed_examples": gate["splits"]["train"]["reviewed_examples"],
+                  "val_reviewed_examples": gate["splits"]["val"]["reviewed_examples"],
+                  "test_reviewed_examples": gate["splits"]["test"]["reviewed_examples"],
+                  "best_epoch": train.get("best_epoch"),
+                  "best_metric": train.get("best_metric"),
+                  "monitor_metric": train.get("monitor_metric"),
+                  "evaluated_candidate_width": metrics.get("evaluated_candidate_width"),
+                  "candidate_truncation_count": metrics.get("candidate_truncation_count"),
+                  "reviewed_examples": metrics.get("reviewed_examples"),
+                  "reviewed_without_teacher_distribution": metrics.get("reviewed_without_teacher_distribution"),
+                  "original_top1_accuracy": metrics.get("original_top1_accuracy"),
+                  "original_top3_inclusion": metrics.get("original_top3_inclusion"),
+                  "original_relaxed_accuracy": metrics.get("original_relaxed_accuracy"),
+                  "original_play_relaxed_accuracy": metrics.get("original_play_relaxed_accuracy"),
+              }
+              summary["passed_50_relaxed"] = (summary["original_relaxed_accuracy"] or 0.0) >= 0.50
+              summary["passed_65_relaxed"] = (summary["original_relaxed_accuracy"] or 0.0) >= 0.65
+              summary["passed_85_relaxed"] = (summary["original_relaxed_accuracy"] or 0.0) >= 0.85
+              Path("runs/transformer_candidate_chaga0208_expanded_acceptset_l40_20260527a_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2))
+              print(json.dumps(summary, ensure_ascii=False, indent=2))
+              PY
+          resources:
+            requests:
+              cpu: "8"
+              memory: 64Gi
+              ephemeral-storage: "0"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "8"
+              memory: 64Gi
+              ephemeral-storage: 50Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc
