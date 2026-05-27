@@ -1,8 +1,10 @@
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 
@@ -17,11 +19,13 @@ from train_transformer_candidate import (  # noqa: E402
     chaga_candidates_to_action_distribution,
     collate_transformer_examples,
     count_model_parameters,
+    filter_reviewed_examples,
     hu_gated_candidate_mask,
     is_better_checkpoint_metric,
     load_review_target_lookup,
     policy_loss_with_optional_teacher,
     rule_gated_hu_allowed,
+    validate_reviewed_training_args,
 )
 
 
@@ -307,6 +311,98 @@ def test_load_review_target_lookup_keys_by_record_seat_request_and_normalized_re
     assert target == ReviewTarget([[3.0, "Play W2"]], accept_top3=True)
     assert lookup(record_id="r1", player=2, request="2 W9", response="PLAY W2") is None
     assert lookup(record_id="r2", player=2, request="2 W9", response="PLAY W2") is None
+
+
+def test_review_target_lookup_instances_are_independent(tmp_path):
+    audit_path = tmp_path / "audit.jsonl"
+    entry = {
+        "record_id": "r1",
+        "seat": 0,
+        "state_turn": 7,
+        "state_context": {"turn": 7, "request": "2 W1", "state_actual_response": "Play W1"},
+        "chaga_top5_candidates": [[10.0, "Play W1"], [9.0, "Play W2"]],
+        "checks": {
+            "offered_tile_matches": True,
+            "drawn_tile_matches": True,
+            "current_actor_matches": True,
+            "window_matches": True,
+            "hand_size_mod_ok": True,
+            "top1_in_legal_mask": True,
+        },
+    }
+    audit_path.write_text(json.dumps(entry, ensure_ascii=False) + "\n", encoding="utf-8")
+    kwargs = {"record_id": "r1", "player": 0, "turn": 7, "request": "2 W1", "response": "Play W1"}
+
+    shared = load_review_target_lookup(audit_path)
+    assert shared(**kwargs) is not None
+    assert shared(**kwargs) is None
+
+    lookup_train = load_review_target_lookup(audit_path)
+    lookup_val = load_review_target_lookup(audit_path)
+    assert lookup_train(**kwargs) is not None
+    assert lookup_val(**kwargs) is not None
+
+
+def test_filter_reviewed_examples_uses_candidate_norms_and_distribution_requirement():
+    reviewed = SimpleNamespace(
+        teacher_candidate_norms=("PLAY W1",),
+        teacher_action_distribution=np.array([1.0], dtype=np.float32),
+    )
+    unmapped = SimpleNamespace(
+        teacher_candidate_norms=("PLAY W2",),
+        teacher_action_distribution=None,
+    )
+    unreviewed = SimpleNamespace(
+        teacher_candidate_norms=(),
+        teacher_action_distribution=None,
+    )
+
+    filtered, summary = filter_reviewed_examples(
+        [reviewed, unmapped, unreviewed],
+        require_distribution=True,
+    )
+
+    assert filtered == [reviewed]
+    assert summary["reviewed_examples_before_filter"] == 2
+    assert summary["reviewed_without_teacher_distribution"] == 1
+    assert summary["reviewed_examples_after_filter"] == 1
+
+
+def test_reviewed_only_training_requires_full_candidate_width():
+    args = SimpleNamespace(
+        train_reviewed_only=True,
+        val_reviewed_only=False,
+        max_candidates=96,
+    )
+
+    with pytest.raises(ValueError, match="235"):
+        validate_reviewed_training_args(args)
+
+
+def test_teacher_only_policy_loss_ignores_hard_target():
+    batch = {
+        "target_index": torch.tensor([2], dtype=torch.long),
+        "has_teacher_target": torch.tensor([True]),
+        "teacher_target_dist": torch.tensor([[0.0, 1.0, 0.0]], dtype=torch.float32),
+    }
+
+    good_logits = torch.tensor([[0.0, 5.0, -5.0]], dtype=torch.float32)
+    good_loss, _ = policy_loss_with_optional_teacher(
+        good_logits,
+        batch,
+        hard_loss_weight=0.0,
+        teacher_loss_weight=1.0,
+    )
+    bad_logits = torch.tensor([[0.0, -5.0, 5.0]], dtype=torch.float32)
+    bad_loss, _ = policy_loss_with_optional_teacher(
+        bad_logits,
+        batch,
+        hard_loss_weight=0.0,
+        teacher_loss_weight=1.0,
+    )
+
+    assert good_loss.item() < 0.01
+    assert bad_loss.item() > 5.0
 
 
 def test_checkpoint_selection_prefers_play_exact_then_accuracy_then_loss():

@@ -937,4 +937,7 @@ Review:
   - Current local 4.6M checkpoint original-candidate result: 522 reviewed examples, original top-1 `0.371648`, original top-3 `0.557471`, original relaxed `0.471264`, original PLAY relaxed `0.484211`, candidate truncation `0`, reviewed-without-distribution `0`.
   - Original-candidate graph artifacts: `runs/transformer_chaga0208_l40_eval_mismatch_by_turn_original.svg`, `.png`, `.csv`, and `_summary.json`.
 - [ ] Add a reviewed-only train-on-eval overfit gate; require `>95%` relaxed match before trusting more L40 training.
+  - 2026-05-27 GPT Pro follow-up saved to `docs/reviews/gpt-pro-chaga-precision-overfitgate-2026-05-27.md`.
+  - Implemented the required harness fixes before the gate: train/eval loads now use independent CHAGA review lookup instances because lookup queues are destructive; reviewed-only filters can keep only rows with original CHAGA candidates; `--require-teacher-distribution` can drop unmapped rows; reviewed-only training now hard-errors unless `--max-candidates 235`.
+  - The overfit gate itself still needs to be run as a Kubernetes L40 job, not as local CPU training.
 - [ ] Add reviewed-only session split and reviewed-oversampled high-ELO experiments before any new size scaling.

@@ -710,6 +710,40 @@ def load_examples(
     return examples, {"examples": len(examples), "source_summaries": source_summaries, "totals": dict(totals)}
 
 
+def is_reviewed_example(example: TransformerExample) -> bool:
+    return bool(getattr(example, "teacher_candidate_norms", ()))
+
+
+def has_mapped_teacher_distribution(example: TransformerExample) -> bool:
+    return example.teacher_action_distribution is not None
+
+
+def filter_reviewed_examples(
+    examples: list[TransformerExample],
+    *,
+    require_distribution: bool,
+) -> tuple[list[TransformerExample], dict[str, int]]:
+    reviewed = [example for example in examples if is_reviewed_example(example)]
+    without_distribution = [
+        example for example in reviewed if not has_mapped_teacher_distribution(example)
+    ]
+    filtered = [
+        example
+        for example in reviewed
+        if not require_distribution or has_mapped_teacher_distribution(example)
+    ]
+    return filtered, {
+        "reviewed_examples_before_filter": len(reviewed),
+        "reviewed_without_teacher_distribution": len(without_distribution),
+        "reviewed_examples_after_filter": len(filtered),
+    }
+
+
+def validate_reviewed_training_args(args: argparse.Namespace) -> None:
+    if (args.train_reviewed_only or args.val_reviewed_only) and args.max_candidates < FeatureAgent.ACT_SIZE:
+        raise ValueError(f"reviewed-only CHAGA training requires --max-candidates {FeatureAgent.ACT_SIZE}")
+
+
 class ReviewTargetLookup:
     def __init__(self, entries_by_key: dict[tuple, Iterable[ReviewTarget]]) -> None:
         self.entries_by_key = {tuple(key): deque(value) for key, value in entries_by_key.items()}
@@ -758,6 +792,10 @@ def load_review_target_lookup(path: Path) -> ReviewTargetLookup:
             accept_top3 = _is_first_six_discard_review_entry(entry)
             entries.setdefault(key, deque()).append(ReviewTarget(candidates=candidates, accept_top3=accept_top3))
     return ReviewTargetLookup(entries)
+
+
+def make_review_lookup(path: str | None) -> ReviewTargetLookup | None:
+    return load_review_target_lookup(Path(path)) if path else None
 
 
 def _review_checks_pass(checks: dict) -> bool:
@@ -936,32 +974,46 @@ def _metric_value(value: float | int | None, *, default: float) -> float:
 
 
 def train(args: argparse.Namespace) -> dict:
+    validate_reviewed_training_args(args)
     seed = int(args.seed)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    teacher_lookup = load_review_target_lookup(Path(args.review_audit_jsonl)) if args.review_audit_jsonl else None
+    train_teacher_lookup = make_review_lookup(args.review_audit_jsonl)
 
     train_examples, train_load_summary = load_examples(
         [Path(path) for path in args.raw],
         history_len=args.history_len,
         max_records_per_source=args.max_records_per_source,
         max_examples=args.max_train_examples,
-        teacher_lookup=teacher_lookup,
+        teacher_lookup=train_teacher_lookup,
         teacher_temperature=args.teacher_temperature,
     )
     if args.eval_raw:
+        val_teacher_lookup = make_review_lookup(args.review_audit_jsonl)
         val_examples, val_load_summary = load_examples(
             [Path(path) for path in args.eval_raw],
             history_len=args.history_len,
             max_records_per_source=args.max_eval_records_per_source,
             max_examples=args.max_val_examples,
-            teacher_lookup=teacher_lookup,
+            teacher_lookup=val_teacher_lookup,
             teacher_temperature=args.teacher_temperature,
         )
     else:
         train_examples, val_examples = split_examples(train_examples, val_ratio=args.val_ratio, seed=seed)
         val_load_summary = {"examples": len(val_examples), "source_summaries": [], "totals": {}}
+    train_review_filter_summary: dict[str, int] | None = None
+    val_review_filter_summary: dict[str, int] | None = None
+    if args.train_reviewed_only:
+        train_examples, train_review_filter_summary = filter_reviewed_examples(
+            train_examples,
+            require_distribution=args.require_teacher_distribution,
+        )
+    if args.val_reviewed_only:
+        val_examples, val_review_filter_summary = filter_reviewed_examples(
+            val_examples,
+            require_distribution=args.require_teacher_distribution,
+        )
     if not train_examples:
         raise ValueError("no training examples built")
     if not val_examples:
@@ -1000,6 +1052,8 @@ def train(args: argparse.Namespace) -> dict:
         "eval_raw": args.eval_raw,
         "train_load_summary": train_load_summary,
         "val_load_summary": val_load_summary,
+        "train_review_filter_summary": train_review_filter_summary,
+        "val_review_filter_summary": val_review_filter_summary,
         "train_examples": len(train_examples),
         "val_examples": len(val_examples),
         "history_len": args.history_len,
@@ -1122,6 +1176,9 @@ def main() -> int:
     parser.add_argument("--teacher-loss-weight", type=float, default=0.0)
     parser.add_argument("--teacher-temperature", type=float, default=1.0)
     parser.add_argument("--review-audit-jsonl", default=None)
+    parser.add_argument("--train-reviewed-only", action="store_true")
+    parser.add_argument("--val-reviewed-only", action="store_true")
+    parser.add_argument("--require-teacher-distribution", action="store_true")
     parser.add_argument("--monitor-metric", default="val_play_exact_accuracy")
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--max-records-per-source", type=int, default=None)
