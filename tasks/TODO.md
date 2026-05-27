@@ -1001,4 +1001,11 @@ Review:
 - [x] Clear completed Kubernetes pods/jobs.
   - 2026-05-27 check: no Succeeded/Failed pods and no completed jobs were present in `nourish-sdsc`; only the unrelated running `idl-download` job/pod remains.
 - [ ] Push the current repo snapshot to GitHub.
-- [ ] Ask GPT Pro for another repo-grounded precision review in the requested ChatGPT conversation and apply the next verified recommendation.
+- [x] Ask GPT Pro for another repo-grounded precision review in the requested ChatGPT conversation and apply the next verified recommendation.
+  - Saved response: `docs/reviews/gpt-pro-chaga-precision-current-graph-2026-05-27.md`.
+  - Key finding: `raw_out` from `scripts/build_chaga_github_corpus.py` must carry `train_players`; otherwise `audit_chaga_review_alignment.py --use-train-players` silently falls back to regex selection and can drift from prepared training rows.
+  - Applied fix: `raw_out` is now written only after conversion/preparation succeeds, with `train_players`, `train_player_names`, and `source_record_id` matching `prepared_out`.
+  - Applied gate fix: `scripts/check_chaga_training_corpus.py` now counts audit target entries before lookup consumption and fails when audit rows do not attach to loaded examples or when original/mapped teacher target counts differ.
+  - Current stale split finding: the old tiny `chaga_review_current_session_split` now fails correctly on `test: unattached_audit_targets=1`; train and val have zero unattached targets. Rebuild the expanded corpus before L40 rather than training on this stale split.
+- [ ] Add richer mismatch diagnostics before the next L40 run.
+  - GPT Pro requested rank/family/margin fields in `collect_original_prediction_rows()` plus summaries for top3-but-not-relaxed, wrong-family, same-family-not-top5, margin buckets, and claim/Hu rows.

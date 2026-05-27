@@ -151,6 +151,14 @@ def prepare_record(raw_record: dict, converted_record: dict, selected_players: d
     return prepared
 
 
+def annotate_audit_raw_record(raw_record: dict, selected_players: dict[str, str]) -> dict:
+    audit_raw = dict(raw_record)
+    audit_raw["train_players"] = sorted(selected_players)
+    audit_raw["train_player_names"] = {player: selected_players[player] for player in sorted(selected_players)}
+    audit_raw["source_record_id"] = str(raw_record.get("id") or raw_record.get("match_id") or "")
+    return audit_raw
+
+
 def player_names_from_record(raw_record: dict) -> list[str]:
     try:
         step = record_step(raw_record)
@@ -209,7 +217,9 @@ def build_github_chaga_corpus(
         "sessions_selected": len(target_sessions),
         "record_locations": len(locations),
         "records_fetched": 0,
+        "records_converted": 0,
         "records_prepared": 0,
+        "audit_raw_records_written": 0,
         "fetch_errors": [],
         "convert_errors": [],
         "prepare_drops": 0,
@@ -225,16 +235,20 @@ def build_github_chaga_corpus(
                 summary["fetch_errors"].append({"record": location.record_id, "period": location.period, "error": str(fetch_error)})
                 continue
             summary["records_fetched"] += 1
-            raw_file.write(json.dumps(raw_record, ensure_ascii=False, separators=(",", ":")) + "\n")
             try:
                 converted = converter(raw_record)
             except Exception as exc:
                 summary["convert_errors"].append({"record": location.record_id, "period": location.period, "error": str(exc)})
                 continue
-            prepared = prepare_record(raw_record, converted, selected_by_session.get(location.session_id, {}))
+            summary["records_converted"] += 1
+            selected_players = selected_by_session.get(location.session_id, {})
+            prepared = prepare_record(raw_record, converted, selected_players)
             if prepared is None:
                 summary["prepare_drops"] += 1
                 continue
+            audit_raw = annotate_audit_raw_record(raw_record, selected_players)
+            raw_file.write(json.dumps(audit_raw, ensure_ascii=False, separators=(",", ":")) + "\n")
+            summary["audit_raw_records_written"] += 1
             prepared_file.write(json.dumps(prepared, ensure_ascii=False, separators=(",", ":")) + "\n")
             summary["records_prepared"] += 1
             for name in prepared["train_player_names"].values():

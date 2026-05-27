@@ -74,6 +74,22 @@ def assert_train_val_audit_excludes_test(train_val_sessions: set[str], test_sess
         raise ValueError(f"train-val audit contains test sessions: {overlap[:10]}")
 
 
+def review_lookup_target_count(lookup) -> int:
+    return sum(len(queue) for queue in lookup.entries_by_key.values())
+
+
+def assert_target_attachment_clean(split: str, summary: dict) -> None:
+    unattached = int(summary.get("unattached_audit_targets", 0))
+    if unattached != 0:
+        raise ValueError(f"{split}: unattached_audit_targets={unattached}")
+    original_targets = int(summary.get("teacher_original_targets", 0))
+    mapped_targets = int(summary.get("teacher_targets", 0))
+    if original_targets != mapped_targets:
+        raise ValueError(
+            f"{split}: teacher_original_targets {original_targets} != teacher_targets {mapped_targets}"
+        )
+
+
 def load_reviewed_split(
     *,
     split: str,
@@ -83,6 +99,7 @@ def load_reviewed_split(
     teacher_temperature: float,
 ) -> tuple[list[TransformerExample], dict]:
     lookup = load_review_target_lookup(audit_path)
+    audit_target_entries = review_lookup_target_count(lookup)
     examples, load_summary = load_examples(
         [raw_path],
         history_len=history_len,
@@ -94,6 +111,9 @@ def load_reviewed_split(
         examples,
         require_distribution=True,
     )
+    totals = load_summary.get("totals") or {}
+    teacher_original_targets = int(totals.get("teacher_original_targets", 0))
+    teacher_targets = int(totals.get("teacher_targets", 0))
     summary = {
         "split": split,
         "raw_path": str(raw_path),
@@ -103,9 +123,14 @@ def load_reviewed_split(
         "examples": len(examples),
         "reviewed_examples": len(reviewed),
         "reviewed_examples_with_distribution": len(reviewed_with_distribution),
+        "audit_target_entries": audit_target_entries,
+        "teacher_original_targets": teacher_original_targets,
+        "teacher_targets": teacher_targets,
+        "unattached_audit_targets": audit_target_entries - teacher_original_targets,
         "load_summary": load_summary,
         "review_filter_summary": filter_summary,
     }
+    assert_target_attachment_clean(split, summary)
     return reviewed, summary
 
 

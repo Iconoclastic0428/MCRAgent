@@ -134,7 +134,11 @@ def test_build_github_chaga_corpus_writes_only_eligible_train_players(tmp_path):
 
     assert summary["sessions_selected"] == 1
     assert summary["records_prepared"] == 1
+    assert summary["audit_raw_records_written"] == 1
     assert raw[0]["id"] == "r1"
+    assert raw[0]["train_players"] == ["1", "3"]
+    assert raw[0]["train_player_names"] == {"1": "CHAGA02", "3": "CHAGA08"}
+    assert raw[0]["source_record_id"] == "r1"
     assert prepared[0]["train_players"] == ["1", "3"]
     assert prepared[0]["train_player_names"] == {"1": "CHAGA02", "3": "CHAGA08"}
 
@@ -149,3 +153,43 @@ def test_local_archive_record_fetcher_reads_period_record(tmp_path):
         "id": "r1",
         "belongs": "s1",
     }
+
+
+def test_build_github_chaga_corpus_writes_raw_only_after_prepare_success(tmp_path):
+    history_path = tmp_path / "history.json"
+    elo_path = tmp_path / "elo.csv"
+    session_dir = tmp_path / "session"
+    out_raw = tmp_path / "raw.jsonl"
+    out_prepared = tmp_path / "prepared.jsonl"
+    summary_out = tmp_path / "summary.json"
+    write_json(
+        history_path,
+        [{"id": "s1", "players": [{"n": "CHAGA02", "e": 2400}]}],
+    )
+    write_csv(elo_path, "Rank,Value,Player Name,Rounds,Player ID\n1,2700,CHAGA02,1,b\n")
+    write_json(session_dir / "history_a.json", [{"session_id": "s1", "records": ["r1"]}])
+
+    def fetch_record(location: RecordLocation) -> dict:
+        return {"id": location.record_id, "belongs": location.session_id}
+
+    def converter(raw_record: dict) -> dict:
+        raise ValueError("synthetic convert failure")
+
+    summary = build_github_chaga_corpus(
+        history_path=history_path,
+        session_dir=session_dir,
+        elo_csv=elo_path,
+        raw_out=out_raw,
+        prepared_out=out_prepared,
+        summary_out=summary_out,
+        min_elo=2300,
+        fetch_record=fetch_record,
+        converter=converter,
+    )
+
+    assert summary["records_fetched"] == 1
+    assert summary["records_converted"] == 0
+    assert summary["records_prepared"] == 0
+    assert summary["audit_raw_records_written"] == 0
+    assert out_raw.read_text(encoding="utf-8") == ""
+    assert out_prepared.read_text(encoding="utf-8") == ""

@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from check_chaga_training_corpus import (  # noqa: E402
     assert_session_disjoint,
     assert_train_val_audit_excludes_test,
+    assert_target_attachment_clean,
     validate_reviewed_examples,
 )
 from train_transformer_candidate import TransformerExample, action_response  # noqa: E402
@@ -69,6 +70,32 @@ def test_corpus_gate_rejects_session_overlap():
 def test_corpus_gate_rejects_test_session_in_train_val_audit():
     with pytest.raises(ValueError, match="test sessions"):
         assert_train_val_audit_excludes_test({"s1", "s3"}, {"s3"})
+
+
+def test_corpus_gate_rejects_unattached_audit_targets():
+    with pytest.raises(ValueError, match="unattached_audit_targets"):
+        assert_target_attachment_clean(
+            "train",
+            {
+                "audit_target_entries": 2,
+                "teacher_original_targets": 1,
+                "teacher_targets": 1,
+                "unattached_audit_targets": 1,
+            },
+        )
+
+
+def test_corpus_gate_rejects_teacher_target_count_mismatch():
+    with pytest.raises(ValueError, match="teacher_original_targets"):
+        assert_target_attachment_clean(
+            "train",
+            {
+                "audit_target_entries": 2,
+                "teacher_original_targets": 2,
+                "teacher_targets": 1,
+                "unattached_audit_targets": 0,
+            },
+        )
 
 
 def test_corpus_gate_rejects_original_target_without_teacher_distribution():
