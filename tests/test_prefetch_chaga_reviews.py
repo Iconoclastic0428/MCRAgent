@@ -46,3 +46,39 @@ def test_collect_review_targets_uses_train_players_and_session_zero_api_seats(tm
         ReviewTarget(session_id="s1", api_seat=1, player_name="CHAGA02"),
         ReviewTarget(session_id="s1", api_seat=3, player_name="CHAGA04"),
     ]
+
+
+def test_collect_review_targets_trusts_train_player_names_when_present(tmp_path):
+    raw = tmp_path / "raw.jsonl"
+    write_jsonl(
+        raw,
+        [
+            {
+                "belongs": "s1",
+                "id": "r0",
+                "step": {
+                    "i": 0,
+                    "p": [{"n": "Human"}, {"n": "CHAGA02"}, {"n": "CHAGA03"}, {"n": "CHAGA01"}],
+                },
+                "train_players": ["1", "2"],
+                "train_player_names": {"1": "CHAGA02", "2": "CHAGA03"},
+            },
+            {
+                "belongs": "s1",
+                "id": "r1",
+                "step": {
+                    "i": 1,
+                    "p": [{"n": "CHAGA03"}, {"n": "Human"}, {"n": "CHAGA01"}, {"n": "CHAGA02"}],
+                },
+                "train_players": ["0", "3"],
+                "train_player_names": {"0": "CHAGA03", "3": "CHAGA02"},
+            },
+        ],
+    )
+
+    targets = collect_review_targets(raw, use_train_players=True)
+
+    assert targets == [
+        ReviewTarget(session_id="s1", api_seat=1, player_name="CHAGA02"),
+        ReviewTarget(session_id="s1", api_seat=2, player_name="CHAGA03"),
+    ]

@@ -8,6 +8,7 @@ import csv
 import json
 import re
 import shutil
+import sys
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -58,7 +59,10 @@ def select_target_sessions(
     player_scores: dict[str, float],
     min_elo: float,
     player_pattern: str = DEFAULT_PLAYER_PATTERN,
+    selection_mode: str = "both",
 ) -> list[TargetSession]:
+    if selection_mode not in {"both", "session"}:
+        raise ValueError(f"unsupported selection_mode: {selection_mode}")
     pattern = re.compile(player_pattern)
     selected: list[TargetSession] = []
     for session in history:
@@ -69,15 +73,16 @@ def select_target_sessions(
             name = str(player.get("n") or "").strip()
             if not pattern.search(name):
                 continue
-            current_elo = player_scores.get(name)
-            if current_elo is None or current_elo <= min_elo:
-                continue
             try:
-                session_elo = float(player.get("e") if player.get("e") is not None else current_elo)
+                session_elo = float(player.get("e") if player.get("e") is not None else 0.0)
             except (TypeError, ValueError):
-                session_elo = current_elo
+                session_elo = 0.0
             if session_elo <= min_elo:
                 continue
+            if selection_mode == "both":
+                current_elo = player_scores.get(name)
+                if current_elo is None or current_elo <= min_elo:
+                    continue
             players[str(index)] = name
         if players:
             selected.append(
@@ -159,6 +164,24 @@ def annotate_audit_raw_record(raw_record: dict, selected_players: dict[str, str]
     return audit_raw
 
 
+def selected_players_for_record(raw_record: dict, target_names: set[str]) -> dict[str, str]:
+    if not target_names:
+        return {}
+    selected: dict[str, str] = {}
+    try:
+        step = record_step(raw_record)
+    except Exception:
+        return selected
+    for index, player in enumerate(step.get("p") or []):
+        if isinstance(player, dict):
+            name = str(player.get("n") or "").strip()
+        else:
+            name = str(player).strip()
+        if name in target_names:
+            selected[str(index)] = name
+    return selected
+
+
 def player_names_from_record(raw_record: dict) -> list[str]:
     try:
         step = record_step(raw_record)
@@ -183,11 +206,13 @@ def build_github_chaga_corpus(
     summary_out: Path,
     min_elo: float,
     player_pattern: str = DEFAULT_PLAYER_PATTERN,
+    selection_mode: str = "both",
     fetch_record: Callable[[RecordLocation], dict] | None = None,
     converter: Callable[[dict], dict] = convert_record,
     max_sessions: int | None = None,
     max_records: int | None = None,
     workers: int = 1,
+    progress_every: int = 0,
 ) -> dict:
     player_scores = load_player_scores(elo_csv)
     target_sessions = select_target_sessions(
@@ -195,10 +220,11 @@ def build_github_chaga_corpus(
         player_scores=player_scores,
         min_elo=min_elo,
         player_pattern=player_pattern,
+        selection_mode=selection_mode,
     )
     if max_sessions is not None:
         target_sessions = target_sessions[:max_sessions]
-    selected_by_session = {session.session_id: session.players for session in target_sessions}
+    selected_by_session = {session.session_id: set(session.players.values()) for session in target_sessions}
     locations = plan_record_locations(set(selected_by_session), load_session_files(session_dir))
     if max_records is not None:
         locations = locations[:max_records]
@@ -214,6 +240,7 @@ def build_github_chaga_corpus(
         "elo_csv": str(elo_csv),
         "min_elo": min_elo,
         "player_pattern": player_pattern,
+        "selection_mode": selection_mode,
         "sessions_selected": len(target_sessions),
         "record_locations": len(locations),
         "records_fetched": 0,
@@ -230,7 +257,10 @@ def build_github_chaga_corpus(
     }
 
     with raw_out.open("w", encoding="utf-8") as raw_file, prepared_out.open("w", encoding="utf-8") as prepared_file:
-        for location, raw_record, fetch_error in iter_fetched_records(locations, fetch_record, workers=max(1, workers)):
+        for index, (location, raw_record, fetch_error) in enumerate(
+            iter_fetched_records(locations, fetch_record, workers=max(1, workers)),
+            start=1,
+        ):
             if fetch_error is not None:
                 summary["fetch_errors"].append({"record": location.record_id, "period": location.period, "error": str(fetch_error)})
                 continue
@@ -241,7 +271,7 @@ def build_github_chaga_corpus(
                 summary["convert_errors"].append({"record": location.record_id, "period": location.period, "error": str(exc)})
                 continue
             summary["records_converted"] += 1
-            selected_players = selected_by_session.get(location.session_id, {})
+            selected_players = selected_players_for_record(raw_record, selected_by_session.get(location.session_id, set()))
             prepared = prepare_record(raw_record, converted, selected_players)
             if prepared is None:
                 summary["prepare_drops"] += 1
@@ -254,6 +284,14 @@ def build_github_chaga_corpus(
             for name in prepared["train_player_names"].values():
                 counts = summary["selected_player_record_counts"]
                 counts[name] = counts.get(name, 0) + 1
+            if progress_every and (index == 1 or index % progress_every == 0 or index == len(locations)):
+                print(
+                    f"build {index}/{len(locations)} fetched={summary['records_fetched']} "
+                    f"prepared={summary['records_prepared']} convert_errors={len(summary['convert_errors'])} "
+                    f"fetch_errors={len(summary['fetch_errors'])}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
     summary_out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
@@ -380,9 +418,16 @@ def main() -> int:
     parser.add_argument("--record-cache-dir", default="data/raw/github_tziakcha_records")
     parser.add_argument("--min-elo", type=float, default=2300.0)
     parser.add_argument("--player-pattern", default=DEFAULT_PLAYER_PATTERN)
+    parser.add_argument(
+        "--selection-mode",
+        choices=["both", "session"],
+        default="both",
+        help="both requires current and session ELO above threshold; session uses session-time ELO only",
+    )
     parser.add_argument("--max-sessions", type=int, default=None)
     parser.add_argument("--max-records", type=int, default=None)
     parser.add_argument("--workers", type=int, default=16)
+    parser.add_argument("--progress-every", type=int, default=10000)
     parser.add_argument("--refresh-metadata", action="store_true")
     parser.add_argument("--refresh-records", action="store_true")
     parser.add_argument("--delay", type=float, default=0.0)
@@ -413,10 +458,12 @@ def main() -> int:
         summary_out=Path(args.summary_out),
         min_elo=args.min_elo,
         player_pattern=args.player_pattern,
+        selection_mode=args.selection_mode,
         fetch_record=fetch_record,
         max_sessions=args.max_sessions,
         max_records=args.max_records,
         workers=args.workers,
+        progress_every=args.progress_every,
     )
     summary["metadata_summary"] = metadata_summary
     Path(args.summary_out).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

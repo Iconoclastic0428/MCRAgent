@@ -12,6 +12,7 @@ from build_chaga_github_corpus import (  # noqa: E402
     local_archive_record_fetcher,
     plan_record_locations,
     select_target_sessions,
+    selected_players_for_record,
 )
 
 
@@ -44,6 +45,29 @@ def test_select_target_sessions_requires_chaga0208_and_min_elo():
     assert [session.session_id for session in selected] == ["s1", "s2"]
     assert selected[0].players == {"1": "CHAGA02"}
     assert selected[1].players == {"0": "CHAGA08"}
+
+
+def test_select_target_sessions_can_use_session_elo_without_current_leaderboard():
+    history = [
+        {
+            "id": "s1",
+            "players": [
+                {"n": "StrongArchived", "e": 2401},
+                {"n": "Weak", "e": 2299},
+            ],
+        }
+    ]
+
+    selected = select_target_sessions(
+        history,
+        player_scores={},
+        min_elo=2300,
+        player_pattern=r".+",
+        selection_mode="session",
+    )
+
+    assert [session.session_id for session in selected] == ["s1"]
+    assert selected[0].players == {"0": "StrongArchived"}
 
 
 def test_plan_record_locations_uses_period_directory_for_selected_sessions():
@@ -193,3 +217,20 @@ def test_build_github_chaga_corpus_writes_raw_only_after_prepare_success(tmp_pat
     assert summary["audit_raw_records_written"] == 0
     assert out_raw.read_text(encoding="utf-8") == ""
     assert out_prepared.read_text(encoding="utf-8") == ""
+
+
+def test_selected_players_for_record_remaps_rotated_hand_order_by_name():
+    raw_record = {
+        "step": {
+            "p": [
+                {"n": "Human"},
+                {"n": "CHAGA04"},
+                {"n": "CHAGA02"},
+                {"n": "CHAGA01"},
+            ]
+        }
+    }
+
+    selected = selected_players_for_record(raw_record, {"CHAGA02", "CHAGA04"})
+
+    assert selected == {"1": "CHAGA04", "2": "CHAGA02"}

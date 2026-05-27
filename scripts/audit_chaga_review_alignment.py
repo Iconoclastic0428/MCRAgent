@@ -358,6 +358,9 @@ def selected_players_for_audit(
     use_train_players: bool = False,
 ) -> dict[str, str]:
     if use_train_players and raw_record.get("train_players"):
+        train_player_names = raw_record.get("train_player_names") or {}
+        if isinstance(train_player_names, dict) and train_player_names:
+            return {str(player): str(name) for player, name in train_player_names.items()}
         step = record_step(raw_record)
         players = step.get("p") or []
         selected: dict[str, str] = {}

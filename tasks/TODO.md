@@ -1013,3 +1013,20 @@ Review:
 - [ ] Rebuild the full CHAGA02-08 >2300 corpus from a local `tziakcha_records` archive before L40.
   - Follow-up review saved at `docs/reviews/gpt-pro-chaga-precision-after-attachment-gate-2026-05-27.md`.
   - GPT Pro's next-step decision: choose archive-backed corpus rebuild now; block L40 until build/audit/split/gate pass with zero fetch/convert/attachment/candidate/Hu failures and the 25k/5k/5k reviewed-state minimums.
+
+### Full tziakcha high-ELO corpus expansion
+
+- [ ] Fix corpus selection so high-ELO training rows are selected per hand by player name, not by stale session seat.
+  - Required because `record_step(...).p` can rotate between hands; `train_players` must refer to the current record's seat indexes.
+  - Add a session-time ELO mode so the full corpus is not limited to current leaderboard players.
+- [ ] Build the all-player `session ELO > 2300` corpus from the local public `tziakcha_records` archive.
+  - Current archive count check: 42,984 history sessions, 679,008 session-listed record ids, and 683,785 record JSON files.
+  - Selection with `--player-pattern '.+' --selection-mode session --min-elo 2300` currently targets 30,211 sessions and 467,398 records.
+  - If this public archive is short of the user's expected count, document the gap and attempt remaining collection through the authenticated/manual path without printing credentials.
+- [ ] Validate that training examples are generated only for the `>2300` seats.
+  - The raw/prepared record should keep full table context, but `train_players` must equal the current record's seats with `step.p[].e > 2300`.
+  - Use `scripts/validate_high_elo_corpus.py` on the generated raw corpus before training.
+- [ ] Verify and push the high-ELO corpus code before any new L40 training.
+  - Run focused builder/audit/gate tests.
+  - Clear completed Kubernetes pods/jobs.
+  - Do not launch L40 until the expanded corpus and reviewed gate are clean.
