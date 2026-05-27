@@ -107,6 +107,18 @@ def hu_gated_candidate_mask(
     return gated
 
 
+def rule_gated_hu_allowed(
+    action_mask: np.ndarray,
+    action_to_response: Callable[[int], str] = action_response,
+) -> bool:
+    """Return whether the current legal-action mask contains a Hu action."""
+
+    for action in np.flatnonzero(np.asarray(action_mask) > 0):
+        if action_to_response(int(action)).split()[0] == "Hu":
+            return True
+    return False
+
+
 def chaga_candidates_to_action_distribution(
     candidates: list,
     action_mask: np.ndarray,
@@ -258,7 +270,7 @@ def build_transformer_examples_from_record(
                 stats["single_action_mask"] += 1
                 _advance_runtime_after_response(runtimes[player], request, response, action, skip_requests[player], stats)
                 continue
-            allow_hu = response.split()[0].upper() == "HU"
+            allow_hu = rule_gated_hu_allowed(obs["action_mask"], runtimes[player].agent.action2response)
             teacher_distribution = None
             teacher_accept_top3 = False
             if teacher_lookup is not None:
@@ -681,24 +693,30 @@ def load_examples(
 
 
 class ReviewTargetLookup:
-    def __init__(self, entries_by_key: dict[tuple[str, str, str, str], deque[ReviewTarget]]) -> None:
-        self.entries_by_key = entries_by_key
+    def __init__(self, entries_by_key: dict[tuple, Iterable[ReviewTarget]]) -> None:
+        self.entries_by_key = {tuple(key): deque(value) for key, value in entries_by_key.items()}
 
     def __call__(self, **kwargs) -> ReviewTarget | None:
-        key = (
+        turn = str(kwargs.get("turn") if kwargs.get("turn") is not None else "")
+        base_key = (
             str(kwargs.get("record_id") or ""),
             str(kwargs.get("player")),
             str(kwargs.get("request") or ""),
             normalize_teacher_action(str(kwargs.get("response") or "")),
         )
+        key = (*base_key, turn)
         queue = self.entries_by_key.get(key)
+        if not queue:
+            queue = self.entries_by_key.get((*base_key, ""))
+        if not queue:
+            queue = self.entries_by_key.get(base_key)
         if not queue:
             return None
         return queue.popleft()
 
 
 def load_review_target_lookup(path: Path) -> ReviewTargetLookup:
-    entries: dict[tuple[str, str, str, str], deque[ReviewTarget]] = {}
+    entries: dict[tuple[str, str, str, str, str], deque[ReviewTarget]] = {}
     with path.open("r", encoding="utf-8-sig") as src:
         for line in src:
             if not line.strip():
@@ -711,11 +729,13 @@ def load_review_target_lookup(path: Path) -> ReviewTargetLookup:
             candidates = entry.get("chaga_top5_candidates") or []
             if not candidates:
                 continue
+            turn_value = state_context.get("turn", entry.get("state_turn", entry.get("turn", "")))
             key = (
                 str(entry.get("record_id") or ""),
                 str(entry.get("seat")),
                 str(state_context.get("request") or ""),
                 normalize_teacher_action(str(state_context.get("state_actual_response") or entry.get("state_actual_response") or entry.get("human_action") or "")),
+                str(turn_value if turn_value is not None else ""),
             )
             accept_top3 = _is_first_six_discard_review_entry(entry)
             entries.setdefault(key, deque()).append(ReviewTarget(candidates=candidates, accept_top3=accept_top3))

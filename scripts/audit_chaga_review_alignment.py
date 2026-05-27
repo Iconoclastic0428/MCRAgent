@@ -98,7 +98,7 @@ def actual_action_from_review_row(row: dict, offered_tile: str | None = None) ->
     if value == 0 and kind in {3, 4, 5, 6}:
         return "Pass"
     if kind == 2:
-        if value <= 0:
+        if value < 0:
             return None
         return f"Play {tile_id_to_botzone_symbol(value)}"
     if kind == 3:
@@ -465,6 +465,8 @@ def build_audit_entry(
         "rr": row.get("rr"),
         "ri": row.get("ri"),
         "seat": state.player,
+        "state_turn": state.turn,
+        "state_action": state.actual,
         "api_seat": api_seat,
         "player_name": player_name,
         "render": state.render,
@@ -483,6 +485,8 @@ def build_audit_entry(
         "checks": checks,
         "expected_context": expected,
         "state_context": {
+            "turn": state.turn,
+            "state_actual_response": state.actual,
             "request": state.request,
             "window": state.window,
             "current_actor": state.current_actor,

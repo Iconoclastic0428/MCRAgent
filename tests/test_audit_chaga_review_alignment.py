@@ -20,6 +20,7 @@ def test_normalized_action_compares_discard_by_tile_type():
 
 
 def test_actual_action_from_review_row_uses_tile_type_for_play_and_pass_for_zero_claim():
+    assert actual_action_from_review_row({"r": 2, "v": 0}) == "Play W1"
     assert actual_action_from_review_row({"r": 2, "v": 111}) == "Play F1"
     assert actual_action_from_review_row({"r": 4, "v": 0}) == "Pass"
     assert actual_action_from_review_row({"r": 4, "v": 129}) == "Peng"

@@ -914,3 +914,21 @@ Review:
   - Verified only `mcr-transformer-l40-softdistill-20260527a` remains active on `rci-tide-gpu-06.sdsu.edu` (`NVIDIA L40`).
 - [ ] Push the current repo snapshot to GitHub before requesting the GPT Pro review.
 - [ ] Ask GPT Pro for a repo-grounded precision-improvement review and use the advice to choose the next training change.
+  - 2026-05-27 GPT Pro review saved to `docs/reviews/gpt-pro-chaga-precision-review-2026-05-27.md`.
+  - Key advice: do not scale the flat Transformer further until correctness gates pass; fix rule-gated Hu target attachment, turn-aware review lookup, original-candidate evaluation, action normalization, reviewed-state oversampling, `max_candidates=235`, and a reviewed-only overfit proof.
+  - Applied first correctness patch: CHAGA Transformer example building now derives `allow_hu` from the legal/rule action mask instead of the recorded human response; audit entries now preserve `state_turn`/`state_action`; review target lookup can disambiguate repeated same request/response rows by turn with fallback for old artifacts; CHAGA review `Play` tile id `0` is accepted as `W1`.
+  - Verification after patch: focused new regressions passed (`3 passed`), broader CHAGA/Transformer suite passed (`31 passed`), and current local checkpoint re-evaluation stayed at top-1 `0.371648`, top-3 `0.557471`, relaxed `0.471264`, PLAY relaxed `0.484211` because the existing checkpoint was trained before the fix.
+
+### GPT Pro pass-1 correctness and overfit gates
+
+- [x] Add rule-gated Hu attachment to the Transformer review target path.
+  - Use legal/rule mask Hu availability rather than whether the recorded human chose `HU`.
+  - Keep runtime invariant unchanged: `HU` must stay impossible unless the source rule layer made it legal.
+- [x] Fix CHAGA review action normalization for physical tile id `0`.
+  - `Play` with value `0` is a valid W1 tile id, not a missing action.
+- [x] Make review lookup keys turn-aware.
+  - New audit entries write `state_turn` and `state_context.turn`.
+  - Lookup first uses `(record_id, seat, request, normalized_response, turn)`, then falls back to old no-turn keys for existing artifacts.
+- [ ] Make the evaluator compare the predicted normalized action against the original CHAGA candidate strings, not only the reconstructed teacher distribution.
+- [ ] Add a reviewed-only train-on-eval overfit gate; require `>95%` relaxed match before trusting more L40 training.
+- [ ] Add reviewed-only session split and reviewed-oversampled high-ELO experiments before any new size scaling.

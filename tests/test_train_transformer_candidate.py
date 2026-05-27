@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from train_transformer_candidate import (  # noqa: E402
     ReviewTarget,
+    ReviewTargetLookup,
     TransformerCandidateModel,
     build_transformer_examples_from_record,
     chaga_candidates_to_action_distribution,
@@ -20,6 +21,7 @@ from train_transformer_candidate import (  # noqa: E402
     is_better_checkpoint_metric,
     load_review_target_lookup,
     policy_loss_with_optional_teacher,
+    rule_gated_hu_allowed,
 )
 
 
@@ -169,6 +171,32 @@ def test_chaga_candidate_distribution_maps_soft_targets_to_legal_actions_by_type
     assert dist[7] == 0.0
     assert dist[1] == 0.0
     assert np.isclose(float(dist.sum()), 1.0)
+
+
+def test_rule_gated_hu_allowed_uses_legal_mask_not_recorded_response():
+    action_mask = np.zeros(8, dtype=np.int8)
+    action_mask[[0, 7]] = 1
+    responses = {0: "Pass", 7: "Hu"}
+
+    assert rule_gated_hu_allowed(action_mask, responses.__getitem__) is True
+
+    action_mask[7] = 0
+    assert rule_gated_hu_allowed(action_mask, responses.__getitem__) is False
+
+
+def test_review_target_lookup_uses_turn_to_disambiguate_repeated_states():
+    lookup = ReviewTargetLookup(
+        {
+            ("record-a", "0", "2 J3", "PLAY J3", "1"): [ReviewTarget([[1.0, "Play W1"]])],
+            ("record-a", "0", "2 J3", "PLAY J3", "2"): [ReviewTarget([[1.0, "Play W2"]])],
+        }
+    )
+
+    second = lookup(record_id="record-a", player=0, request="2 J3", response="PLAY J3", turn=2)
+    first = lookup(record_id="record-a", player=0, request="2 J3", response="PLAY J3", turn=1)
+
+    assert second is not None and second.candidates[0][1] == "Play W2"
+    assert first is not None and first.candidates[0][1] == "Play W1"
 
 
 def test_collate_carries_teacher_distribution_over_candidate_slots():
