@@ -1009,3 +1009,7 @@ Review:
   - Current stale split finding: the old tiny `chaga_review_current_session_split` now fails correctly on `test: unattached_audit_targets=1`; train and val have zero unattached targets. Rebuild the expanded corpus before L40 rather than training on this stale split.
 - [ ] Add richer mismatch diagnostics before the next L40 run.
   - GPT Pro requested rank/family/margin fields in `collect_original_prediction_rows()` plus summaries for top3-but-not-relaxed, wrong-family, same-family-not-top5, margin buckets, and claim/Hu rows.
+  - Follow-up GPT Pro review after `9986488` says do not do this before rebuild; add these diagnostics only after the expanded corpus gate passes or the first expanded reviewed-only run stalls.
+- [ ] Rebuild the full CHAGA02-08 >2300 corpus from a local `tziakcha_records` archive before L40.
+  - Follow-up review saved at `docs/reviews/gpt-pro-chaga-precision-after-attachment-gate-2026-05-27.md`.
+  - GPT Pro's next-step decision: choose archive-backed corpus rebuild now; block L40 until build/audit/split/gate pass with zero fetch/convert/attachment/candidate/Hu failures and the 25k/5k/5k reviewed-state minimums.
