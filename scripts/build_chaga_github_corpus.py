@@ -467,7 +467,7 @@ def main() -> int:
     )
     summary["metadata_summary"] = metadata_summary
     Path(args.summary_out).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    print(json.dumps(summary, ensure_ascii=True, indent=2))
     return 0 if not summary["fetch_errors"] and not summary["convert_errors"] else 1
 
 

@@ -101,7 +101,7 @@ def main() -> int:
         out = Path(args.summary_out)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    print(json.dumps(summary, ensure_ascii=True, indent=2))
     return 0 if not summary["failures_preview"] else 1
 
 
