@@ -17,6 +17,7 @@ SPLITS = ("train", "val", "test")
 def split_review_corpus(
     *,
     raw_path: Path,
+    prepared_path: Path | None = None,
     audit_path: Path,
     out_dir: Path,
     seed: int,
@@ -27,6 +28,9 @@ def split_review_corpus(
         raise ValueError("train_ratio and val_ratio must be non-negative and sum to at most 1")
 
     raw_rows = list(iter_jsonl(raw_path))
+    prepared_rows = list(iter_jsonl(prepared_path)) if prepared_path is not None else []
+    if prepared_path is not None and len(raw_rows) != len(prepared_rows):
+        raise ValueError(f"raw/prepared row mismatch: {len(raw_rows)} != {len(prepared_rows)}")
     audit_rows = list(iter_jsonl(audit_path))
     if not audit_rows:
         raise ValueError("audit corpus is empty")
@@ -36,6 +40,25 @@ def split_review_corpus(
         session_id = str(row.get("belongs") or "")
         if session_id:
             raw_by_session[session_id].append(row)
+
+    prepared_by_session: dict[str, list[dict]] = defaultdict(list)
+    if prepared_path is not None:
+        for line_number, (raw_row, prepared_row) in enumerate(zip(raw_rows, prepared_rows), start=1):
+            raw_record_id = record_id(raw_row)
+            prepared_record_id = record_id(prepared_row)
+            if raw_record_id and prepared_record_id and raw_record_id != prepared_record_id:
+                raise ValueError(
+                    f"raw/prepared record mismatch at line {line_number}: {raw_record_id} != {prepared_record_id}"
+                )
+            raw_session_id = str(raw_row.get("belongs") or "")
+            prepared_session_id = str(prepared_row.get("belongs") or "")
+            if raw_session_id and prepared_session_id and raw_session_id != prepared_session_id:
+                raise ValueError(
+                    f"raw/prepared session mismatch at line {line_number}: {raw_session_id} != {prepared_session_id}"
+                )
+            session_id = prepared_session_id or raw_session_id
+            if session_id:
+                prepared_by_session[session_id].append(prepared_row)
 
     audit_by_session: dict[str, list[dict]] = defaultdict(list)
     for row in audit_rows:
@@ -56,16 +79,23 @@ def split_review_corpus(
     summary = {
         "format": "mcr_chaga_review_session_split_v1",
         "raw_path": str(raw_path),
+        "prepared_path": str(prepared_path) if prepared_path is not None else None,
         "audit_path": str(audit_path),
         "seed": seed,
         "train_ratio": train_ratio,
         "val_ratio": val_ratio,
         "raw_records": len(raw_rows),
+        "prepared_records": len(prepared_rows),
         "audit_rows": len(audit_rows),
         "sessions_with_review": len(audit_sessions),
         "dropped_raw_records_without_review": sum(
             len(rows)
             for session_id, rows in raw_by_session.items()
+            if session_id not in audit_sessions
+        ),
+        "dropped_prepared_records_without_review": sum(
+            len(rows)
+            for session_id, rows in prepared_by_session.items()
             if session_id not in audit_sessions
         ),
         "splits": {},
@@ -74,17 +104,21 @@ def split_review_corpus(
     for split in SPLITS:
         sessions = split_sessions[split]
         raw_split = [row for session in sessions for row in raw_by_session.get(session, [])]
+        prepared_split = [row for session in sessions for row in prepared_by_session.get(session, [])]
         audit_split = [row for session in sessions for row in audit_by_session.get(session, [])]
         write_jsonl(out_dir / f"{split}.raw.jsonl", raw_split)
+        if prepared_path is not None:
+            write_jsonl(out_dir / f"{split}.prepared.jsonl", prepared_split)
         write_jsonl(out_dir / f"{split}.audit.jsonl", audit_split)
         summary["splits"][split] = {
             "sessions": sessions,
             "session_count": len(sessions),
             "raw_records": len(raw_split),
+            "prepared_records": len(prepared_split),
             "reviewed_states": len(audit_split),
         }
 
-    verify_split_outputs(summary, raw_by_session, audit_by_session)
+    verify_split_outputs(summary, raw_by_session, audit_by_session, prepared_by_session)
     (out_dir / "split_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
 
@@ -140,6 +174,7 @@ def verify_split_outputs(
     summary: dict,
     raw_by_session: dict[str, list[dict]],
     audit_by_session: dict[str, list[dict]],
+    prepared_by_session: dict[str, list[dict]] | None = None,
 ) -> None:
     split_sets = {split: set(summary["splits"][split]["sessions"]) for split in SPLITS}
     assert_session_disjoint({split: sorted(sessions) for split, sessions in split_sets.items()})
@@ -156,6 +191,10 @@ def verify_split_outputs(
             raise ValueError(f"{split} raw count mismatch")
         if summary["splits"][split]["reviewed_states"] != expected_audit:
             raise ValueError(f"{split} audit count mismatch")
+        if prepared_by_session:
+            expected_prepared = sum(len(prepared_by_session[session]) for session in sessions)
+            if summary["splits"][split]["prepared_records"] != expected_prepared:
+                raise ValueError(f"{split} prepared count mismatch")
 
 
 def assert_session_disjoint(split_sessions: dict[str, list[str]]) -> None:
@@ -174,6 +213,10 @@ def iter_jsonl(path: Path) -> Iterable[dict]:
                 yield json.loads(line)
 
 
+def record_id(record: dict) -> str:
+    return str(record.get("source_record_id") or record.get("id") or record.get("match_id") or "")
+
+
 def write_jsonl(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -185,6 +228,7 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--raw", required=True)
+    parser.add_argument("--prepared")
     parser.add_argument("--audit", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--seed", type=int, default=20260527)
@@ -193,6 +237,7 @@ def main() -> int:
     args = parser.parse_args()
     summary = split_review_corpus(
         raw_path=Path(args.raw),
+        prepared_path=Path(args.prepared) if args.prepared else None,
         audit_path=Path(args.audit),
         out_dir=Path(args.out_dir),
         seed=args.seed,

@@ -29,11 +29,13 @@ from train_transformer_candidate import (  # noqa: E402
     hu_gated_candidate_mask,
     is_better_checkpoint_metric,
     load_review_target_lookup,
+    load_examples,
     policy_loss_with_optional_teacher,
     reviewed_sampling_weights,
     rule_gated_hu_allowed,
     teacher_accepted_set_loss,
     validate_reviewed_training_args,
+    valid_transformer_observation,
 )
 
 
@@ -253,6 +255,17 @@ def test_rule_gated_hu_allowed_uses_legal_mask_not_recorded_response():
     assert rule_gated_hu_allowed(action_mask, responses.__getitem__) is False
 
 
+def test_valid_transformer_observation_can_relax_shanten_for_review_claim_windows():
+    obs = {
+        "observation": np.zeros((71, 4, 9), dtype=np.float32),
+        "action_mask": np.zeros((235,), dtype=np.int8),
+    }
+    obs["action_mask"][[0, 1]] = 1
+
+    assert not valid_transformer_observation(obs, require_shanten=True)
+    assert valid_transformer_observation(obs, require_shanten=False)
+
+
 def test_review_target_lookup_uses_turn_to_disambiguate_repeated_states():
     lookup = ReviewTargetLookup(
         {
@@ -296,6 +309,106 @@ def test_collate_carries_teacher_distribution_over_candidate_slots():
     assert torch.isclose(batch["teacher_target_dist"][0].sum(), torch.tensor(1.0))
     target_slot = int(batch["target_index"][0])
     assert batch["teacher_target_dist"][0, target_slot] > 0.0
+
+
+def test_load_examples_reviewed_only_skips_unreviewed_materialization(tmp_path):
+    record = base_record(
+        [
+            {
+                "output": {
+                    "content": {"0": "2 B2", "1": "2 B4"},
+                    "display": {"action": "DRAW", "player": 0, "tile": "B2"},
+                }
+            },
+            {
+                "0": {"response": "PLAY B2", "raw": "PLAY B2", "verdict": "OK"},
+                "1": {"response": "PLAY B4", "raw": "PLAY B4", "verdict": "OK"},
+            },
+        ]
+    )
+    record["source_record_id"] = "unit"
+    data_path = tmp_path / "data.jsonl"
+    data_path.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    lookup = ReviewTargetLookup(
+        {
+            ("unit", "0", "2 B2", "PLAY B2", "2"): [ReviewTarget([[2.0, "Play B2"]])],
+        }
+    )
+
+    examples, summary = load_examples(
+        [data_path],
+        history_len=6,
+        teacher_lookup=lookup,
+        reviewed_only=True,
+    )
+
+    assert len(examples) == 1
+    assert examples[0].player == 0
+    assert examples[0].teacher_candidate_norms == ("PLAY B2",)
+    assert summary["totals"]["filtered_unreviewed_lookup_examples"] >= 1
+
+
+def test_load_examples_can_skip_rule_feature_materialization_for_gate(tmp_path):
+    record = base_record(
+        [
+            {
+                "output": {
+                    "content": {"0": "2 B2"},
+                    "display": {"action": "DRAW", "player": 0, "tile": "B2"},
+                }
+            },
+            {
+                "0": {"response": "PLAY B2", "raw": "PLAY B2", "verdict": "OK"},
+            },
+        ]
+    )
+    data_path = tmp_path / "data.jsonl"
+    data_path.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    examples, _ = load_examples(
+        [data_path],
+        history_len=6,
+        compute_rule_features=False,
+    )
+
+    assert examples
+    assert np.count_nonzero(examples[0].candidate_rule_features) == 0
+
+
+def test_reviewed_example_can_use_teacher_action_when_human_action_is_unmapped():
+    record = base_record(
+        [
+            {
+                "output": {
+                    "content": {"0": "2 B2"},
+                    "display": {"action": "DRAW", "player": 0, "tile": "B2"},
+                }
+            },
+            {
+                "0": {"response": "HU", "raw": "HU", "verdict": "OK"},
+            },
+        ]
+    )
+    record["source_record_id"] = "unit"
+    lookup = ReviewTargetLookup(
+        {
+            ("unit", "0", "2 B2", "HU", "2"): [ReviewTarget([[2.0, "Play B2"]])],
+        }
+    )
+
+    examples, stats = build_transformer_examples_from_record(
+        record,
+        history_len=6,
+        teacher_lookup=lookup,
+        reviewed_only=True,
+        compute_rule_features=False,
+    )
+
+    assert len(examples) == 1
+    assert examples[0].response.upper() == "PLAY B2"
+    assert examples[0].teacher_candidate_norms == ("PLAY B2",)
+    assert stats["teacher_targets"] == 1
 
 
 def test_collate_teacher_accept_mask_top1_only_for_non_relaxed_rows():
@@ -544,6 +657,37 @@ def test_load_review_target_lookup_keys_by_record_seat_request_and_normalized_re
     assert target == ReviewTarget([[3.0, "Play W2"]], accept_top3=True)
     assert lookup(record_id="r1", player=2, request="2 W9", response="PLAY W2") is None
     assert lookup(record_id="r2", player=2, request="2 W9", response="PLAY W2") is None
+
+
+def test_load_review_target_lookup_deduplicates_same_state_key(tmp_path):
+    audit_path = tmp_path / "audit.jsonl"
+    base_entry = {
+        "record_id": "r1",
+        "seat": 2,
+        "human_action": "Play W2",
+        "state_actual_response": "PLAY W2",
+        "chaga_top5_candidates": [[3.0, "Play W2"]],
+        "checks": {
+            "offered_tile_matches": True,
+            "drawn_tile_matches": True,
+            "current_actor_matches": True,
+            "window_matches": True,
+            "hand_size_mod_ok": True,
+            "top1_in_legal_mask": True,
+        },
+        "state_context": {"turn": 9, "request": "2 W9", "state_actual_response": "PLAY W2"},
+    }
+    duplicate = dict(base_entry, chaga_top5_candidates=[[2.0, "Play W3"]])
+    audit_path.write_text(
+        json.dumps(base_entry, ensure_ascii=False) + "\n" + json.dumps(duplicate, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    lookup = load_review_target_lookup(audit_path)
+
+    target = lookup(record_id="r1", player=2, turn=9, request="2 W9", response="PLAY W2")
+    assert target == ReviewTarget([[3.0, "Play W2"]], accept_top3=False)
+    assert lookup(record_id="r1", player=2, turn=9, request="2 W9", response="PLAY W2") is None
 
 
 def test_review_target_lookup_instances_are_independent(tmp_path):

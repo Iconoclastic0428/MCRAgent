@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -102,3 +103,79 @@ def test_validate_high_elo_corpus_rejects_prepared_low_elo_leak(tmp_path):
 
     assert summary["prepared_train_player_mismatches"] == 1
     assert summary["failures_preview"][0]["prepared_actual"] == ["0", "1"]
+
+
+def test_validate_high_elo_corpus_can_limit_expected_players_by_regex(tmp_path):
+    raw = tmp_path / "raw.jsonl"
+    prepared = tmp_path / "prepared.jsonl"
+    write_jsonl(
+        raw,
+        [
+            {
+                "id": "r1",
+                "step": {
+                    "p": [
+                        {"n": "CHAGA01", "e": 2500},
+                        {"n": "CHAGA02", "e": 2401},
+                        {"n": "Human", "e": 2600},
+                    ]
+                },
+                "train_players": ["1"],
+                "train_player_names": {"1": "CHAGA02"},
+            }
+        ],
+    )
+    write_jsonl(prepared, [{"source_record_id": "r1", "train_players": ["1"], "train_player_names": {"1": "CHAGA02"}}])
+
+    summary = validate_high_elo_corpus(
+        raw,
+        min_elo=2300,
+        prepared_path=prepared,
+        player_pattern=re.compile(r"^CHAGA0[2-8]$"),
+    )
+
+    assert summary["train_player_mismatches"] == 0
+    assert summary["prepared_train_player_mismatches"] == 0
+    assert summary["player_regex"] == r"^CHAGA0[2-8]$"
+
+
+def test_validate_high_elo_corpus_can_allow_high_elo_subset(tmp_path):
+    raw = tmp_path / "raw.jsonl"
+    prepared = tmp_path / "prepared.jsonl"
+    write_jsonl(
+        raw,
+        [
+            {
+                "id": "r1",
+                "step": {
+                    "p": [
+                        {"n": "CHAGA02", "e": 2401},
+                        {"n": "CHAGA03", "e": 2500},
+                    ]
+                },
+                "train_players": ["0"],
+                "train_player_names": {"0": "CHAGA02"},
+            }
+        ],
+    )
+    write_jsonl(prepared, [{"source_record_id": "r1", "train_players": ["0"], "train_player_names": {"0": "CHAGA02"}}])
+
+    exact = validate_high_elo_corpus(
+        raw,
+        min_elo=2300,
+        prepared_path=prepared,
+        player_pattern=re.compile(r"^CHAGA0[2-8]$"),
+    )
+    subset = validate_high_elo_corpus(
+        raw,
+        min_elo=2300,
+        prepared_path=prepared,
+        player_pattern=re.compile(r"^CHAGA0[2-8]$"),
+        allow_subset=True,
+    )
+
+    assert exact["train_player_mismatches"] == 1
+    assert exact["prepared_train_player_mismatches"] == 1
+    assert subset["train_player_mismatches"] == 0
+    assert subset["prepared_train_player_mismatches"] == 0
+    assert subset["allow_subset"] is True

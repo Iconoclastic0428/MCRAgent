@@ -6,7 +6,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from prefetch_chaga_reviews import ReviewTarget, collect_review_targets  # noqa: E402
+import prefetch_chaga_reviews as prefetch  # noqa: E402
+from prefetch_chaga_reviews import ReviewTarget, collect_review_targets, prefetch_reviews  # noqa: E402
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -82,3 +83,31 @@ def test_collect_review_targets_trusts_train_player_names_when_present(tmp_path)
         ReviewTarget(session_id="s1", api_seat=1, player_name="CHAGA02"),
         ReviewTarget(session_id="s1", api_seat=2, player_name="CHAGA03"),
     ]
+
+
+def test_prefetch_reviews_retries_transient_fetch_error(monkeypatch, tmp_path):
+    calls = {"count": 0}
+
+    def flaky_fetch(session_id, api_seat, cache_dir, *, timeout=30.0):
+        calls["count"] += 1
+        assert timeout == 7.0
+        if calls["count"] == 1:
+            raise TimeoutError("transient")
+        return [{"ok": True}]
+
+    monkeypatch.setattr(prefetch, "fetch_review", flaky_fetch)
+    monkeypatch.setattr(prefetch.time, "sleep", lambda _: None)
+
+    summary = prefetch_reviews(
+        [ReviewTarget(session_id="s1", api_seat=0, player_name="CHAGA02")],
+        cache_dir=tmp_path,
+        workers=1,
+        retries=2,
+        retry_sleep=0.01,
+        timeout=7.0,
+    )
+
+    assert summary["fetched"] == 1
+    assert summary["retry_successes"] == 1
+    assert summary["errors"] == []
+    assert calls["count"] == 2

@@ -7,6 +7,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,6 +62,9 @@ def prefetch_reviews(
     workers: int,
     force: bool = False,
     progress_every: int = 100,
+    retries: int = 3,
+    retry_sleep: float = 1.0,
+    timeout: float = 30.0,
 ) -> dict:
     cache_dir.mkdir(parents=True, exist_ok=True)
     missing = [target for target in targets if force or not _cache_path(cache_dir, target).exists()]
@@ -69,25 +73,37 @@ def prefetch_reviews(
         "already_cached": len(targets) - len(missing),
         "requested": len(missing),
         "fetched": 0,
+        "retry_successes": 0,
         "errors": [],
     }
     if not missing:
         return summary
 
-    def fetch_one(target: ReviewTarget) -> tuple[ReviewTarget, int]:
-        rows = fetch_review(target.session_id, target.api_seat, cache_dir)
-        return target, len(rows)
+    def fetch_one(target: ReviewTarget) -> tuple[ReviewTarget, int, int]:
+        last_error: Exception | None = None
+        for attempt in range(max(1, retries + 1)):
+            try:
+                rows = fetch_review(target.session_id, target.api_seat, cache_dir, timeout=timeout)
+                return target, len(rows), attempt
+            except Exception as exc:
+                last_error = exc
+                if attempt >= retries:
+                    break
+                time.sleep(max(0.0, retry_sleep) * (attempt + 1))
+        assert last_error is not None
+        raise last_error
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = [pool.submit(fetch_one, target) for target in missing]
         for index, future in enumerate(as_completed(futures), start=1):
             try:
-                target, rows = future.result()
+                target, rows, retry_count = future.result()
                 summary["fetched"] += 1
+                summary["retry_successes"] += 1 if retry_count else 0
                 if progress_every and (index == 1 or index % progress_every == 0 or index == len(futures)):
                     print(
                         f"prefetch {index}/{len(futures)} fetched={summary['fetched']} "
-                        f"last={target.session_id}_seat{target.api_seat} rows={rows}",
+                        f"last={target.session_id}_seat{target.api_seat} rows={rows} retry_count={retry_count}",
                         file=sys.stderr,
                         flush=True,
                     )
@@ -118,6 +134,9 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--progress-every", type=int, default=100)
+    parser.add_argument("--retries", type=int, default=3)
+    parser.add_argument("--retry-sleep", type=float, default=1.0)
+    parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--summary-out")
     args = parser.parse_args()
 
@@ -132,6 +151,9 @@ def main() -> int:
         workers=args.workers,
         force=args.force,
         progress_every=args.progress_every,
+        retries=args.retries,
+        retry_sleep=args.retry_sleep,
+        timeout=args.timeout,
     )
     if args.summary_out:
         summary_path = Path(args.summary_out)

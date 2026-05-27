@@ -970,9 +970,11 @@ Review:
   - New script: `scripts/split_chaga_review_corpus.py`.
   - Writes paired raw/audit JSONL files plus `split_summary.json`, drops raw sessions without review rows explicitly, and verifies that train/val/test sessions are disjoint.
   - Smoke split on the currently accessible corpus has only 6 reviewed sessions and 2,080 audit rows: train 1,140 reviewed states, val 340, test 600. This is useful for plumbing, but it is far below GPT Pro's recommended minimum of 25k train / 5k val / 5k test reviewed states.
-- [ ] Expand the reviewed CHAGA/tziakcha corpus before the next serious L40 training run.
+- [x] Expand the reviewed CHAGA/tziakcha corpus before the next serious L40 training run.
   - Preferred route: fetch more tziakcha sessions/records through the available authenticated pipeline without printing or persisting credentials.
   - Then rebuild the audit with `--no-sample` and either `--use-train-players` or a verified `--player-regex`, split by session, and only launch L40 training once the reviewed-state counts are large enough to make validation meaningful.
+  - 2026-05-27 expanded reviewed subset: 3,640 raw/prepared records, 247 sessions, and 95,708 aligned reviewed states from valid CHAGA review cache entries.
+  - Session-disjoint split result: train 197 sessions / 75,997 reviewed examples, val 25 / 9,447, test 25 / 10,198.
 - [x] Push the pass-2 hardening commit and ask GPT Pro for the next review before launching another large training job.
   - Pushed commit `efcf71f` and saved the next GPT Pro response to `docs/reviews/gpt-pro-chaga-precision-expansion-2026-05-27.md`.
   - Key advice: the hardening is sufficient for data expansion, but the trainer must expose original-candidate validation metrics in-loop before the next L40 run; then expand the reviewed corpus and train reviewed-only accepted-set first.
@@ -1010,9 +1012,11 @@ Review:
 - [ ] Add richer mismatch diagnostics before the next L40 run.
   - GPT Pro requested rank/family/margin fields in `collect_original_prediction_rows()` plus summaries for top3-but-not-relaxed, wrong-family, same-family-not-top5, margin buckets, and claim/Hu rows.
   - Follow-up GPT Pro review after `9986488` says do not do this before rebuild; add these diagnostics only after the expanded corpus gate passes or the first expanded reviewed-only run stalls.
-- [ ] Rebuild the full CHAGA02-08 >2300 corpus from a local `tziakcha_records` archive before L40.
+- [x] Rebuild the full CHAGA02-08 >2300 corpus from a local `tziakcha_records` archive before L40.
   - Follow-up review saved at `docs/reviews/gpt-pro-chaga-precision-after-attachment-gate-2026-05-27.md`.
   - GPT Pro's next-step decision: choose archive-backed corpus rebuild now; block L40 until build/audit/split/gate pass with zero fetch/convert/attachment/candidate/Hu failures and the 25k/5k/5k reviewed-state minimums.
+  - 2026-05-27 build from combined archive+live high-ELO corpus wrote `data/raw/chaga0208_all_plus_live_elo2300_audit_raw.jsonl` and `data/processed/chaga0208_all_plus_live_elo2300/chaga0208_all_plus_live_elo2300.prepared.jsonl`: 133,660 records and 317,487 CHAGA02-08 train-player slots, all record-local ELO >2300.
+  - Cache-covered reviewed subset and session split passed the default dry-run gate with zero unattached audit targets, zero missing distributions, zero candidate truncation, zero malformed top-3 relaxation rows, and zero accepted `HU` outside the gated legal mask.
 
 ### Full tziakcha high-ELO corpus expansion
 
@@ -1050,7 +1054,11 @@ Review:
   - Combined build summary: `data/processed/tziakcha_all_plus_live_elo2300_session/tziakcha_all_plus_live_elo2300_session_build_summary.json`.
   - Combined validation summary: `data/processed/tziakcha_all_plus_live_elo2300_session/tziakcha_all_plus_live_elo2300_session_validation_summary.json`.
   - Result: 763,358 raw/prepared records, 1,456,028 high-ELO train-player slots, 0 train-player mismatches, 0 below-threshold training seats, 0 prepared row-count mismatches, 0 prepared train-player mismatches, and 0 prepared source-record mismatches.
-- [ ] Verify and push the high-ELO corpus code before any new L40 training.
+- [x] Verify the high-ELO corpus code before any new L40 training.
   - Run focused builder/audit/gate tests.
   - Clear completed Kubernetes pods/jobs.
   - Do not launch L40 until the expanded corpus and reviewed gate are clean.
+  - Verification: `python -m pytest tests -q --basetemp tmp\pytest_full_high_elo_gate` passed with 258 tests and one existing sklearn convergence warning.
+  - Kubernetes cleanup check: no Succeeded/Failed pods in `nourish-sdsc`; no completed jobs to delete. Only the unrelated running `idl-download` job remains.
+- [ ] Push the high-ELO corpus/gate code before launching the next L40 training job.
+- [ ] Launch the next Transformer training job on Kubernetes `NVIDIA-L40` only, using the expanded prepared session split and `--monitor-metric val_original_relaxed_accuracy`.

@@ -209,13 +209,52 @@ def normalize_teacher_candidates(candidates: list, *, limit: int | None = None) 
     return tuple(normalized)
 
 
+def teacher_top_action(
+    candidates: list,
+    action_mask: np.ndarray,
+    action_to_response: Callable[[int], str],
+    *,
+    allow_hu: bool,
+) -> int | None:
+    top_candidates = normalize_teacher_candidates(candidates, limit=1)
+    if not top_candidates:
+        return None
+    wanted = top_candidates[0]
+    gated_mask = hu_gated_candidate_mask(action_mask, action_to_response, allow_hu=allow_hu)
+    for action in np.flatnonzero(gated_mask > 0):
+        action = int(action)
+        if normalize_teacher_action(action_to_response(action)) == wanted:
+            return action
+    return None
+
+
+def valid_transformer_observation(obs: dict, *, require_shanten: bool = True) -> bool:
+    if require_shanten:
+        return _valid_observation(obs)
+    observation = obs.get("observation")
+    mask = obs.get("action_mask")
+    if observation is None or mask is None:
+        return False
+    if tuple(observation.shape) != (FeatureAgent.OBS_SIZE, 4, 9):
+        return False
+    if tuple(mask.shape) != (FeatureAgent.ACT_SIZE,):
+        return False
+    return True
+
+
 def build_transformer_examples_from_record(
     record: dict,
     *,
     history_len: int = DEFAULT_HISTORY_LEN,
     teacher_lookup: Callable[..., list | None] | None = None,
     teacher_temperature: float = 1.0,
+    reviewed_only: bool = False,
+    compute_rule_features: bool = True,
 ) -> tuple[list[TransformerExample], Counter[str]]:
+    if reviewed_only and teacher_lookup is None:
+        raise ValueError("reviewed_only requires a teacher_lookup")
+    if reviewed_only and not callable(getattr(teacher_lookup, "matches", None)):
+        raise ValueError("reviewed_only requires a teacher_lookup with a non-destructive matches() method")
     runtimes = [BotzoneFeatureRuntime() for _ in range(4)]
     skip_requests: list[Counter[str]] = [Counter() for _ in range(4)]
     examples: list[TransformerExample] = []
@@ -268,18 +307,38 @@ def build_transformer_examples_from_record(
                 stats["untrainable_response"] += 1
                 continue
 
-            action = response_to_valid_action(runtimes[player].agent, obs, request, response)
-            if action is None:
-                stats[f"unmapped:{response.split()[0].upper()}"] += 1
-                continue
             if train_players is not None and str(player) not in train_players:
                 stats["filtered_train_player_examples"] += 1
+                action = response_to_valid_action(runtimes[player].agent, obs, request, response)
                 _advance_runtime_after_response(runtimes[player], request, response, action, skip_requests[player], stats)
                 continue
-            if not _valid_observation(obs):
+            action = response_to_valid_action(runtimes[player].agent, obs, request, response)
+            lookup_kwargs = {
+                "record": record,
+                "record_id": record_id,
+                "player": player,
+                "turn": turn // 2,
+                "request": request,
+                "response": response,
+                "action": action,
+            }
+            if reviewed_only:
+                assert teacher_lookup is not None
+                has_review_target = teacher_lookup.matches(**lookup_kwargs)
+                if not has_review_target:
+                    stats["filtered_unreviewed_lookup_examples"] += 1
+                    _advance_runtime_after_response(runtimes[player], request, response, action, skip_requests[player], stats)
+                    continue
+            else:
+                has_review_target = False
+            if action is None:
+                stats[f"unmapped_actual:{response.split()[0].upper()}"] += 1
+            if not valid_transformer_observation(obs, require_shanten=not has_review_target):
                 stats["invalid_observation"] += 1
                 _advance_runtime_after_response(runtimes[player], request, response, action, skip_requests[player], stats)
                 continue
+            if has_review_target and not _valid_observation(obs):
+                stats["relaxed_review_observation"] += 1
             if int(np.sum(obs["action_mask"])) == 1:
                 stats["single_action_mask"] += 1
                 _advance_runtime_after_response(runtimes[player], request, response, action, skip_requests[player], stats)
@@ -288,16 +347,11 @@ def build_transformer_examples_from_record(
             teacher_distribution = None
             teacher_accept_top3 = False
             teacher_candidate_norms: tuple[str, ...] = ()
+            example_action = action
             if teacher_lookup is not None:
                 try:
                     teacher_result = teacher_lookup(
-                        record=record,
-                        record_id=record_id,
-                        player=player,
-                        turn=turn // 2,
-                        request=request,
-                        response=response,
-                        action=action,
+                        **lookup_kwargs,
                         obs=obs,
                     )
                 except Exception as exc:
@@ -323,22 +377,41 @@ def build_transformer_examples_from_record(
                         stats["teacher_target_unmapped"] += 1
                     else:
                         stats["teacher_targets"] += 1
+                    teacher_action = teacher_top_action(
+                        teacher_candidates,
+                        obs["action_mask"],
+                        runtimes[player].agent.action2response,
+                        allow_hu=allow_hu,
+                    )
+                    if teacher_action is not None and teacher_action != action:
+                        stats["teacher_substituted_action"] += 1
+                    if teacher_action is not None:
+                        example_action = teacher_action
+
+            if example_action is None:
+                stats[f"unmapped:{response.split()[0].upper()}"] += 1
+                _advance_runtime_after_response(runtimes[player], request, response, action, skip_requests[player], stats)
+                continue
 
             examples.append(
                 TransformerExample(
                     obs=obs["observation"].astype(np.float32),
                     action_mask=obs["action_mask"].astype(np.int8),
-                    act=int(action),
+                    act=int(example_action),
                     player=player,
                     turn=turn // 2,
-                    response=action_response(int(action)),
+                    response=action_response(int(example_action)),
                     history_tokens=_history_window(history, history_len),
                     value_target=_value_target(record, player),
                     allow_hu=allow_hu,
-                    candidate_rule_features=build_candidate_rule_features(
-                        runtimes[player].agent,
-                        obs,
-                        allow_hu=allow_hu,
+                    candidate_rule_features=(
+                        build_candidate_rule_features(
+                            runtimes[player].agent,
+                            obs,
+                            allow_hu=allow_hu,
+                        )
+                        if compute_rule_features
+                        else np.zeros((FeatureAgent.ACT_SIZE, CANDIDATE_RULE_FEATURES), dtype=np.float32)
                     ),
                     teacher_action_distribution=teacher_distribution,
                     teacher_accept_top3=teacher_accept_top3,
@@ -357,7 +430,7 @@ def _advance_runtime_after_response(
     runtime: BotzoneFeatureRuntime,
     request: str,
     response: str,
-    action: int,
+    action: int | None,
     skip_requests: Counter[str],
     stats: Counter[str],
 ) -> None:
@@ -718,6 +791,8 @@ def load_examples(
     max_examples: int | None = None,
     teacher_lookup: Callable[..., list | None] | None = None,
     teacher_temperature: float = 1.0,
+    reviewed_only: bool = False,
+    compute_rule_features: bool = True,
 ) -> tuple[list[TransformerExample], dict]:
     examples: list[TransformerExample] = []
     source_summaries: list[dict] = []
@@ -739,6 +814,8 @@ def load_examples(
                         history_len=history_len,
                         teacher_lookup=teacher_lookup,
                         teacher_temperature=teacher_temperature,
+                        reviewed_only=reviewed_only,
+                        compute_rule_features=compute_rule_features,
                     )
                 except Exception as exc:
                     stats[f"record_error:{type(exc).__name__}"] += 1
@@ -826,7 +903,7 @@ class ReviewTargetLookup:
     def __init__(self, entries_by_key: dict[tuple, Iterable[ReviewTarget]]) -> None:
         self.entries_by_key = {tuple(key): deque(value) for key, value in entries_by_key.items()}
 
-    def __call__(self, **kwargs) -> ReviewTarget | None:
+    def _keys_for_kwargs(self, **kwargs) -> tuple[tuple, ...]:
         turn = str(kwargs.get("turn") if kwargs.get("turn") is not None else "")
         base_key = (
             str(kwargs.get("record_id") or ""),
@@ -834,15 +911,21 @@ class ReviewTargetLookup:
             str(kwargs.get("request") or ""),
             normalize_teacher_action(str(kwargs.get("response") or "")),
         )
-        key = (*base_key, turn)
-        queue = self.entries_by_key.get(key)
-        if not queue:
-            queue = self.entries_by_key.get((*base_key, ""))
-        if not queue:
-            queue = self.entries_by_key.get(base_key)
-        if not queue:
-            return None
-        return queue.popleft()
+        return (
+            (*base_key, turn),
+            (*base_key, ""),
+            base_key,
+        )
+
+    def matches(self, **kwargs) -> bool:
+        return any(bool(self.entries_by_key.get(key)) for key in self._keys_for_kwargs(**kwargs))
+
+    def __call__(self, **kwargs) -> ReviewTarget | None:
+        for key in self._keys_for_kwargs(**kwargs):
+            queue = self.entries_by_key.get(key)
+            if queue:
+                return queue.popleft()
+        return None
 
 
 def load_review_target_lookup(path: Path) -> ReviewTargetLookup:
@@ -867,8 +950,10 @@ def load_review_target_lookup(path: Path) -> ReviewTargetLookup:
                 normalize_teacher_action(str(state_context.get("state_actual_response") or entry.get("state_actual_response") or entry.get("human_action") or "")),
                 str(turn_value if turn_value is not None else ""),
             )
+            if key in entries:
+                continue
             accept_top3 = _is_first_six_discard_review_entry(entry)
-            entries.setdefault(key, deque()).append(ReviewTarget(candidates=candidates, accept_top3=accept_top3))
+            entries[key] = deque([ReviewTarget(candidates=candidates, accept_top3=accept_top3)])
     return ReviewTargetLookup(entries)
 
 
@@ -1161,6 +1246,7 @@ def train(args: argparse.Namespace) -> dict:
         max_examples=args.max_train_examples,
         teacher_lookup=train_teacher_lookup,
         teacher_temperature=args.teacher_temperature,
+        reviewed_only=bool(args.train_reviewed_only and train_teacher_lookup is not None),
     )
     if args.eval_raw:
         val_teacher_lookup = make_review_lookup(args.review_audit_jsonl)
@@ -1171,6 +1257,7 @@ def train(args: argparse.Namespace) -> dict:
             max_examples=args.max_val_examples,
             teacher_lookup=val_teacher_lookup,
             teacher_temperature=args.teacher_temperature,
+            reviewed_only=bool(args.val_reviewed_only and val_teacher_lookup is not None),
         )
     else:
         train_examples, val_examples = split_examples(train_examples, val_ratio=args.val_ratio, seed=seed)

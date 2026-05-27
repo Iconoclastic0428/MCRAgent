@@ -90,6 +90,18 @@ def assert_target_attachment_clean(split: str, summary: dict) -> None:
         )
 
 
+def assert_training_records_have_logs(split: str, path: Path) -> None:
+    for record in iter_jsonl(path):
+        logs = record.get("logs")
+        if isinstance(logs, list) and logs:
+            return
+        raise ValueError(
+            f"{split}: prepared training records with nonempty logs are required; "
+            f"use the split *.prepared.jsonl file instead of raw tziakcha records ({path})"
+        )
+    raise ValueError(f"{split}: training record file is empty: {path}")
+
+
 def load_reviewed_split(
     *,
     split: str,
@@ -98,6 +110,7 @@ def load_reviewed_split(
     history_len: int,
     teacher_temperature: float,
 ) -> tuple[list[TransformerExample], dict]:
+    assert_training_records_have_logs(split, raw_path)
     lookup = load_review_target_lookup(audit_path)
     audit_target_entries = review_lookup_target_count(lookup)
     examples, load_summary = load_examples(
@@ -105,6 +118,8 @@ def load_reviewed_split(
         history_len=history_len,
         teacher_lookup=lookup,
         teacher_temperature=teacher_temperature,
+        reviewed_only=True,
+        compute_rule_features=False,
     )
     reviewed = [example for example in examples if is_reviewed_example(example)]
     reviewed_with_distribution, filter_summary = filter_reviewed_examples(

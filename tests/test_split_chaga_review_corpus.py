@@ -93,6 +93,57 @@ def test_split_chaga_review_corpus_keeps_raw_and_audit_consistent(tmp_path):
     assert summary["dropped_raw_records_without_review"] == 1
 
 
+def test_split_chaga_review_corpus_splits_prepared_records_when_provided(tmp_path):
+    raw_path = tmp_path / "raw.jsonl"
+    prepared_path = tmp_path / "prepared.jsonl"
+    audit_path = tmp_path / "audit.jsonl"
+    out_dir = tmp_path / "split"
+    write_jsonl(
+        raw_path,
+        [
+            {"id": "r1", "belongs": "s1"},
+            {"id": "r2", "belongs": "s2"},
+            {"id": "unused", "belongs": "s_without_review"},
+        ],
+    )
+    write_jsonl(
+        prepared_path,
+        [
+            {"source_record_id": "r1", "belongs": "s1", "logs": [{"keep": "r1"}]},
+            {"source_record_id": "r2", "belongs": "s2", "logs": [{"keep": "r2"}]},
+            {"source_record_id": "unused", "belongs": "s_without_review", "logs": [{"keep": "unused"}]},
+        ],
+    )
+    write_jsonl(
+        audit_path,
+        [
+            {"record_id": "r1", "session_id": "s1"},
+            {"record_id": "r2", "session_id": "s2"},
+        ],
+    )
+
+    summary = split_review_corpus(
+        raw_path=raw_path,
+        prepared_path=prepared_path,
+        audit_path=audit_path,
+        out_dir=out_dir,
+        seed=1,
+        train_ratio=0.5,
+        val_ratio=0.0,
+    )
+
+    written_prepared = []
+    for split in ("train", "val", "test"):
+        rows = read_jsonl(out_dir / f"{split}.prepared.jsonl")
+        written_prepared.extend(rows)
+        assert len(rows) == summary["splits"][split]["prepared_records"]
+        assert {row["belongs"] for row in rows} <= set(summary["splits"][split]["sessions"])
+    assert {row["source_record_id"] for row in written_prepared} == {"r1", "r2"}
+    assert all(row.get("logs") for row in written_prepared)
+    assert summary["prepared_records"] == 3
+    assert summary["dropped_prepared_records_without_review"] == 1
+
+
 def test_split_chaga_review_corpus_is_deterministic(tmp_path):
     raw_path = tmp_path / "raw.jsonl"
     audit_path = tmp_path / "audit.jsonl"

@@ -5,14 +5,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import Counter
 from pathlib import Path
+from re import Pattern
 from typing import Iterator
 
 from tziakcha_records import record_step
 
 
-def validate_high_elo_corpus(raw_path: Path, *, min_elo: float, prepared_path: Path | None = None) -> dict:
+def validate_high_elo_corpus(
+    raw_path: Path,
+    *,
+    min_elo: float,
+    prepared_path: Path | None = None,
+    player_pattern: Pattern[str] | None = None,
+    allow_subset: bool = False,
+) -> dict:
     summary: Counter[str] = Counter()
     failures: list[dict] = []
     prepared_iter = _iter_jsonl(prepared_path) if prepared_path else None
@@ -27,9 +36,10 @@ def validate_high_elo_corpus(raw_path: Path, *, min_elo: float, prepared_path: P
             summary["record_step_errors"] += 1
             failures.append({"record": raw_record.get("id"), "error": str(exc)})
             continue
-        expected = expected_high_elo_players(step, min_elo=min_elo)
+        expected = expected_high_elo_players(step, min_elo=min_elo, player_pattern=player_pattern)
         actual = set(str(player) for player in raw_record.get("train_players") or [])
-        if actual != expected:
+        players_ok = actual <= expected if allow_subset else actual == expected
+        if not players_ok:
             summary["train_player_mismatches"] += 1
             failures.append(
                 {
@@ -58,6 +68,7 @@ def validate_high_elo_corpus(raw_path: Path, *, min_elo: float, prepared_path: P
                 line_number=line_number,
                 failures=failures,
                 summary=summary,
+                allow_subset=allow_subset,
             )
         summary["train_player_slots"] += len(actual)
         for player in actual:
@@ -76,6 +87,8 @@ def validate_high_elo_corpus(raw_path: Path, *, min_elo: float, prepared_path: P
         "raw_path": str(raw_path),
         "prepared_path": str(prepared_path) if prepared_path else None,
         "min_elo": min_elo,
+        "player_regex": player_pattern.pattern if player_pattern else None,
+        "allow_subset": allow_subset,
         "records": summary["records"],
         "train_player_slots": summary["train_player_slots"],
         "record_step_errors": summary["record_step_errors"],
@@ -124,9 +137,11 @@ def _validate_prepared_row(
     line_number: int,
     failures: list[dict],
     summary: Counter[str],
+    allow_subset: bool = False,
 ) -> None:
     prepared_actual = set(str(player) for player in prepared_record.get("train_players") or [])
-    if prepared_actual != expected:
+    players_ok = prepared_actual <= expected if allow_subset else prepared_actual == expected
+    if not players_ok:
         summary["prepared_train_player_mismatches"] += 1
         failures.append(
             {
@@ -161,10 +176,13 @@ def _validate_prepared_row(
         )
 
 
-def expected_high_elo_players(step: dict, *, min_elo: float) -> set[str]:
+def expected_high_elo_players(step: dict, *, min_elo: float, player_pattern: Pattern[str] | None = None) -> set[str]:
     expected: set[str] = set()
     for index, player in enumerate(step.get("p") or []):
         if not isinstance(player, dict):
+            continue
+        name = str(player.get("n") or "").strip()
+        if player_pattern is not None and not player_pattern.search(name):
             continue
         try:
             elo = float(player.get("e") if player.get("e") is not None else 0.0)
@@ -206,6 +224,8 @@ def main() -> int:
     parser.add_argument("--raw", required=True)
     parser.add_argument("--prepared")
     parser.add_argument("--min-elo", type=float, default=2300.0)
+    parser.add_argument("--player-regex")
+    parser.add_argument("--allow-subset", action="store_true")
     parser.add_argument("--summary-out")
     args = parser.parse_args()
 
@@ -213,6 +233,8 @@ def main() -> int:
         Path(args.raw),
         min_elo=args.min_elo,
         prepared_path=Path(args.prepared) if args.prepared else None,
+        player_pattern=re.compile(args.player_regex) if args.player_regex else None,
+        allow_subset=args.allow_subset,
     )
     if args.summary_out:
         out = Path(args.summary_out)

@@ -13,6 +13,7 @@ from check_chaga_training_corpus import (  # noqa: E402
     assert_session_disjoint,
     assert_train_val_audit_excludes_test,
     assert_target_attachment_clean,
+    load_reviewed_split,
     validate_reviewed_examples,
 )
 from train_transformer_candidate import TransformerExample, action_response  # noqa: E402
@@ -82,6 +83,43 @@ def test_corpus_gate_rejects_unattached_audit_targets():
                 "teacher_targets": 1,
                 "unattached_audit_targets": 1,
             },
+        )
+
+
+def test_corpus_gate_rejects_raw_records_without_training_logs(tmp_path):
+    raw_path = tmp_path / "train.raw.jsonl"
+    audit_path = tmp_path / "train.audit.jsonl"
+    raw_path.write_text(json.dumps({"id": "r1", "belongs": "s1", "step": []}) + "\n", encoding="utf-8")
+    audit_path.write_text(
+        json.dumps(
+            {
+                "record_id": "r1",
+                "session_id": "s1",
+                "seat": 0,
+                "state_turn": 1,
+                "state_context": {"turn": 1, "request": "2 W1", "state_actual_response": "PLAY W1"},
+                "chaga_top5_candidates": [[1.0, "Play W1"]],
+                "checks": {
+                    "offered_tile_matches": True,
+                    "drawn_tile_matches": True,
+                    "current_actor_matches": True,
+                    "window_matches": True,
+                    "hand_size_mod_ok": True,
+                    "top1_in_legal_mask": True,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="prepared.*logs"):
+        load_reviewed_split(
+            split="train",
+            raw_path=raw_path,
+            audit_path=audit_path,
+            history_len=4,
+            teacher_temperature=1.0,
         )
 
 
