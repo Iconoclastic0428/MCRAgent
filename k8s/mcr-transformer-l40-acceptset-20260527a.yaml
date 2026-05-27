@@ -1,0 +1,198 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mcr-transformer-l40-acceptset-20260527a
+  namespace: nourish-sdsc
+  labels:
+    app: mcr-transformer
+    task: chaga0208-acceptset
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: mcr-transformer
+        task: chaga0208-acceptset
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-L40
+      containers:
+        - name: acceptset
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+          command:
+            - sh
+            - -lc
+            - |
+              set -eux
+              python -m pip install --no-cache-dir PyMahjongGB
+              python - <<'PY'
+              import torch
+              import MahjongGB
+              print("torch", torch.__version__, "cuda", torch.cuda.is_available(), "device_count", torch.cuda.device_count())
+              print("MahjongGB import ok")
+              PY
+              python scripts/train_transformer_candidate.py \
+                --raw data/processed/chaga0208/tziakcha_chaga0208_all.jsonl \
+                --eval-raw data/processed/chaga0208/tziakcha_chaga0208_all.jsonl \
+                --review-audit-jsonl runs/chaga_review_alignment_audit_all.jsonl \
+                --train-reviewed-only \
+                --val-reviewed-only \
+                --require-teacher-distribution \
+                --max-candidates 235 \
+                --hard-loss-weight 0.0 \
+                --teacher-loss-weight 0.0 \
+                --reviewed-hard-loss-weight 0.0 \
+                --reviewed-teacher-loss-weight 0.0 \
+                --reviewed-accept-set-loss-weight 1.0 \
+                --unreviewed-hard-loss-weight 0.0 \
+                --value-loss-weight 0.0 \
+                --teacher-temperature 0.2 \
+                --monitor-metric val_teacher_relaxed_accuracy \
+                --epochs 160 \
+                --batch-size 128 \
+                --lr 0.0007 \
+                --weight-decay 0.0 \
+                --d-model 384 \
+                --nhead 8 \
+                --num-layers 6 \
+                --dim-feedforward 1024 \
+                --dropout 0.0 \
+                --out models/transformer_candidate_reviewed_overfit_acceptset_l40_20260527a.pt \
+                --metrics-out runs/transformer_candidate_reviewed_overfit_acceptset_l40_20260527a_metrics.json
+              python scripts/evaluate_transformer_chaga_review.py \
+                --checkpoint models/transformer_candidate_reviewed_overfit_acceptset_l40_20260527a.pt \
+                --raw data/processed/chaga0208/tziakcha_chaga0208_all.jsonl \
+                --review-audit-jsonl runs/chaga_review_alignment_audit_all.jsonl \
+                --max-candidates 235 \
+                --batch-size 128 \
+                --metrics-out runs/transformer_candidate_reviewed_overfit_acceptset_l40_20260527a_original_eval.json
+              python - <<'PY'
+              import json
+              from pathlib import Path
+              metrics = json.loads(Path("runs/transformer_candidate_reviewed_overfit_acceptset_l40_20260527a_original_eval.json").read_text())
+              train = json.loads(Path("runs/transformer_candidate_reviewed_overfit_acceptset_l40_20260527a_metrics.json").read_text())
+              gate = {
+                  "checkpoint": "models/transformer_candidate_reviewed_overfit_acceptset_l40_20260527a.pt",
+                  "train_metrics": "runs/transformer_candidate_reviewed_overfit_acceptset_l40_20260527a_metrics.json",
+                  "original_eval": "runs/transformer_candidate_reviewed_overfit_acceptset_l40_20260527a_original_eval.json",
+                  "train_review_filter_summary": train.get("train_review_filter_summary"),
+                  "val_review_filter_summary": train.get("val_review_filter_summary"),
+                  "evaluated_candidate_width": metrics.get("evaluated_candidate_width"),
+                  "candidate_truncation_count": metrics.get("candidate_truncation_count"),
+                  "reviewed_without_teacher_distribution": metrics.get("reviewed_without_teacher_distribution"),
+                  "original_top1_accuracy": metrics.get("original_top1_accuracy"),
+                  "original_relaxed_accuracy": metrics.get("original_relaxed_accuracy"),
+                  "original_play_relaxed_accuracy": metrics.get("original_play_relaxed_accuracy"),
+              }
+              gate["passed"] = (
+                  gate["train_review_filter_summary"]
+                  and gate["val_review_filter_summary"]
+                  and gate["train_review_filter_summary"].get("reviewed_examples_after_filter", 0) > 0
+                  and gate["train_review_filter_summary"].get("reviewed_examples_after_filter") == gate["val_review_filter_summary"].get("reviewed_examples_after_filter")
+                  and gate["reviewed_without_teacher_distribution"] == 0
+                  and gate["candidate_truncation_count"] == 0
+                  and gate["evaluated_candidate_width"] == 235
+                  and (gate["original_relaxed_accuracy"] or 0.0) >= 0.99
+                  and (gate["original_play_relaxed_accuracy"] or 0.0) >= 0.99
+              )
+              Path("runs/transformer_candidate_reviewed_overfit_acceptset_l40_20260527a_gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2))
+              print(json.dumps(gate, ensure_ascii=False, indent=2))
+              if not gate["passed"]:
+                  raise SystemExit("accepted-set reviewed-only overfit gate failed")
+              PY
+              python scripts/train_transformer_candidate.py \
+                --raw data/processed/high_elo2300/tziakcha_chaga0208_elo2300_train.jsonl \
+                --raw data/processed/high_elo2300/tziakcha_human256_elo2300_train.jsonl \
+                --eval-raw data/processed/high_elo2300/tziakcha_chaga0208_elo2300_eval.jsonl \
+                --review-audit-jsonl runs/chaga_review_alignment_audit_all.jsonl \
+                --max-candidates 235 \
+                --hard-loss-weight 0.0 \
+                --teacher-loss-weight 0.0 \
+                --reviewed-batch-fraction 0.7 \
+                --reviewed-hard-loss-weight 0.0 \
+                --reviewed-teacher-loss-weight 0.0 \
+                --reviewed-accept-set-loss-weight 1.0 \
+                --unreviewed-hard-loss-weight 0.1 \
+                --value-loss-weight 0.0 \
+                --teacher-temperature 0.2 \
+                --monitor-metric val_teacher_relaxed_accuracy \
+                --epochs 30 \
+                --batch-size 64 \
+                --lr 0.00003 \
+                --weight-decay 0.03 \
+                --d-model 1024 \
+                --nhead 16 \
+                --num-layers 16 \
+                --dim-feedforward 4096 \
+                --dropout 0.2 \
+                --out models/transformer_candidate_highelo2300_acceptset_l40_20260527a.pt \
+                --metrics-out runs/transformer_candidate_highelo2300_acceptset_l40_20260527a_metrics.json
+              python scripts/evaluate_transformer_chaga_review.py \
+                --checkpoint models/transformer_candidate_highelo2300_acceptset_l40_20260527a.pt \
+                --raw data/processed/high_elo2300/tziakcha_chaga0208_elo2300_eval.jsonl \
+                --review-audit-jsonl runs/chaga_review_alignment_audit_all.jsonl \
+                --max-candidates 235 \
+                --batch-size 128 \
+                --metrics-out runs/transformer_candidate_highelo2300_acceptset_l40_20260527a_original_eval.json
+              python - <<'PY'
+              import json
+              from pathlib import Path
+              metrics = json.loads(Path("runs/transformer_candidate_highelo2300_acceptset_l40_20260527a_original_eval.json").read_text())
+              train = json.loads(Path("runs/transformer_candidate_highelo2300_acceptset_l40_20260527a_metrics.json").read_text())
+              summary = {
+                  "checkpoint": "models/transformer_candidate_highelo2300_acceptset_l40_20260527a.pt",
+                  "train_metrics": "runs/transformer_candidate_highelo2300_acceptset_l40_20260527a_metrics.json",
+                  "original_eval": "runs/transformer_candidate_highelo2300_acceptset_l40_20260527a_original_eval.json",
+                  "train_sampling": train.get("train_sampling"),
+                  "best_epoch": train.get("best_epoch"),
+                  "evaluated_candidate_width": metrics.get("evaluated_candidate_width"),
+                  "candidate_truncation_count": metrics.get("candidate_truncation_count"),
+                  "reviewed_examples": metrics.get("reviewed_examples"),
+                  "reviewed_without_teacher_distribution": metrics.get("reviewed_without_teacher_distribution"),
+                  "original_top1_accuracy": metrics.get("original_top1_accuracy"),
+                  "original_top3_inclusion": metrics.get("original_top3_inclusion"),
+                  "original_relaxed_accuracy": metrics.get("original_relaxed_accuracy"),
+                  "original_play_relaxed_accuracy": metrics.get("original_play_relaxed_accuracy"),
+                  "passed_65_relaxed": (metrics.get("original_relaxed_accuracy") or 0.0) >= 0.65,
+                  "passed_85_relaxed": (metrics.get("original_relaxed_accuracy") or 0.0) >= 0.85,
+              }
+              Path("runs/transformer_candidate_highelo2300_acceptset_l40_20260527a_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2))
+              print(json.dumps(summary, ensure_ascii=False, indent=2))
+              PY
+          resources:
+            requests:
+              cpu: "8"
+              memory: 64Gi
+              ephemeral-storage: "0"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "8"
+              memory: 64Gi
+              ephemeral-storage: 50Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

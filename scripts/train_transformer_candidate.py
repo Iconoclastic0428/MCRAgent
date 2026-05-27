@@ -479,6 +479,8 @@ def collate_transformer_examples(
     teacher_target_dist = torch.zeros((len(examples), max_candidates), dtype=torch.float32)
     has_teacher_target = torch.zeros((len(examples),), dtype=torch.bool)
     teacher_accept_top3 = torch.zeros((len(examples),), dtype=torch.bool)
+    teacher_accept_mask = torch.zeros((len(examples), max_candidates), dtype=torch.bool)
+    has_teacher_accept_set = torch.zeros((len(examples),), dtype=torch.bool)
 
     for row, example in enumerate(examples):
         gated_mask = hu_gated_candidate_mask(example.action_mask, allow_hu=example.allow_hu)
@@ -502,6 +504,22 @@ def collate_transformer_examples(
                 teacher_target_dist[row, : len(candidates)] = torch.from_numpy(teacher_values / teacher_total)
                 has_teacher_target[row] = True
                 teacher_accept_top3[row] = bool(example.teacher_accept_top3)
+        accepted_teacher_candidates = (
+            example.teacher_candidate_norms[:3]
+            if example.teacher_accept_top3
+            else example.teacher_candidate_norms[:1]
+        )
+        accepted_norms = {
+            normalize_teacher_action(action)
+            for action in accepted_teacher_candidates
+            if normalize_teacher_action(action)
+        }
+        if accepted_norms:
+            for slot, action in enumerate(candidates):
+                if normalize_teacher_action(action_response(int(action))) in accepted_norms:
+                    teacher_accept_mask[row, slot] = True
+            if bool(teacher_accept_mask[row, : len(candidates)].any().item()):
+                has_teacher_accept_set[row] = True
         target_index[row] = candidates.index(int(example.act))
 
     scalar_features = torch.stack([players, candidate_count, allow_hu], dim=1)
@@ -515,6 +533,8 @@ def collate_transformer_examples(
         "teacher_target_dist": teacher_target_dist,
         "has_teacher_target": has_teacher_target,
         "teacher_accept_top3": teacher_accept_top3,
+        "teacher_accept_mask": teacher_accept_mask,
+        "has_teacher_accept_set": has_teacher_accept_set,
         "value_target": values,
         "scalar_features": scalar_features,
     }
@@ -766,6 +786,9 @@ def validate_reviewed_training_args(args: argparse.Namespace) -> None:
         raise ValueError(f"reviewed-only CHAGA training requires --max-candidates {FeatureAgent.ACT_SIZE}")
     if args.reviewed_batch_fraction is not None and not 0.0 <= args.reviewed_batch_fraction < 1.0:
         raise ValueError("--reviewed-batch-fraction must be in [0, 1)")
+    reviewed_accept_set_loss_weight = getattr(args, "reviewed_accept_set_loss_weight", None)
+    if reviewed_accept_set_loss_weight is not None and reviewed_accept_set_loss_weight < 0.0:
+        raise ValueError("--reviewed-accept-set-loss-weight must be non-negative")
 
 
 class ReviewTargetLookup:
@@ -943,6 +966,19 @@ def _teacher_topk_indices(row_dist: torch.Tensor, candidate_mask: torch.Tensor, 
     return torch.topk(scores, k=k).indices
 
 
+def teacher_accepted_set_loss(logits: torch.Tensor, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+    has_set = batch.get("has_teacher_accept_set")
+    if has_set is None:
+        return logits.new_tensor(0.0)
+    has_set = has_set.bool()
+    if not bool(has_set.any().item()):
+        return logits.new_tensor(0.0)
+    log_probs = F.log_softmax(logits[has_set], dim=1)
+    accept_mask = batch["teacher_accept_mask"][has_set].bool().to(log_probs.device)
+    accepted_log_probs = log_probs.masked_fill(~accept_mask, float("-inf"))
+    return -torch.logsumexp(accepted_log_probs, dim=1).mean()
+
+
 def policy_loss_with_optional_teacher(
     logits: torch.Tensor,
     batch: dict[str, torch.Tensor],
@@ -951,6 +987,7 @@ def policy_loss_with_optional_teacher(
     teacher_loss_weight: float = 0.0,
     reviewed_hard_loss_weight: float | None = None,
     reviewed_teacher_loss_weight: float | None = None,
+    reviewed_accept_set_loss_weight: float | None = None,
     unreviewed_hard_loss_weight: float | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     hard_losses = F.cross_entropy(logits, batch["target_index"], reduction="none")
@@ -968,14 +1005,24 @@ def policy_loss_with_optional_teacher(
         safe_log_probs = torch.where(teacher_dist > 0.0, log_probs, torch.zeros_like(log_probs))
         reviewed_teacher_loss = -(teacher_dist * safe_log_probs).sum(dim=1).mean()
         teacher_loss = reviewed_teacher_loss
-    reviewed_hard_loss = hard_losses[has_teacher].mean() if bool(has_teacher.any().item()) else logits.new_tensor(0.0)
-    unreviewed_mask = ~has_teacher
+    reviewed_accept_set_loss = teacher_accepted_set_loss(logits, batch)
+    has_accept_set = batch.get("has_teacher_accept_set")
+    if has_accept_set is None:
+        has_accept_set = torch.zeros_like(has_teacher, dtype=torch.bool)
+    else:
+        has_accept_set = has_accept_set.bool()
+    reviewed_mask = has_teacher | has_accept_set
+    reviewed_hard_loss = (
+        hard_losses[reviewed_mask].mean() if bool(reviewed_mask.any().item()) else logits.new_tensor(0.0)
+    )
+    unreviewed_mask = ~reviewed_mask
     unreviewed_hard_loss = (
         hard_losses[unreviewed_mask].mean() if bool(unreviewed_mask.any().item()) else logits.new_tensor(0.0)
     )
     if (
         reviewed_hard_loss_weight is not None
         or reviewed_teacher_loss_weight is not None
+        or reviewed_accept_set_loss_weight is not None
         or unreviewed_hard_loss_weight is not None
     ):
         loss = (
@@ -983,6 +1030,8 @@ def policy_loss_with_optional_teacher(
             * reviewed_hard_loss
             + float(reviewed_teacher_loss_weight if reviewed_teacher_loss_weight is not None else teacher_loss_weight)
             * reviewed_teacher_loss
+            + float(reviewed_accept_set_loss_weight if reviewed_accept_set_loss_weight is not None else 0.0)
+            * reviewed_accept_set_loss
             + float(unreviewed_hard_loss_weight if unreviewed_hard_loss_weight is not None else hard_loss_weight)
             * unreviewed_hard_loss
         )
@@ -993,6 +1042,7 @@ def policy_loss_with_optional_teacher(
         "teacher_policy_loss": teacher_loss.detach(),
         "reviewed_hard_policy_loss": reviewed_hard_loss.detach(),
         "reviewed_teacher_policy_loss": reviewed_teacher_loss.detach(),
+        "reviewed_accept_set_policy_loss": reviewed_accept_set_loss.detach(),
         "unreviewed_hard_policy_loss": unreviewed_hard_loss.detach(),
     }
 
@@ -1133,6 +1183,7 @@ def train(args: argparse.Namespace) -> dict:
         "reviewed_batch_fraction": args.reviewed_batch_fraction,
         "reviewed_hard_loss_weight": args.reviewed_hard_loss_weight,
         "reviewed_teacher_loss_weight": args.reviewed_teacher_loss_weight,
+        "reviewed_accept_set_loss_weight": args.reviewed_accept_set_loss_weight,
         "unreviewed_hard_loss_weight": args.unreviewed_hard_loss_weight,
         "train_sampling": {
             "weighted": train_sampler is not None,
@@ -1154,6 +1205,7 @@ def train(args: argparse.Namespace) -> dict:
         model.train()
         total = correct = 0
         loss_total = policy_loss_total = value_loss_total = 0.0
+        policy_part_totals: Counter[str] = Counter()
         for batch in train_loader:
             batch = _to_device(batch, device)
             logits, values = model(batch)
@@ -1164,6 +1216,7 @@ def train(args: argparse.Namespace) -> dict:
                 teacher_loss_weight=args.teacher_loss_weight,
                 reviewed_hard_loss_weight=args.reviewed_hard_loss_weight,
                 reviewed_teacher_loss_weight=args.reviewed_teacher_loss_weight,
+                reviewed_accept_set_loss_weight=args.reviewed_accept_set_loss_weight,
                 unreviewed_hard_loss_weight=args.unreviewed_hard_loss_weight,
             )
             value_loss = F.mse_loss(values, batch["value_target"])
@@ -1181,6 +1234,8 @@ def train(args: argparse.Namespace) -> dict:
             loss_total += float(loss.item()) * batch_size
             policy_loss_total += float(policy_loss.item()) * batch_size
             value_loss_total += float(value_loss.item()) * batch_size
+            for name, value in policy_parts.items():
+                policy_part_totals[name] += float(value.item()) * batch_size
         val_metrics = evaluate_model(model, val_loader, device)
         epoch_metrics = {
             "epoch": epoch + 1,
@@ -1189,6 +1244,7 @@ def train(args: argparse.Namespace) -> dict:
             "train_value_loss": value_loss_total / total if total else None,
             "train_accuracy": correct / total if total else None,
             "train_samples": total,
+            **({f"train_{name}": value / total for name, value in policy_part_totals.items()} if total else {}),
             **{f"val_{key}": value for key, value in val_metrics.items()},
         }
         metrics["history"].append(epoch_metrics)
@@ -1255,6 +1311,7 @@ def main() -> int:
     parser.add_argument("--reviewed-batch-fraction", type=float, default=None)
     parser.add_argument("--reviewed-hard-loss-weight", type=float, default=None)
     parser.add_argument("--reviewed-teacher-loss-weight", type=float, default=None)
+    parser.add_argument("--reviewed-accept-set-loss-weight", type=float, default=None)
     parser.add_argument("--unreviewed-hard-loss-weight", type=float, default=None)
     parser.add_argument("--teacher-temperature", type=float, default=1.0)
     parser.add_argument("--review-audit-jsonl", default=None)

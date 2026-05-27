@@ -14,7 +14,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from train_transformer_candidate import (  # noqa: E402
     ReviewTarget,
     ReviewTargetLookup,
+    TransformerExample,
     TransformerCandidateModel,
+    action_response,
     build_transformer_examples_from_record,
     chaga_candidates_to_action_distribution,
     collate_transformer_examples,
@@ -26,6 +28,7 @@ from train_transformer_candidate import (  # noqa: E402
     policy_loss_with_optional_teacher,
     reviewed_sampling_weights,
     rule_gated_hu_allowed,
+    teacher_accepted_set_loss,
     validate_reviewed_training_args,
 )
 
@@ -62,6 +65,51 @@ def base_record(extra_logs):
         "logs": logs,
         "scores": {"0": 16, "1": -8, "2": -4, "3": -4},
     }
+
+
+def action_id_for_response(response: str) -> int:
+    normalized = response.upper()
+    for action in range(235):
+        if action_response(action).upper() == normalized:
+            return action
+    raise AssertionError(f"response not found: {response}")
+
+
+def minimal_transformer_example(
+    candidate_responses: list[str],
+    *,
+    target_response: str,
+    teacher_candidate_norms: tuple[str, ...],
+    teacher_accept_top3: bool,
+) -> TransformerExample:
+    candidate_actions = [action_id_for_response(response) for response in candidate_responses]
+    action_mask = np.zeros(235, dtype=np.int8)
+    action_mask[candidate_actions] = 1
+    target_action = action_id_for_response(target_response)
+    if target_action not in candidate_actions:
+        action_mask[target_action] = 1
+    return TransformerExample(
+        obs=np.zeros((71, 4, 9), dtype=np.float32),
+        action_mask=action_mask,
+        act=target_action,
+        player=0,
+        turn=1,
+        response=target_response,
+        history_tokens=np.zeros((1,), dtype=np.int64),
+        value_target=0.0,
+        allow_hu=False,
+        candidate_rule_features=np.zeros((235, 7), dtype=np.float32),
+        teacher_accept_top3=teacher_accept_top3,
+        teacher_candidate_norms=teacher_candidate_norms,
+    )
+
+
+def accepted_actions_from_batch(batch: dict[str, torch.Tensor], row: int = 0) -> list[str]:
+    accepted: list[str] = []
+    for action, ok in zip(batch["candidate_actions"][row].tolist(), batch["teacher_accept_mask"][row].tolist()):
+        if ok:
+            accepted.append(action_response(int(action)).upper())
+    return accepted
 
 
 def test_build_transformer_examples_keeps_legal_candidates_and_train_player_filter():
@@ -232,6 +280,84 @@ def test_collate_carries_teacher_distribution_over_candidate_slots():
     assert torch.isclose(batch["teacher_target_dist"][0].sum(), torch.tensor(1.0))
     target_slot = int(batch["target_index"][0])
     assert batch["teacher_target_dist"][0, target_slot] > 0.0
+
+
+def test_collate_teacher_accept_mask_top1_only_for_non_relaxed_rows():
+    example = minimal_transformer_example(
+        ["Play W1", "Play W2", "Play W3"],
+        target_response="Play W1",
+        teacher_candidate_norms=("PLAY W1", "PLAY W2", "PLAY W3"),
+        teacher_accept_top3=False,
+    )
+
+    batch = collate_transformer_examples([example], max_candidates=235)
+
+    assert accepted_actions_from_batch(batch) == ["PLAY W1"]
+    assert batch["has_teacher_accept_set"].tolist() == [True]
+
+
+def test_collate_teacher_accept_mask_top3_for_first_six_play_rows():
+    example = minimal_transformer_example(
+        ["Play W1", "Play W2", "Play W3", "Play W4"],
+        target_response="Play W1",
+        teacher_candidate_norms=("PLAY W1", "PLAY W2", "PLAY W3", "PLAY W4"),
+        teacher_accept_top3=True,
+    )
+
+    batch = collate_transformer_examples([example], max_candidates=235)
+
+    assert set(accepted_actions_from_batch(batch)) == {"PLAY W1", "PLAY W2", "PLAY W3"}
+    assert batch["has_teacher_accept_set"].tolist() == [True]
+
+
+def test_teacher_accepted_set_loss_accepts_any_relaxed_top3_slot():
+    logits = torch.tensor([[0.0, 0.0, 10.0, -10.0]], dtype=torch.float32)
+    batch = {
+        "has_teacher_accept_set": torch.tensor([True]),
+        "teacher_accept_mask": torch.tensor([[True, True, True, False]]),
+    }
+
+    loss = teacher_accepted_set_loss(logits, batch)
+
+    assert loss.item() < 0.01
+
+
+def test_teacher_accepted_set_loss_rejects_second_choice_when_not_relaxed():
+    logits = torch.tensor([[0.0, 10.0, -10.0]], dtype=torch.float32)
+    batch = {
+        "has_teacher_accept_set": torch.tensor([True]),
+        "teacher_accept_mask": torch.tensor([[True, False, False]]),
+    }
+
+    loss = teacher_accepted_set_loss(logits, batch)
+
+    assert loss.item() > 9.0
+
+
+def test_row_aware_policy_loss_treats_accept_set_rows_as_reviewed_without_distribution():
+    logits = torch.tensor([[0.0, 5.0, -5.0]], dtype=torch.float32)
+    batch = {
+        "target_index": torch.tensor([2], dtype=torch.long),
+        "has_teacher_target": torch.tensor([False]),
+        "teacher_target_dist": torch.zeros((1, 3), dtype=torch.float32),
+        "has_teacher_accept_set": torch.tensor([True]),
+        "teacher_accept_mask": torch.tensor([[False, True, False]]),
+    }
+
+    loss, parts = policy_loss_with_optional_teacher(
+        logits,
+        batch,
+        hard_loss_weight=1.0,
+        teacher_loss_weight=0.0,
+        reviewed_hard_loss_weight=0.0,
+        reviewed_teacher_loss_weight=0.0,
+        reviewed_accept_set_loss_weight=1.0,
+        unreviewed_hard_loss_weight=0.2,
+    )
+
+    assert loss.item() < 0.01
+    assert parts["reviewed_accept_set_policy_loss"].item() < 0.01
+    assert parts["unreviewed_hard_policy_loss"].item() == 0.0
 
 
 def test_policy_loss_uses_soft_teacher_rows_when_available():

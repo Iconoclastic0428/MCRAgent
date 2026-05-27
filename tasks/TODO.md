@@ -913,6 +913,7 @@ Review:
   - Deleted only completed `app=mcr-transformer` jobs: `mcr-transformer-l40-fit-20260527`, `mcr-transformer-l40-highelo-20260527a`, `mcr-transformer-l40-size-20260527a`, `mcr-transformer-l40-sizepush-20260527a`, `mcr-transformer-l40-sizepush2-20260527a`, and `mcr-transformer-l40-sweep-20260527a`.
   - Verified only `mcr-transformer-l40-softdistill-20260527a` remains active on `rci-tide-gpu-06.sdsu.edu` (`NVIDIA L40`).
   - 2026-05-27 update: after the row-aware run, deleted completed `mcr-transformer-l40-rowaware-20260527a`; current namespace check shows no completed MCR Transformer pods, only the unrelated running `idl-download` helper.
+  - 2026-05-27 accepted-set update: after the accepted-set run, deleted completed `mcr-transformer-l40-acceptset-20260527a`; `kubectl get jobs,pods -n nourish-sdsc -l app=mcr-transformer` returned no resources.
 - [ ] Push the current repo snapshot to GitHub before requesting the GPT Pro review.
 - [ ] Ask GPT Pro for a repo-grounded precision-improvement review and use the advice to choose the next training change.
   - 2026-05-27 GPT Pro review saved to `docs/reviews/gpt-pro-chaga-precision-review-2026-05-27.md`.
@@ -946,3 +947,8 @@ Review:
   - Kubernetes-only L40 row-aware mixed job `mcr-transformer-l40-rowaware-20260527a` completed on `rci-tide-gpu-02.sdsu.edu` (`NVIDIA-L40`), using 1,517 reviewed and 3,278 unreviewed train examples, 70% reviewed sampling mass, and a 212.4M-parameter Transformer.
   - Best checkpoint was epoch 9. Corrected original-candidate held-out result: 560 reviewed states, top-1 `0.517857`, top-3 `0.669643`, relaxed `0.605357`, PLAY relaxed `0.592593`, full 235 candidate width, zero truncation. This does not pass the 85% gate.
   - New row-aware turn graph artifacts: `runs/transformer_candidate_highelo2300_rowaware_l40_20260527a_mismatch_by_turn.svg`, `.png`, `.csv`, and `_summary.json`. It shows 221 relaxed mismatches across 560 reviewed states, relaxed mismatch rate `0.394643`; highest mismatch-count turns include 36, 4, 47, 65, 52, 49, and 38.
+- [x] Add accepted-set loss aligned to the corrected CHAGA review metric.
+  - Implemented `--reviewed-accept-set-loss-weight`, accepted-set masks in batches, and component loss metrics. First-six PLAY rows accept CHAGA top-3; all other reviewed rows accept top-1 only.
+  - Kubernetes-only L40 job `mcr-transformer-l40-acceptset-20260527a` passed the reviewed-only accepted-set overfit gate with original top-1 `0.837747`, top-3 `1.0`, relaxed `1.0`, and PLAY relaxed `1.0`.
+  - High-ELO mixed accepted-set checkpoint peaked at epoch 5. Corrected original-candidate held-out result: 560 reviewed states, top-1 `0.505357`, top-3 `0.675000`, relaxed `0.616071`, PLAY relaxed `0.588694`, full 235 candidate width, zero truncation. This improves overall relaxed match slightly over row-aware but still fails the 65% and 85% gates.
+  - Accepted-set turn graph artifacts: `runs/transformer_candidate_highelo2300_acceptset_l40_20260527a_mismatch_by_turn.svg`, `.png`, `.csv`, and `_summary.json`. It shows 215 relaxed mismatches across 560 reviewed states, relaxed mismatch rate `0.383929`; highest mismatch-count turns include 4, 36, 49, 58, 65, 47, and 20.
