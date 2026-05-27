@@ -40,6 +40,7 @@ from lawlorentz_policy import LawlorentzEffectiveScorer  # noqa: E402
 
 DEFAULT_HISTORY_LEN = 80
 DEFAULT_MAX_CANDIDATES = 96
+DEFAULT_HISTORY_VOCAB_SIZE = 2048
 CANDIDATE_RULE_FEATURES = 7
 ACTION_RESPONSE_AGENT = FeatureAgent(0)
 ACTION_TYPES = {
@@ -381,8 +382,8 @@ def encode_history_event(player: int, request: str, response: str) -> int:
         head = request_tokens[2].upper()
     action_type = BOTZONE_ACTION_TYPES.get(head, 0)
     tile = _first_tile(response_tokens[1:]) or _first_tile(request_tokens[1:]) or ""
-    tile_mod = TILE_IDS.get(tile, 0) % 12
-    return 1 + int(player) * 96 + action_type * 12 + tile_mod
+    tile_id = TILE_IDS.get(tile, 34)
+    return 1 + int(player) * (len(BOTZONE_ACTION_TYPES) * 35) + action_type * 35 + tile_id
 
 
 def _first_tile(tokens: Iterable[str]) -> str | None:
@@ -545,7 +546,7 @@ class TransformerCandidateModel(nn.Module):
         self,
         *,
         act_size: int = FeatureAgent.ACT_SIZE,
-        history_vocab_size: int = 1024,
+        history_vocab_size: int = DEFAULT_HISTORY_VOCAB_SIZE,
         d_model: int = 256,
         nhead: int = 8,
         num_layers: int = 4,
@@ -784,6 +785,8 @@ def reviewed_sampling_weights(
 def validate_reviewed_training_args(args: argparse.Namespace) -> None:
     if (args.train_reviewed_only or args.val_reviewed_only) and args.max_candidates < FeatureAgent.ACT_SIZE:
         raise ValueError(f"reviewed-only CHAGA training requires --max-candidates {FeatureAgent.ACT_SIZE}")
+    if getattr(args, "review_audit_jsonl", None) and args.max_candidates < FeatureAgent.ACT_SIZE:
+        raise ValueError(f"CHAGA-reviewed training/evaluation requires --max-candidates {FeatureAgent.ACT_SIZE}")
     if args.reviewed_batch_fraction is not None and not 0.0 <= args.reviewed_batch_fraction < 1.0:
         raise ValueError("--reviewed-batch-fraction must be in [0, 1)")
     reviewed_accept_set_loss_weight = getattr(args, "reviewed_accept_set_loss_weight", None)
@@ -1325,7 +1328,7 @@ def main() -> int:
     parser.add_argument("--max-train-examples", type=int, default=None)
     parser.add_argument("--max-val-examples", type=int, default=None)
     parser.add_argument("--history-len", type=int, default=DEFAULT_HISTORY_LEN)
-    parser.add_argument("--history-vocab-size", type=int, default=1024)
+    parser.add_argument("--history-vocab-size", type=int, default=DEFAULT_HISTORY_VOCAB_SIZE)
     parser.add_argument("--max-candidates", type=int, default=DEFAULT_MAX_CANDIDATES)
     parser.add_argument("--d-model", type=int, default=256)
     parser.add_argument("--nhead", type=int, default=8)

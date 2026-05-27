@@ -230,6 +230,7 @@ def audit_records(
     sample_size: int,
     seed: int,
     player_pattern: re.Pattern[str] = DEFAULT_PLAYER_RE,
+    use_train_players: bool = False,
 ) -> tuple[list[dict], dict]:
     all_entries: list[dict] = []
     summary: Counter[str] = Counter()
@@ -242,7 +243,11 @@ def audit_records(
         summary["records_seen"] += 1
         try:
             step = record_step(raw_record)
-            selected = selected_players_from_raw_record(raw_record, player_pattern)
+            selected = selected_players_for_audit(
+                raw_record,
+                player_pattern=player_pattern,
+                use_train_players=use_train_players,
+            )
         except Exception as exc:
             summary["record_extract_errors"] += 1
             alignment_failures.append({"record": raw_record.get("id"), "error": str(exc)})
@@ -341,10 +346,40 @@ def audit_records(
                 update_summary(summary, entry)
 
     entries = list(all_entries)
-    if len(entries) > sample_size:
-        entries = random.Random(seed).sample(entries, sample_size)
+    entries = maybe_sample_entries(entries, sample_size=sample_size, seed=seed)
     result = build_summary(summary, all_entries, entries, alignment_failures, sample_size, seed)
     return entries, result
+
+
+def selected_players_for_audit(
+    raw_record: dict,
+    *,
+    player_pattern: re.Pattern[str] = DEFAULT_PLAYER_RE,
+    use_train_players: bool = False,
+) -> dict[str, str]:
+    if use_train_players and raw_record.get("train_players"):
+        step = record_step(raw_record)
+        players = step.get("p") or []
+        selected: dict[str, str] = {}
+        for player in raw_record.get("train_players") or []:
+            player_text = str(player)
+            try:
+                player_index = int(player_text)
+            except (TypeError, ValueError):
+                continue
+            if player_index < 0 or player_index >= len(players):
+                continue
+            player_data = players[player_index]
+            name = str(player_data.get("n", "") if isinstance(player_data, dict) else player_data).strip()
+            selected[player_text] = name
+        return selected
+    return selected_players_from_raw_record(raw_record, player_pattern)
+
+
+def maybe_sample_entries(entries: list[dict], *, sample_size: int, seed: int) -> list[dict]:
+    if sample_size and sample_size > 0 and len(entries) > sample_size:
+        return random.Random(seed).sample(entries, sample_size)
+    return list(entries)
 
 
 def build_session_api_seat_maps(raw_records: list[dict]) -> dict[str, dict[str, int]]:
@@ -700,16 +735,22 @@ def main() -> int:
     parser.add_argument("--raw", required=True)
     parser.add_argument("--cache-dir", default="data/raw/chaga_reviews")
     parser.add_argument("--sample-size", type=int, default=1000)
+    parser.add_argument("--no-sample", action="store_true")
+    parser.add_argument("--player-regex", default=DEFAULT_PLAYER_RE.pattern)
+    parser.add_argument("--use-train-players", action="store_true")
     parser.add_argument("--seed", type=int, default=20260527)
     parser.add_argument("--out-jsonl", required=True)
     parser.add_argument("--summary-out", required=True)
     args = parser.parse_args()
+    sample_size = 0 if args.no_sample else args.sample_size
 
     entries, summary = audit_records(
         Path(args.raw),
         cache_dir=Path(args.cache_dir),
-        sample_size=args.sample_size,
+        sample_size=sample_size,
         seed=args.seed,
+        player_pattern=re.compile(args.player_regex),
+        use_train_players=args.use_train_players,
     )
     out_jsonl = Path(args.out_jsonl)
     out_jsonl.parent.mkdir(parents=True, exist_ok=True)

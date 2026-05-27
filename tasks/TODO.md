@@ -952,3 +952,25 @@ Review:
   - Kubernetes-only L40 job `mcr-transformer-l40-acceptset-20260527a` passed the reviewed-only accepted-set overfit gate with original top-1 `0.837747`, top-3 `1.0`, relaxed `1.0`, and PLAY relaxed `1.0`.
   - High-ELO mixed accepted-set checkpoint peaked at epoch 5. Corrected original-candidate held-out result: 560 reviewed states, top-1 `0.505357`, top-3 `0.675000`, relaxed `0.616071`, PLAY relaxed `0.588694`, full 235 candidate width, zero truncation. This improves overall relaxed match slightly over row-aware but still fails the 65% and 85% gates.
   - Accepted-set turn graph artifacts: `runs/transformer_candidate_highelo2300_acceptset_l40_20260527a_mismatch_by_turn.svg`, `.png`, `.csv`, and `_summary.json`. It shows 215 relaxed mismatches across 560 reviewed states, relaxed mismatch rate `0.383929`; highest mismatch-count turns include 4, 36, 49, 58, 65, 47, and 20.
+
+### GPT Pro pass-2 corpus and encoding hardening
+
+- [x] Save GPT Pro's accepted-set follow-up review.
+  - Artifact: `docs/reviews/gpt-pro-chaga-precision-acceptset-2026-05-27.md`.
+  - Key advice: accepted-set loss is correct, but the current 2,080 reviewed-state corpus is far too small for an 85% held-out target. Expand the reviewed corpus first, force 235 candidates for any reviewed-target run, fix history tile aliasing, add player/session audit controls, and use session-disjoint train/val/test splits.
+- [x] Enforce full candidate width for all CHAGA-reviewed training/evaluation modes.
+  - `scripts/train_transformer_candidate.py` now rejects `--review-audit-jsonl` runs with `--max-candidates < 235`, not only reviewed-only runs.
+- [x] Fix action-history tile identity aliasing.
+  - `encode_history_event()` now preserves all 34 tile types plus a no-tile sentinel instead of collapsing tile identity with `% 12`.
+  - The default history vocabulary is 2048 so the full player/action/tile token range is representable.
+- [x] Expand CHAGA alignment audit controls.
+  - Added `--player-regex`, `--use-train-players`, and `--no-sample` support to `scripts/audit_chaga_review_alignment.py`.
+  - `--use-train-players` lets the audit follow prepared `train_players` seats directly instead of relying only on player-name regex matching.
+- [x] Add a session-disjoint reviewed-corpus splitter.
+  - New script: `scripts/split_chaga_review_corpus.py`.
+  - Writes paired raw/audit JSONL files plus `split_summary.json`, drops raw sessions without review rows explicitly, and verifies that train/val/test sessions are disjoint.
+  - Smoke split on the currently accessible corpus has only 6 reviewed sessions and 2,080 audit rows: train 1,140 reviewed states, val 340, test 600. This is useful for plumbing, but it is far below GPT Pro's recommended minimum of 25k train / 5k val / 5k test reviewed states.
+- [ ] Expand the reviewed CHAGA/tziakcha corpus before the next serious L40 training run.
+  - Preferred route: fetch more tziakcha sessions/records through the available authenticated pipeline without printing or persisting credentials.
+  - Then rebuild the audit with `--no-sample` and either `--use-train-players` or a verified `--player-regex`, split by session, and only launch L40 training once the reviewed-state counts are large enough to make validation meaningful.
+- [ ] Push the pass-2 hardening commit and ask GPT Pro for the next review before launching another large training job.

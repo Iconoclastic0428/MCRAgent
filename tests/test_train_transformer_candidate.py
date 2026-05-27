@@ -14,6 +14,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from train_transformer_candidate import (  # noqa: E402
     ReviewTarget,
     ReviewTargetLookup,
+    BOTZONE_ACTION_TYPES,
+    TILE_IDS,
     TransformerExample,
     TransformerCandidateModel,
     action_response,
@@ -21,6 +23,7 @@ from train_transformer_candidate import (  # noqa: E402
     chaga_candidates_to_action_distribution,
     collate_transformer_examples,
     count_model_parameters,
+    encode_history_event,
     filter_reviewed_examples,
     hu_gated_candidate_mask,
     is_better_checkpoint_metric,
@@ -549,6 +552,9 @@ def test_reviewed_sampling_weights_target_requested_fraction():
 
 def test_reviewed_only_training_requires_full_candidate_width():
     args = SimpleNamespace(
+        review_audit_jsonl=None,
+        reviewed_batch_fraction=None,
+        reviewed_accept_set_loss_weight=None,
         train_reviewed_only=True,
         val_reviewed_only=False,
         max_candidates=96,
@@ -556,6 +562,38 @@ def test_reviewed_only_training_requires_full_candidate_width():
 
     with pytest.raises(ValueError, match="235"):
         validate_reviewed_training_args(args)
+
+
+def test_chaga_review_training_requires_full_candidate_width_for_mixed_review_loss():
+    args = SimpleNamespace(
+        review_audit_jsonl="runs/chaga_review_alignment_audit_all.jsonl",
+        reviewed_batch_fraction=0.7,
+        reviewed_accept_set_loss_weight=1.0,
+        train_reviewed_only=False,
+        val_reviewed_only=False,
+        max_candidates=96,
+    )
+
+    with pytest.raises(ValueError, match="235"):
+        validate_reviewed_training_args(args)
+
+
+def test_history_event_tokens_preserve_full_tile_identity():
+    play_tokens = {
+        tile: encode_history_event(0, f"2 {tile}", f"Play {tile}")
+        for tile in TILE_IDS
+    }
+
+    assert len(set(play_tokens.values())) == len(TILE_IDS)
+    assert play_tokens["W1"] != play_tokens["T4"]
+    assert play_tokens["W1"] != play_tokens["F1"]
+
+
+def test_default_history_vocab_can_represent_full_history_token_range():
+    model = TransformerCandidateModel()
+
+    required_size = 1 + 4 * len(BOTZONE_ACTION_TYPES) * 35
+    assert model.history_vocab_size >= required_size
 
 
 def test_teacher_only_policy_loss_ignores_hard_target():

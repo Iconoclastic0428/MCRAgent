@@ -8,8 +8,10 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from audit_chaga_review_alignment import (  # noqa: E402
     actual_action_from_review_row,
     build_session_api_seat_maps,
+    maybe_sample_entries,
     normalized_action,
     relaxed_candidate_match,
+    selected_players_for_audit,
 )
 
 
@@ -54,3 +56,29 @@ def test_build_session_api_seat_maps_uses_round_zero_order():
     ]
 
     assert build_session_api_seat_maps(records) == {"s1": {"A": 0, "B": 1}}
+
+
+def test_selected_players_for_audit_can_use_train_players():
+    record = {
+        "train_players": ["1", "3"],
+        "step": {
+            "p": [
+                {"n": "A"},
+                {"n": "HighElo1"},
+                {"n": "B"},
+                {"n": "HighElo3"},
+            ]
+        },
+    }
+
+    selected = selected_players_for_audit(record, use_train_players=True)
+
+    assert selected == {"1": "HighElo1", "3": "HighElo3"}
+
+
+def test_maybe_sample_entries_zero_keeps_all_entries():
+    entries = [{"id": index} for index in range(2000)]
+
+    sampled = maybe_sample_entries(entries, sample_size=0, seed=1)
+
+    assert sampled == entries
