@@ -979,5 +979,8 @@ Review:
 - [x] Add in-loop original-candidate validation metrics to the trainer.
   - `collate_transformer_examples()` now carries original CHAGA top-1/top-3 masks, original-reviewed row flags, and top-1-is-PLAY flags.
   - `evaluate_model()` now reports `original_top1_accuracy`, `original_top3_inclusion`, `original_relaxed_accuracy`, `original_play_relaxed_accuracy`, and sample counts so future runs can use `--monitor-metric val_original_relaxed_accuracy`.
-- [ ] Add a pre-L40 dry-run gate for expanded reviewed corpora.
+- [x] Add a pre-L40 dry-run gate for expanded reviewed corpora.
   - Required checks from GPT Pro: full 235 candidate width, no candidate truncation, no reviewed rows without teacher distributions/original targets, no malformed top-3 relaxation rows, and no accepted `HU` outside the legal/rule mask.
+  - Implemented `scripts/check_chaga_training_corpus.py` with tests in `tests/test_check_chaga_training_corpus.py`.
+  - Smoke gate on the current tiny split passed with low thresholds: train 1,139 reviewed, val 339, test 599; candidate truncation `0`, reviewed rows without distribution `0`, empty accept masks `0`, malformed top-3 relaxation `0`, and accepted `HU` outside legal mask `0`.
+  - The real pre-L40 gate should keep the default minimums: train reviewed >=25,000, val reviewed >=5,000, test reviewed >=5,000, and session minimums 50/10/10.
