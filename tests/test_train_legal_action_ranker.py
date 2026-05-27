@@ -71,6 +71,38 @@ def test_iter_legal_action_candidates_can_filter_by_positive_final_score():
     assert all(item["player_score"] == 24 for item in candidates)
 
 
+def test_iter_legal_action_candidates_honors_record_train_players():
+    record = {
+        "match_id": "train-players",
+        "train_players": ["1"],
+        "logs": [
+            {"output": {"content": {"0": "0 0 1", "1": "0 1 1"}}},
+            {"0": {"response": "PASS"}, "1": {"response": "PASS"}},
+            {
+                "output": {
+                    "content": {
+                        "0": "1 0 0 0 0 W1 W2 W3 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2",
+                        "1": "1 0 0 0 0 W4 W5 W6 B4 B5 B6 T4 T5 T6 F3 F4 J3 J1",
+                    }
+                }
+            },
+            {"0": {"response": "PASS"}, "1": {"response": "PASS"}},
+            {"output": {"content": {"0": "2 W1", "1": "2 B4"}}},
+            {"0": {"response": "PLAY W1"}, "1": {"response": "PLAY B4"}},
+        ],
+    }
+
+    candidates = list(iter_legal_action_candidates(record))
+
+    assert candidates
+    assert {item["player"] for item in candidates} == {1}
+    assert any(
+        item["actual_response"] == "PLAY B4"
+        for item in candidates
+        if item["label"] == 1
+    )
+
+
 def test_iter_legal_action_candidates_can_filter_to_winners():
     record = {
         "match_id": "m3",

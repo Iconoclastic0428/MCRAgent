@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
+from lawlorentz_policy import LawlorentzEffectivePolicy, LawlorentzModelPolicy
 from policy_bot import BotzonePolicy, ShantenHeuristicPredictor, SklearnPredictor
 
 
@@ -203,12 +204,77 @@ def collect_policy_diagnostics(policies: list[object]) -> list[dict]:
     return diagnostics
 
 
+def aggregate_policy_diagnostics(results: list[dict]) -> list[dict[str, int | float]]:
+    totals: list[dict[str, int | float]] = []
+    for result in results:
+        for player, diagnostics in enumerate(result.get("policy_diagnostics") or []):
+            while len(totals) <= player:
+                totals.append({})
+            for key, value in diagnostics.items():
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, (int, float)):
+                    totals[player][key] = totals[player].get(key, 0) + value
+    return totals
+
+
+def summarize_terminals(results: list[dict]) -> dict:
+    terminal_actions: dict[str, int] = {}
+    player0_hu_fans: list[int] = []
+    hu_count = 0
+    hu_turns: list[int | float] = []
+    player0_hu_count = 0
+    player0_hu_turns: list[int | float] = []
+    for result in results:
+        display = ((result.get("final_output") or {}).get("display") or {})
+        action = str(display.get("action") or result.get("terminal_reason") or "UNKNOWN")
+        terminal_actions[action] = terminal_actions.get(action, 0) + 1
+        turn = result.get("turns")
+        try:
+            player = int(display.get("player"))
+        except (TypeError, ValueError):
+            player = None
+        if action == "HU":
+            hu_count += 1
+            if isinstance(turn, (int, float)):
+                hu_turns.append(turn)
+        if action == "HU" and player == 0:
+            player0_hu_count += 1
+            if isinstance(turn, (int, float)):
+                player0_hu_turns.append(turn)
+            fan = display.get("fanCnt")
+            if fan is not None:
+                player0_hu_fans.append(int(fan))
+    total = len(results)
+    return {
+        "terminal_actions": terminal_actions,
+        "hu_count": hu_count,
+        "hu_rate": hu_count / total if total else None,
+        "average_hu_turn": sum(hu_turns) / len(hu_turns) if hu_turns else None,
+        "player0_hu_count": player0_hu_count,
+        "player0_hu_rate": player0_hu_count / total if total else None,
+        "player0_average_hu_turn": (
+            sum(player0_hu_turns) / len(player0_hu_turns) if player0_hu_turns else None
+        ),
+        "player0_hu_fans": player0_hu_fans,
+        "min_player0_hu_fan": min(player0_hu_fans) if player0_hu_fans else None,
+        "max_player0_hu_fan": max(player0_hu_fans) if player0_hu_fans else None,
+    }
+
+
 def make_policy(
     kind: str,
     model: str | None = None,
     aleo_exe: str | Path = DEFAULT_ALEO,
     sample_exe: str | Path = DEFAULT_SAMPLE,
-) -> BotzonePolicy | AleoProcessPolicy | BotzoneJsonProcessPolicy:
+    lawlorentz_levels: int = 1,
+) -> BotzonePolicy | AleoProcessPolicy | BotzoneJsonProcessPolicy | LawlorentzEffectivePolicy | LawlorentzModelPolicy:
+    if kind == "lawlorentz_effective":
+        return LawlorentzEffectivePolicy(levels=lawlorentz_levels)
+    if kind == "lawlorentz_model":
+        if model is None:
+            raise ValueError("--model is required for lawlorentz_model policy")
+        return LawlorentzModelPolicy(model)
     if kind == "fallback":
         return BotzonePolicy()
     if kind == "shanten":
@@ -251,12 +317,31 @@ def run_match_set(args: argparse.Namespace) -> dict:
     score_totals = [0.0, 0.0, 0.0, 0.0]
     wins = [0, 0, 0, 0]
     initdata_items = load_initdata(Path(args.raw), limit=args.games, offset=args.offset)
+    lawlorentz_levels = int(getattr(args, "lawlorentz_levels", 1))
     for index, initdata in enumerate(initdata_items):
         policies = [
-            make_policy(args.policy, args.model, args.aleo_exe, args.sample_exe),
-            make_policy(args.opponent, args.opponent_model, args.aleo_exe, args.sample_exe),
-            make_policy(args.opponent, args.opponent_model, args.aleo_exe, args.sample_exe),
-            make_policy(args.opponent, args.opponent_model, args.aleo_exe, args.sample_exe),
+            make_policy(args.policy, args.model, args.aleo_exe, args.sample_exe, lawlorentz_levels),
+            make_policy(
+                args.opponent,
+                args.opponent_model,
+                args.aleo_exe,
+                args.sample_exe,
+                lawlorentz_levels,
+            ),
+            make_policy(
+                args.opponent,
+                args.opponent_model,
+                args.aleo_exe,
+                args.sample_exe,
+                lawlorentz_levels,
+            ),
+            make_policy(
+                args.opponent,
+                args.opponent_model,
+                args.aleo_exe,
+                args.sample_exe,
+                lawlorentz_levels,
+            ),
         ]
         result = run_match(
             policies,
@@ -285,6 +370,8 @@ def run_match_set(args: argparse.Namespace) -> dict:
         "score_totals": score_totals,
         "average_scores": [score / len(games) if games else 0.0 for score in score_totals],
         "wins": wins,
+        "policy_diagnostics_totals": aggregate_policy_diagnostics(games),
+        **summarize_terminals(games),
         "results": games,
     }
 
@@ -293,13 +380,13 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--policy",
-        choices=["fallback", "shanten", "model", "json", "aleo", "sample"],
+        choices=["lawlorentz_effective", "lawlorentz_model", "fallback", "shanten", "model", "json", "aleo", "sample"],
         default="fallback",
     )
     parser.add_argument("--model", default=None)
     parser.add_argument(
         "--opponent",
-        choices=["fallback", "shanten", "model", "json", "aleo", "sample"],
+        choices=["lawlorentz_effective", "lawlorentz_model", "fallback", "shanten", "model", "json", "aleo", "sample"],
         default="fallback",
     )
     parser.add_argument("--opponent-model", default=None)
@@ -310,6 +397,7 @@ def main() -> int:
     parser.add_argument("--judge", default=str(DEFAULT_JUDGE))
     parser.add_argument("--aleo-exe", default=str(DEFAULT_ALEO))
     parser.add_argument("--sample-exe", default=str(DEFAULT_SAMPLE))
+    parser.add_argument("--lawlorentz-levels", type=int, default=1)
     parser.add_argument("--out", default="runs/official_judge_match.json")
     args = parser.parse_args()
 

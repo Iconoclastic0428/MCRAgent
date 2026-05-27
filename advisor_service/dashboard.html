@@ -89,6 +89,10 @@
         <div id="hand" class="hand"></div>
       </section>
       <section class="panel panel-wide">
+        <div class="label">Results</div>
+        <div id="results" class="hand"></div>
+      </section>
+      <section class="panel panel-wide">
         <div class="label">State</div>
         <code id="state"></code>
       </section>
@@ -96,12 +100,20 @@
   </main>
   <script>
     async function refresh() {
-      const [state, rec] = await Promise.all([
+      const [state, rec, results] = await Promise.all([
         fetch('/state').then((r) => r.json()),
-        fetch('/recommendation').then((r) => r.json())
+        fetch('/recommendation').then((r) => r.json()),
+        fetch('/results').then((r) => r.json())
       ]);
+      const stats = results.stats || {};
       document.getElementById('rec').textContent = rec.text || 'Waiting';
       document.getElementById('hand').textContent = (state.hand_display || []).join(' ');
+      document.getElementById('results').textContent = [
+        `Games ${stats.games || 0}`,
+        `Win ${(100 * (stats.win_rate || 0)).toFixed(1)}%`,
+        `Deal-in ${(100 * (stats.deal_in_rate || 0)).toFixed(1)}%`,
+        `Avg ${Number(stats.average_score_delta || 0).toFixed(1)}`
+      ].join(' | ');
       document.getElementById('state').textContent = JSON.stringify(state, null, 2);
     }
 

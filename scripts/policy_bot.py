@@ -13,6 +13,7 @@ from typing import Protocol
 from hand_features import candidate_feature_text, min_shanten, regular_shanten, remove_one_tile
 from feature_ranker import featurize_legal_responses
 from fan_feature_ranker import featurize_fan_legal_responses
+from effective_tiles import evaluate_discard_candidates
 from legal_actions import (
     apply_response,
     generate_legal_responses,
@@ -39,6 +40,7 @@ class SklearnPredictor:
         self.suppress_actions = {
             str(action).upper() for action in payload.get("suppress_actions", [])
         }
+        self.effective_tile_overlay = payload.get("effective_tile_overlay")
         if self.kind in {"composite_policy", "draw_ensemble_composite_policy"}:
             self.draw_pipeline = payload.get("draw_payload", {}).get("pipeline")
             self.draw_kind = payload.get("draw_payload", {}).get("kind", "discard_ranker")
@@ -149,6 +151,31 @@ class SklearnPredictor:
         scores = self._score_text_candidates(pipeline, texts)
         return self._choose_thresholded_response(candidates, scores, request)
 
+    def score_legal_response_candidates(
+        self,
+        input_text: str,
+        hand: Counter[str],
+        player_id: int | None,
+        request: str,
+        candidates: list[str],
+    ) -> list[float]:
+        if self.kind == "draw_ensemble_composite_policy" and request.startswith("2 "):
+            return self._score_feature_ensemble_responses(input_text, hand, request, candidates)
+        if self.kind == "composite_policy" and request.startswith("2 "):
+            if self.draw_kind == "feature_action_ranker":
+                return self._score_feature_payload_response(
+                    input_text, hand, request, self.payload["draw_payload"], candidates
+                )
+            return _one_hot_response_scores(
+                candidates, self._predict_discard_ranker_response(input_text, hand, self.draw_pipeline)
+            )
+        if self.kind == "feature_action_ranker":
+            return self._score_feature_payload_response(
+                input_text, hand, request, self.payload, candidates
+            )
+        predicted = self.predict_legal_response(input_text, hand, player_id, request, candidates)
+        return _one_hot_response_scores(candidates, predicted)
+
     def _score_text_candidates(self, pipeline, texts: list[str]) -> list[float]:
         if hasattr(pipeline, "predict_proba"):
             proba = pipeline.predict_proba(texts)
@@ -249,6 +276,16 @@ class SklearnPredictor:
         responses = candidates or generate_legal_responses(player_id, request, hand)
         if not responses:
             return "PASS"
+        scores = self._score_feature_ensemble_responses(input_text, hand, request, responses)
+        return responses[max(range(len(responses)), key=lambda index: scores[index])]
+
+    def _score_feature_ensemble_responses(
+        self,
+        input_text: str,
+        hand: Counter[str],
+        request: str,
+        responses: list[str],
+    ) -> list[float]:
         weights = [float(weight) for weight in self.draw_weights]
         if len(weights) != len(self.draw_payloads):
             weights = [1.0] * len(self.draw_payloads)
@@ -260,7 +297,11 @@ class SklearnPredictor:
             )
             for index, score in enumerate(payload_scores):
                 scores[index] += (weight / total_weight) * score
-        return responses[max(range(len(responses)), key=lambda index: scores[index])]
+        return scores
+
+
+def _one_hot_response_scores(candidates: list[str], predicted: str) -> list[float]:
+    return [1.0 if candidate == predicted else 0.0 for candidate in candidates]
 
 
 def hand_elements(hand: Counter[str] | dict[str, int]) -> list[str]:
@@ -313,8 +354,11 @@ class BotzonePolicy:
         self.wall_counts = [23, 23, 23, 23]
         self.next_draw_about_kong = False
         self.last_model_response: str | None = None
+        self.last_overlay_response: str | None = None
         self.last_fallback_used = False
         self.last_illegal_prediction = False
+        self.visible_counts: Counter[str] = Counter()
+        self.stats: Counter[str] = Counter()
 
     def _default_fan_checker(self):
         try:
@@ -325,6 +369,7 @@ class BotzonePolicy:
 
     def respond(self, request: str) -> str:
         self.last_model_response = None
+        self.last_overlay_response = None
         self.last_fallback_used = False
         self.last_illegal_prediction = False
 
@@ -356,6 +401,7 @@ class BotzonePolicy:
 
     def _load_initial_hand(self, tokens: list[str]) -> None:
         self.hand.clear()
+        self.visible_counts.clear()
         # Format: 1 hua0 hua1 hua2 hua3 Card1 ... Card13 ...
         if len(tokens) >= 5:
             self.flower_counts = [int(value) for value in tokens[1:5]]
@@ -380,13 +426,28 @@ class BotzonePolicy:
             self._record_wall_draw(actor)
             if 0 <= actor < 4:
                 self.flower_counts[actor] += 1
+        elif tokens[2] == "PLAY":
+            tile = request_event_tile(tokens)
+            if tile:
+                self.visible_counts[tile] += 1
+        elif tokens[2] == "BUGANG" and len(tokens) >= 4:
+            self.visible_counts[tokens[3]] += 1
+        elif tokens[2] == "GANG" and len(tokens) >= 4:
+            self.visible_counts[tokens[3]] = max(self.visible_counts[tokens[3]], 4)
+        elif tokens[2] == "PENG":
+            tile = request_event_tile(tokens)
+            if tile:
+                self.visible_counts[tile] += 2
 
     def _input_text(self, request: str) -> str:
         return "\n".join([*self.history, f"REQ {request}"])
 
     def _choose_draw_response(self, request: str, drawn_tile: str) -> str:
+        self.stats["draw_turns"] += 1
         candidates = self._legal_responses(request)
         if getattr(self.predictor, "prefer_hu", False) and "HU" in candidates:
+            self.stats["legal_hu_seen"] += 1
+            self.stats["hu_taken"] += 1
             return "HU"
         if self.predictor is not None:
             input_text = self._input_text(request)
@@ -403,19 +464,83 @@ class BotzonePolicy:
             else:
                 predicted = self.predictor.predict_response(input_text).strip()
             self.last_model_response = predicted
-            if self._is_legal_draw_response(predicted):
+            self.stats["draw_model_predictions"] += 1
+            overlay = self._effective_overlay_response(input_text, request, candidates, predicted)
+            if overlay is not None:
+                predicted = overlay
+            if predicted in candidates:
+                if predicted == "HU":
+                    self.stats["legal_hu_seen"] += 1
+                    self.stats["hu_taken"] += 1
                 self._apply_draw_response(predicted)
                 return predicted
             self.last_illegal_prediction = True
+            self.stats["illegal_predictions"] += 1
 
         fallback = f"PLAY {drawn_tile if self.hand[drawn_tile] else self._first_tile()}"
         self.last_fallback_used = True
+        self.stats["fallbacks"] += 1
         self._apply_draw_response(fallback)
         return fallback
 
+    def _effective_overlay_response(
+        self,
+        input_text: str,
+        request: str,
+        candidates: list[str],
+        predicted: str,
+    ) -> str | None:
+        config = getattr(self.predictor, "effective_tile_overlay", None)
+        if not config or self.fan_checker is None or self.player_id is None:
+            return None
+        play_candidates = [candidate for candidate in candidates if candidate.startswith("PLAY ")]
+        if not play_candidates:
+            return None
+        if hasattr(self.predictor, "score_legal_response_candidates"):
+            all_scores = self.predictor.score_legal_response_candidates(
+                input_text, self.hand, self.player_id, request, candidates
+            )
+            score_by_candidate = dict(zip(candidates, all_scores))
+            base_scores = [score_by_candidate.get(candidate, 0.0) for candidate in play_candidates]
+        else:
+            base_scores = _one_hot_response_scores(play_candidates, predicted)
+        scored = evaluate_discard_candidates(
+            hand=self.hand,
+            responses=play_candidates,
+            fan_checker=self.fan_checker,
+            base_scores=base_scores,
+            packs=self.packs,
+            visible_counts=self.visible_counts,
+            flower_count=self.flower_counts[self.player_id],
+            seat_wind=self.player_id,
+            prevalent_wind=self.quan,
+            player=self.player_id,
+            levels=int(config.get("levels", 1)) if isinstance(config, dict) else 1,
+            base_score_weight=float(config.get("base_score_weight", 0.05))
+            if isinstance(config, dict)
+            else 0.05,
+            guideline_weight=float(config.get("guideline_weight", 1.0))
+            if isinstance(config, dict)
+            else 1.0,
+        )
+        if not scored:
+            return None
+        if isinstance(config, dict) and config.get("require_positive_fan8"):
+            if max(item.profile.fan8_wait_tiles for item in scored) <= 0:
+                return None
+        response = scored[0].response
+        self.last_overlay_response = response
+        self.stats["draw_overlay_choices"] += 1
+        if response != predicted:
+            self.stats["draw_overlay_changed_tile"] += 1
+        return response
+
     def _choose_reaction_response(self, request: str) -> str:
+        self.stats["reaction_turns"] += 1
         candidates = self._legal_responses(request)
         if getattr(self.predictor, "prefer_hu", False) and "HU" in candidates:
+            self.stats["legal_hu_seen"] += 1
+            self.stats["hu_taken"] += 1
             return "HU"
         if self.predictor is not None:
             input_text = self._input_text(request)
@@ -427,11 +552,16 @@ class BotzonePolicy:
                 predicted = self.predictor.predict_response(input_text).strip()
             self.last_model_response = predicted
             if predicted in candidates:
+                if predicted == "HU":
+                    self.stats["legal_hu_seen"] += 1
+                    self.stats["hu_taken"] += 1
                 self._record_own_reaction_pack(request, predicted)
                 apply_response(self.hand, request, predicted)
                 return predicted
             self.last_illegal_prediction = True
+            self.stats["illegal_predictions"] += 1
         self.last_fallback_used = True
+        self.stats["fallbacks"] += 1
         return "PASS"
 
     def _first_tile(self) -> str:
@@ -451,12 +581,16 @@ class BotzonePolicy:
             if action == "GANG":
                 self.packs.append({"type": "GANG", "tile": tile, "offer": self.player_id or 0})
                 self.next_draw_about_kong = True
+                self.visible_counts[tile] = max(self.visible_counts[tile], 4)
             elif action == "BUGANG":
                 for pack in self.packs:
                     if pack["type"] == "PENG" and pack["tile"] == tile:
                         pack["type"] = "GANG"
                         break
                 self.next_draw_about_kong = True
+                self.visible_counts[tile] += 1
+            elif action == "PLAY":
+                self.visible_counts[tile] += 1
             remove_count = 4 if action == "GANG" else 1
             self.hand[tile] -= remove_count
             if self.hand[tile] <= 0:
@@ -498,10 +632,18 @@ class BotzonePolicy:
         if action != "HU":
             return True
         if self.fan_checker is None or self.player_id is None:
+            self.stats["fan_check_missing"] += 1
             return False
         try:
-            return bool(self.fan_checker.can_hu(**self._hu_context(request)))
+            self.stats["fan_check_calls"] += 1
+            accepted = bool(self.fan_checker.can_hu(**self._hu_context(request)))
+            if accepted:
+                self.stats["fan_check_accepts"] += 1
+            else:
+                self.stats["fan_check_rejects"] += 1
+            return accepted
         except Exception:
+            self.stats["fan_check_errors"] += 1
             return False
 
     def _hu_context(self, request: str) -> dict:
@@ -548,13 +690,39 @@ class BotzonePolicy:
         event_tile = request_event_tile(tokens)
         if action == "PENG" and event_tile:
             self.packs.append({"type": "PENG", "tile": event_tile, "offer": actor})
+            self.visible_counts[event_tile] += 2
+            if len(parts) >= 2:
+                self.visible_counts[parts[1]] += 1
         elif action == "GANG" and event_tile:
             self.packs.append({"type": "GANG", "tile": event_tile, "offer": actor})
             self.next_draw_about_kong = True
+            self.visible_counts[event_tile] = max(self.visible_counts[event_tile], 4)
         elif action == "CHI" and event_tile and len(parts) >= 3:
             middle = parts[1]
             offer = int(event_tile[1]) - int(middle[1]) + 1
             self.packs.append({"type": "CHI", "tile": middle, "offer": offer})
+            sequence = [f"{middle[0]}{int(middle[1]) - 1}", middle, f"{middle[0]}{int(middle[1]) + 1}"]
+            needed = Counter(sequence)
+            needed[event_tile] -= 1
+            for tile, count in needed.items():
+                if count > 0:
+                    self.visible_counts[tile] += count
+            self.visible_counts[parts[2]] += 1
+
+    def diagnostics(self) -> dict[str, int | str | bool | None]:
+        data: dict[str, int | str | bool | None] = {
+            key: int(value) for key, value in sorted(self.stats.items())
+        }
+        data.update(
+            {
+                "kind": "botzone_policy",
+                "last_model_response": self.last_model_response,
+                "last_overlay_response": self.last_overlay_response,
+                "last_fallback_used": self.last_fallback_used,
+                "last_illegal_prediction": self.last_illegal_prediction,
+            }
+        )
+        return data
 
 
 def main() -> int:

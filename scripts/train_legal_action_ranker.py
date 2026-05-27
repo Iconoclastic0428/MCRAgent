@@ -40,6 +40,9 @@ def player_passes_outcome_filter(
     min_player_score: float | None = None,
     winner_only: bool = False,
 ) -> bool:
+    train_players = record.get("train_players")
+    if train_players is not None and str(player) not in {str(item) for item in train_players}:
+        return False
     score = player_score(record, player)
     if min_player_score is not None and (score is None or score < min_player_score):
         return False

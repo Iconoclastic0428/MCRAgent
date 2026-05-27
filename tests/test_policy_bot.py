@@ -40,6 +40,14 @@ class FeatureScoreW3Model:
         return np.column_stack([1.0 - scores, scores])
 
 
+class FeatureScoreW5Model:
+    def predict_proba(self, features):
+        names = feature_names()
+        w5_index = names.index("discard_W5")
+        scores = np.asarray(features)[:, w5_index]
+        return np.column_stack([1.0 - scores, scores])
+
+
 class FanFeatureFlushModel:
     def predict_proba(self, features):
         names = fan_feature_names()
@@ -105,6 +113,26 @@ class RejectingFanChecker:
 class AcceptingFanChecker:
     def can_hu(self, **kwargs):
         return True
+
+
+class StructuralW5FanChecker:
+    def __init__(self):
+        self.calls = []
+
+    def evaluate(self, **kwargs):
+        self.calls.append(kwargs)
+        if (
+            kwargs["win_tile"] == "W5"
+            and "W5" in kwargs["hand"]
+            and "J1" not in kwargs["hand"]
+            and not kwargs["is_last"]
+            and not kwargs["is_about_kong"]
+        ):
+            return {"can_hu": True, "fan": 8}
+        return {"can_hu": False, "fan": 0}
+
+    def can_hu(self, **kwargs):
+        return bool(self.evaluate(**kwargs)["can_hu"])
 
 
 def test_policy_passes_initialization_requests():
@@ -293,6 +321,113 @@ def test_draw_ensemble_composite_averages_weighted_feature_payload_scores(tmp_pa
     response = policy.respond("2 W4")
 
     assert response == "PLAY W3"
+
+
+def test_effective_tile_overlay_can_override_base_draw_score(tmp_path):
+    model_path = tmp_path / "effective_overlay.pkl"
+    with model_path.open("wb") as out:
+        pickle.dump(
+            {
+                "kind": "feature_action_ranker",
+                "feature_mode": "numeric_v1",
+                "model": FeatureScoreW5Model(),
+                "feature_names": feature_names(),
+                "effective_tile_overlay": {"levels": 1, "base_score_weight": 0.0},
+            },
+            out,
+        )
+    predictor = SklearnPredictor(model_path)
+    policy = BotzonePolicy(predictor, fan_checker=StructuralW5FanChecker())
+    policy.respond("0 0 1")
+    policy.respond("1 0 0 0 0 W1 W1 W1 W2 W2 W2 W3 W3 W3 W4 W4 W4 W5")
+
+    response = policy.respond("2 J1")
+
+    assert response == "PLAY J1"
+    assert policy.last_model_response == "PLAY W5"
+    assert policy.last_overlay_response == "PLAY J1"
+
+
+def test_policy_diagnostics_count_draw_overlay_and_hu_checks(tmp_path):
+    model_path = tmp_path / "effective_overlay.pkl"
+    with model_path.open("wb") as out:
+        pickle.dump(
+            {
+                "kind": "feature_action_ranker",
+                "feature_mode": "numeric_v1",
+                "model": FeatureScoreW5Model(),
+                "feature_names": feature_names(),
+                "effective_tile_overlay": {"levels": 1, "base_score_weight": 0.0},
+            },
+            out,
+        )
+    predictor = SklearnPredictor(model_path)
+    policy = BotzonePolicy(predictor, fan_checker=StructuralW5FanChecker())
+    policy.respond("0 0 1")
+    policy.respond("1 0 0 0 0 W1 W1 W1 W2 W2 W2 W3 W3 W3 W4 W4 W4 W5")
+
+    policy.respond("2 J1")
+    diagnostics = policy.diagnostics()
+
+    assert diagnostics["draw_turns"] == 1
+    assert diagnostics["draw_model_predictions"] == 1
+    assert diagnostics["draw_overlay_choices"] == 1
+    assert diagnostics["draw_overlay_changed_tile"] == 1
+
+    hu_policy = BotzonePolicy(PreferHuPredictor("PASS"), fan_checker=AcceptingFanChecker())
+    hu_policy.respond("0 0 0")
+    hu_policy.hand.update(
+        [
+            "W1",
+            "W2",
+            "W4",
+            "W5",
+            "W6",
+            "B2",
+            "B3",
+            "B4",
+            "T2",
+            "T3",
+            "T4",
+            "F1",
+            "F1",
+        ]
+    )
+    assert hu_policy.respond("3 1 PLAY W3") == "HU"
+    hu_diagnostics = hu_policy.diagnostics()
+
+    assert hu_diagnostics["fan_check_calls"] == 1
+    assert hu_diagnostics["fan_check_accepts"] == 1
+    assert hu_diagnostics["legal_hu_seen"] == 1
+    assert hu_diagnostics["hu_taken"] == 1
+
+
+def test_effective_tile_overlay_can_require_positive_fan8_evidence(tmp_path):
+    model_path = tmp_path / "effective_overlay.pkl"
+    with model_path.open("wb") as out:
+        pickle.dump(
+            {
+                "kind": "feature_action_ranker",
+                "feature_mode": "numeric_v1",
+                "model": FeatureScoreW5Model(),
+                "feature_names": feature_names(),
+                "effective_tile_overlay": {
+                    "levels": 0,
+                    "base_score_weight": 0.0,
+                    "require_positive_fan8": True,
+                },
+            },
+            out,
+        )
+    predictor = SklearnPredictor(model_path)
+    policy = BotzonePolicy(predictor, fan_checker=StructuralW5FanChecker())
+    policy.respond("0 0 1")
+    policy.respond("1 0 0 0 0 W1 W2 W3 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2")
+
+    response = policy.respond("2 W5")
+
+    assert response == "PLAY W5"
+    assert policy.last_overlay_response is None
 
 
 def test_draw_ensemble_composite_routes_reactions_to_reaction_payload(tmp_path):

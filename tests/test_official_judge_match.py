@@ -8,11 +8,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from official_judge_match import (
     AleoProcessPolicy,
     BotzoneJsonProcessPolicy,
+    LawlorentzEffectivePolicy,
+    aggregate_policy_diagnostics,
     build_response_log,
     load_initdata,
     make_policy,
     run_json_bot_process,
     run_match,
+    summarize_terminals,
 )
 
 
@@ -138,10 +141,76 @@ def test_run_match_reports_aleo_policy_diagnostics():
     assert "native crash" in result["policy_diagnostics"][1]["last_error"]
 
 
+def test_aggregate_policy_diagnostics_sums_numeric_fields_by_player():
+    results = [
+        {
+            "policy_diagnostics": [
+                {"draw_turns": 2, "last_model_response": "PLAY W1"},
+                {"draw_turns": 1, "fan_check_calls": 3},
+            ]
+        },
+        {
+            "policy_diagnostics": [
+                {"draw_turns": 4, "fan_check_calls": 5},
+                {"draw_turns": 0, "fan_check_calls": 2},
+            ]
+        },
+    ]
+
+    totals = aggregate_policy_diagnostics(results)
+
+    assert totals[0] == {"draw_turns": 6, "fan_check_calls": 5}
+    assert totals[1] == {"draw_turns": 1, "fan_check_calls": 5}
+
+
+def test_summarize_terminals_counts_actions_and_player0_hu_fans():
+    results = [
+        {
+            "turns": 10,
+            "final_output": {
+                "display": {
+                    "action": "HU",
+                    "player": 0,
+                    "fanCnt": 8,
+                }
+            }
+        },
+        {"turns": 15, "final_output": {"display": {"action": "HUANG"}}},
+        {
+            "turns": 20,
+            "final_output": {
+                "display": {
+                    "action": "HU",
+                    "player": 2,
+                    "fanCnt": 12,
+                }
+            }
+        },
+    ]
+
+    summary = summarize_terminals(results)
+
+    assert summary["terminal_actions"] == {"HU": 2, "HUANG": 1}
+    assert summary["player0_hu_fans"] == [8]
+    assert summary["min_player0_hu_fan"] == 8
+    assert summary["hu_count"] == 2
+    assert summary["hu_rate"] == 2 / 3
+    assert summary["average_hu_turn"] == 15.0
+    assert summary["player0_hu_count"] == 1
+    assert summary["player0_hu_rate"] == 1 / 3
+    assert summary["player0_average_hu_turn"] == 10.0
+
+
 def test_make_policy_can_create_aleo_process_policy():
     policy = make_policy("aleo", aleo_exe="build/aleo_bot.exe")
 
     assert isinstance(policy, AleoProcessPolicy)
+
+
+def test_make_policy_can_create_lawlorentz_effective_policy():
+    policy = make_policy("lawlorentz_effective")
+
+    assert isinstance(policy, LawlorentzEffectivePolicy)
 
 
 def test_botzone_json_process_policy_sends_requests_and_responses_to_runner():

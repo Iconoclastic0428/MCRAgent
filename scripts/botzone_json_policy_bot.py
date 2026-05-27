@@ -1,26 +1,18 @@
 #!/usr/bin/env python3
-"""Botzone JSON-protocol wrapper for the local MCR policy."""
+"""Botzone JSON-protocol wrapper for the Lawlorentz effective-tile MCR policy."""
 
 from __future__ import annotations
 
 import json
 import os
 import sys
-from pathlib import Path
 
-from policy_bot import BotzonePolicy, SklearnPredictor
-
-
-DEFAULT_MODEL = "models/ensemble_draw_public1000_2026_050_050_reaction1000.pkl"
+from lawlorentz_policy import LawlorentzEffectivePolicy
 
 
-def make_policy() -> BotzonePolicy:
-    model_path = os.environ.get("MCR_MODEL", DEFAULT_MODEL)
-    if model_path:
-        path = Path(model_path)
-        if path.exists():
-            return BotzonePolicy(SklearnPredictor(path))
-    return BotzonePolicy()
+def make_policy() -> LawlorentzEffectivePolicy:
+    levels = int(os.environ.get("MCR_LAWLORENTZ_LEVELS", "1"))
+    return LawlorentzEffectivePolicy(levels=levels)
 
 
 def respond(payload: dict) -> str:

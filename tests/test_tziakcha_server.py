@@ -75,3 +75,41 @@ def test_reset_route_clears_observed_state():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_results_route_exposes_stats_and_persists_jsonl(tmp_path):
+    result_log = tmp_path / "results.jsonl"
+    server, base = run_server_in_thread(port=0, use_model=False, result_log_path=result_log)
+    try:
+        for message in (
+            {"m": 4, "v": 0, "i": {"t": 0}},
+            {"m": 2, "r": 2, "v": [0, 4, 8]},
+            {"m": 2, "r": 6, "v": 0, "t": 36},
+            {"m": 2, "r": 12, "v": 0, "s": [48, -16, -16, -16], "h": 8},
+        ):
+            payload = json.dumps({"kind": "text", "data": json.dumps(message)}).encode("utf-8")
+            request.urlopen(
+                request.Request(
+                    f"{base}/observe",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=2,
+            )
+
+        with request.urlopen(f"{base}/results", timeout=2) as resp:
+            results = json.loads(resp.read().decode("utf-8"))
+
+        assert results["stats"]["games"] == 1
+        assert results["stats"]["wins"] == 1
+        assert results["stats"]["win_rate"] == 1.0
+        assert results["stats"]["deal_in_rate"] == 0.0
+        assert results["history"][0]["is_win"] is True
+
+        lines = result_log.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+        assert json.loads(lines[0])["result"]["winner"] == 0
+    finally:
+        server.shutdown()
+        server.server_close()

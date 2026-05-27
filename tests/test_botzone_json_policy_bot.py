@@ -27,4 +27,4 @@ def test_botzone_json_policy_bot_reads_requests_and_outputs_response_json():
 
     output = json.loads(proc.stdout)
 
-    assert output == {"response": "PLAY W4"}
+    assert output == {"response": "PLAY W1"}

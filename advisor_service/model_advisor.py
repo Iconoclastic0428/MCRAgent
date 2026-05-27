@@ -1,4 +1,4 @@
-"""Model-backed recommendation logic for the read-only Tziakcha advisor."""
+"""Lawlorentz effective-tile recommendation logic for the read-only Tziakcha advisor."""
 
 from __future__ import annotations
 
@@ -15,13 +15,13 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 from legal_actions import generate_chi_responses  # noqa: E402
-from policy_bot import SklearnPredictor  # noqa: E402
+from lawlorentz_policy import LawlorentzEffectiveScorer  # noqa: E402
 
-DEFAULT_MODEL = WORKSPACE_ROOT / "models" / "ensemble_draw_public1000_2026_030_070_reaction1000_prefer_hu.pkl"
+DEFAULT_MODEL = None
 
 
 class TziakchaModelAdvisor:
-    """Rank Tziakcha decision prompts with the local Botzone-trained policy.
+    """Rank Tziakcha decision prompts with the Lawlorentz effective-tile rule.
 
     The browser extension only observes state. This class returns text advice and
     never sends an action back to Tziakcha.
@@ -35,8 +35,6 @@ class TziakchaModelAdvisor:
     ) -> None:
         self.model_path = Path(model_path) if model_path else None
         self.predictor = predictor
-        if self.predictor is None and self.model_path and self.model_path.exists():
-            self.predictor = SklearnPredictor(self.model_path)
         self.fan_checker = fan_checker if fan_checker is not None else self._default_fan_checker()
 
     def _default_fan_checker(self) -> Any | None:
@@ -56,7 +54,7 @@ class TziakchaModelAdvisor:
         if not candidates:
             return self._fallback(snapshot, hu_result)
         if self.predictor is None:
-            response = _heuristic_response(candidates, hand)
+            response = _effective_response(candidates, hand, request, snapshot)
         elif getattr(self.predictor, "prefer_hu", False) and "HU" in candidates:
             response = "HU"
         elif hasattr(self.predictor, "predict_legal_response"):
@@ -79,21 +77,26 @@ class TziakchaModelAdvisor:
         actions = snapshot.get("available_actions") or {}
         seat = _optional_int(snapshot.get("seat"), None)
         turn = _optional_int(snapshot.get("turn"), None)
-        last_discard = snapshot.get("last_discard") or {}
-        last_discard_seat = _optional_int(last_discard.get("seat"), None)
+        reaction_event = _reaction_event(snapshot, seat, actions)
 
-        reaction_prompt = (
-            seat is not None
-            and last_discard.get("tile") is not None
-            and last_discard_seat is not None
-            and last_discard_seat != seat
-            and any(actions.get(name) for name in ("hu", "pung", "chow", "kong", "pass", "waive"))
-        )
-        if reaction_prompt:
-            event_tile = botzone_symbol(int(last_discard["tile"]))
-            request = f"3 {last_discard_seat} PLAY {event_tile}"
+        if reaction_event is not None:
+            event_tile = botzone_symbol(int(reaction_event["tile"]))
+            event_seat = int(reaction_event["seat"])
+            op = "BUGANG" if reaction_event["source"] == "bugang" else "PLAY"
+            request = f"3 {event_seat} {op} {event_tile}"
             hu_result = self._hu_result(snapshot, self_drawn=False) if actions.get("hu") else None
-            return request, self._reaction_candidates(snapshot, hand, event_tile, hu_result), hu_result
+            return (
+                request,
+                self._reaction_candidates(
+                    snapshot,
+                    hand,
+                    event_tile,
+                    hu_result,
+                    allow_claims=reaction_event["source"] == "discard",
+                    actor_seat=event_seat,
+                ),
+                hu_result,
+            )
 
         draw_prompt = (
             seat is not None
@@ -135,11 +138,16 @@ class TziakchaModelAdvisor:
         hand: Counter[str],
         event_tile: str,
         hu_result: dict[str, Any] | None,
+        *,
+        allow_claims: bool = True,
+        actor_seat: int | None = None,
     ) -> list[str]:
         actions = snapshot.get("available_actions") or {}
         candidates = ["PASS"]
         if _can_hu(hu_result):
             candidates.append("HU")
+        if not allow_claims:
+            return _dedupe(candidates)
         if actions.get("kong") and hand[event_tile] >= 3:
             candidates.append("GANG")
         if actions.get("pung") and hand[event_tile] >= 2:
@@ -149,7 +157,7 @@ class TziakchaModelAdvisor:
             candidates.extend(f"PENG {tile}" for tile in sorted(after_peng) if after_peng[tile] > 0)
         if actions.get("chow"):
             seat = _optional_int(snapshot.get("seat"), None)
-            actor = _optional_int((snapshot.get("last_discard") or {}).get("seat"), None)
+            actor = actor_seat
             if seat is not None and actor is not None:
                 candidates.extend(generate_chi_responses(event_tile, hand))
         return _dedupe(candidates)
@@ -165,7 +173,12 @@ class TziakchaModelAdvisor:
                 result = dict(self.fan_checker.evaluate(**context))
                 result.setdefault("can_hu", bool(result.get("fan", -3) >= 8))
                 return result
-            return {"can_hu": bool(self.fan_checker.can_hu(**context)), "fan": None}
+            accepted = bool(self.fan_checker.can_hu(**context))
+            return {
+                "can_hu": False,
+                "fan": None,
+                "reason": "fan count unavailable" if accepted else "official fan checker rejected Hu",
+            }
         except Exception as exc:
             return {"can_hu": False, "fan": None, "reason": str(exc)}
 
@@ -200,18 +213,25 @@ class TziakchaModelAdvisor:
             _add_hu_note(rec, hu_result)
             return rec
         if action == "PLAY" and len(parts) >= 2:
-            return _tile_action("discard", "Discard", parts[1], snapshot, response)
+            rec = _tile_action("discard", "Discard", parts[1], snapshot, response)
+            _add_hu_note(rec, hu_result)
+            return rec
         if action == "PENG" and len(parts) >= 2:
-            return _tile_action("pung", "Pung; discard", parts[1], snapshot, response)
+            rec = _tile_action("pung", "Pung; discard", parts[1], snapshot, response)
+            _add_hu_note(rec, hu_result)
+            return rec
         if action == "CHI" and len(parts) >= 3:
             rec = _tile_action("chow", "Chow; discard", parts[2], snapshot, response)
             rec["meld_tile"] = parts[1]
             rec["text"] = f"Chow {display_name(_tile_id_for_symbol(parts[1], snapshot))}; discard {rec['tile_display']}"
+            _add_hu_note(rec, hu_result)
             return rec
         if action in {"GANG", "BUGANG"}:
             tile = parts[1] if len(parts) >= 2 else _first_symbol(_hand_counter(snapshot))
             verb = "Add Kong" if action == "BUGANG" else "Kong"
-            return _tile_action("kong", verb, tile, snapshot, response)
+            rec = _tile_action("kong", verb, tile, snapshot, response)
+            _add_hu_note(rec, hu_result)
+            return rec
         rec = {"action": "wait", "text": "Waiting for decision prompt", "source": "local-model", "raw_response": response}
         _add_hu_note(rec, hu_result)
         return rec
@@ -242,6 +262,64 @@ def _heuristic_response(candidates: list[str], hand: Counter[str]) -> str:
     return non_pass[0] if non_pass else "PASS"
 
 
+def _reaction_event(
+    snapshot: dict[str, Any],
+    seat: int | None,
+    actions: dict[str, list[int]],
+) -> dict[str, Any] | None:
+    if seat is None or not any(actions.get(name) for name in ("hu", "pung", "chow", "kong", "pass", "waive")):
+        return None
+    event = snapshot.get("last_win_event") or {}
+    source = event.get("source")
+    event_seat = _optional_int(event.get("seat"), None)
+    if (
+        source in {"discard", "bugang"}
+        and isinstance(event.get("tile"), int)
+        and event_seat is not None
+        and event_seat != seat
+    ):
+        return {"source": source, "seat": event_seat, "tile": int(event["tile"])}
+    if source in {"draw", "discard", "bugang"}:
+        return None
+
+    last_discard = snapshot.get("last_discard") or {}
+    last_discard_seat = _optional_int(last_discard.get("seat"), None)
+    if (
+        isinstance(last_discard.get("tile"), int)
+        and last_discard_seat is not None
+        and last_discard_seat != seat
+    ):
+        return {"source": "discard", "seat": last_discard_seat, "tile": int(last_discard["tile"])}
+    return None
+
+
+def _effective_response(
+    candidates: list[str],
+    hand: Counter[str],
+    request: str,
+    snapshot: dict[str, Any],
+) -> str:
+    if "HU" in candidates:
+        return "HU"
+    plays = [candidate for candidate in candidates if candidate.startswith("PLAY ")]
+    if plays:
+        scorer = LawlorentzEffectiveScorer(
+            packs=(),
+            shown_tiles={},
+            seat_wind=_optional_int(snapshot.get("seat"), 0) or 0,
+            prevalent_wind=_optional_int(snapshot.get("prevalent_wind"), 0) or 0,
+            levels=1,
+        )
+        hand_tiles = list(hand.elements())
+        return max(
+            plays,
+            key=lambda response: scorer.discard_key(hand_tiles, response.split()[1]),
+        )
+    if request.startswith("3 ") and "PASS" in candidates:
+        return "PASS"
+    return _heuristic_response(candidates, hand)
+
+
 def _tile_action(
     action: str, verb: str, symbol: str, snapshot: dict[str, Any], raw_response: str
 ) -> dict[str, Any]:
@@ -269,12 +347,21 @@ def _tile_id_for_symbol(symbol: str, snapshot: dict[str, Any]) -> int:
 
 def _hu_context(snapshot: dict[str, Any], self_drawn: bool) -> dict[str, Any] | None:
     seat = _optional_int(snapshot.get("seat"), 0)
-    if self_drawn:
+    event = snapshot.get("last_win_event") or {}
+    event_source = event.get("source")
+    event_tile_id = event.get("tile")
+    if isinstance(event_tile_id, int) and event_source in {"draw", "discard", "bugang"}:
+        win_tile_id = event_tile_id
+        self_drawn = bool(event.get("is_self_draw"))
+        is_about_kong = bool(event.get("is_about_kong"))
+    elif self_drawn:
         last_draw = snapshot.get("last_draw") or {}
         win_tile_id = last_draw.get("tile")
+        is_about_kong = False
     else:
         last_discard = snapshot.get("last_discard") or {}
         win_tile_id = last_discard.get("tile")
+        is_about_kong = False
     if not isinstance(win_tile_id, int):
         return None
     win_tile = botzone_symbol(win_tile_id)
@@ -285,14 +372,17 @@ def _hu_context(snapshot: dict[str, Any], self_drawn: bool) -> dict[str, Any] | 
         except ValueError:
             pass
     wall_count = snapshot.get("wall_count")
+    visible_counts = snapshot.get("visible_counts") or {}
+    visible_count = _visible_count_for_tile(visible_counts, win_tile_id)
+    is_4th_tile = event_source != "bugang" and visible_count == 3
     return {
         "packs": [_pack_to_official_meld(pack, seat) for pack in snapshot.get("melds") or []],
         "hand": hand,
         "win_tile": win_tile,
         "flower_count": int(snapshot.get("flowers") or 0),
         "is_self_draw": self_drawn,
-        "is_4th_tile": False,
-        "is_about_kong": False,
+        "is_4th_tile": is_4th_tile,
+        "is_about_kong": is_about_kong,
         "is_last": isinstance(wall_count, int) and wall_count <= 0,
         "seat_wind": seat,
         "prevalent_wind": int(snapshot.get("prevalent_wind") or 0),
@@ -312,7 +402,22 @@ def _pack_to_official_meld(pack: int, player: int) -> dict[str, Any]:
 
 
 def _can_hu(hu_result: dict[str, Any] | None) -> bool:
-    return bool(hu_result and hu_result.get("can_hu"))
+    if not hu_result or not hu_result.get("can_hu"):
+        return False
+    fan = hu_result.get("fan")
+    return isinstance(fan, int) and fan >= 8
+
+
+def _visible_count_for_tile(visible_counts: dict[Any, Any], tile_id: int) -> int:
+    kind = tile_id >> 2
+    for key in (kind, str(kind), botzone_symbol(tile_id)):
+        value = visible_counts.get(key)
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+    return 0
 
 
 def _add_hu_note(rec: dict[str, Any], hu_result: dict[str, Any] | None) -> None:

@@ -19,19 +19,3 @@ data/*
 models/
 runs/*
 external/
-
-# Keep selected run summaries commit-friendly.
-!runs/official_judge_ensemble_draw_tziakcha256_winner_025_060_015_vs_official_sample_64.json
-!runs/official_judge_suitperm_lr_best_vs_sample_suitperm24.json
-!runs/official_judge_suitperm_lr_oldweight_vs_sample_suitperm24.json
-!runs/official_judge_suitperm_lr_best_vs_sample_original32.json
-!runs/official_judge_suitaug_original_250_550_100_100_vs_sample_32.json
-!runs/feature_draw_ranker_tziakcha_human_517_winner_only_fanv1_lr006_metrics.json
-!runs/feature_draw_ranker_tziakcha_human_517_suitaug6_winner_only_fanv1_lr006_metrics.json
-!runs/policy_search_suitperm_lr_sample12/
-!runs/policy_search_suitperm_lr_sample12/
-!runs/policy_search_suitperm_lr_sample12/*.json
-!runs/policy_search_original_lr_sample8/
-!runs/policy_search_original_lr_sample8/*.json
-!runs/policy_search_suitaug_original_sample8/
-!runs/policy_search_suitaug_original_sample8/*.json

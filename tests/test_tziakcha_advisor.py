@@ -24,6 +24,17 @@ class AcceptingFanChecker:
         return {"fan": 8, "can_hu": True}
 
 
+class RecordingFanChecker:
+    def __init__(self, fan=8, can_hu=True):
+        self.fan = fan
+        self.can_hu = can_hu
+        self.calls = []
+
+    def evaluate(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"fan": self.fan, "can_hu": self.can_hu}
+
+
 def test_recommend_does_not_hu_without_fan_checker():
     rec = recommend({"available_actions": {"hu": [0], "pass": [0]}, "hand": [0]})
     assert rec["action"] == "pass"
@@ -113,6 +124,123 @@ def test_model_advisor_prefer_hu_requires_official_fan_acceptance():
     rec = accepting.recommend(snapshot)
     assert rec["action"] == "hu"
     assert rec["fan"] == 8
+
+
+def test_model_advisor_passes_last_tile_and_self_draw_flags_to_fan_checker():
+    checker = RecordingFanChecker(fan=8, can_hu=True)
+    advisor = TziakchaModelAdvisor(
+        predictor=PreferHuPredictor("PASS"),
+        fan_checker=checker,
+    )
+    snapshot = {
+        "seat": 0,
+        "turn": 0,
+        "available_actions": {"hu": [0], "discard": [120]},
+        "hand": [0, 4, 8, 12, 16, 20, 76, 80, 84, 112, 116, 120, 120, 120],
+        "last_draw": {"seat": 0, "tile": 120},
+        "last_win_event": {
+            "seat": 0,
+            "tile": 120,
+            "source": "draw",
+            "is_self_draw": True,
+            "is_about_kong": False,
+        },
+        "visible_counts": {120 >> 2: 3},
+        "wall_count": 0,
+    }
+
+    rec = advisor.recommend(snapshot)
+
+    assert rec["action"] == "hu"
+    assert checker.calls[0]["is_self_draw"] is True
+    assert checker.calls[0]["is_last"] is True
+    assert checker.calls[0]["is_4th_tile"] is True
+    assert checker.calls[0]["is_about_kong"] is False
+
+
+def test_model_advisor_passes_after_kong_and_robbing_kong_flags_to_fan_checker():
+    after_kong = RecordingFanChecker(fan=8, can_hu=True)
+    TziakchaModelAdvisor(
+        predictor=PreferHuPredictor("PASS"),
+        fan_checker=after_kong,
+    ).recommend(
+        {
+            "seat": 0,
+            "turn": 0,
+            "available_actions": {"hu": [0], "discard": [120]},
+            "hand": [0, 4, 8, 12, 16, 20, 76, 80, 84, 112, 116, 120, 120, 120],
+            "last_draw": {"seat": 0, "tile": 120},
+            "last_win_event": {
+                "seat": 0,
+                "tile": 120,
+                "source": "draw",
+                "is_self_draw": True,
+                "is_about_kong": True,
+            },
+            "visible_counts": {},
+            "wall_count": 10,
+        }
+    )
+
+    assert after_kong.calls[0]["is_self_draw"] is True
+    assert after_kong.calls[0]["is_about_kong"] is True
+
+    rob_kong = RecordingFanChecker(fan=8, can_hu=True)
+    rec = TziakchaModelAdvisor(
+        predictor=PreferHuPredictor("PASS"),
+        fan_checker=rob_kong,
+    ).recommend(
+        {
+            "seat": 0,
+            "turn": 1,
+            "available_actions": {"hu": [0], "pass": [0]},
+            "hand": [0, 4, 8, 12, 16, 20, 76, 80, 84, 112, 116, 120, 120],
+            "last_win_event": {
+                "seat": 1,
+                "tile": 120,
+                "source": "bugang",
+                "is_self_draw": False,
+                "is_about_kong": True,
+            },
+            "visible_counts": {},
+            "wall_count": 10,
+        }
+    )
+
+    assert rec["action"] == "hu"
+    assert rob_kong.calls[0]["is_self_draw"] is False
+    assert rob_kong.calls[0]["is_about_kong"] is True
+    assert rob_kong.calls[0]["win_tile"] == "F4"
+
+
+def test_model_advisor_keeps_hu_suppressed_when_fan_checker_rejects_special_context():
+    advisor = TziakchaModelAdvisor(
+        predictor=PreferHuPredictor("PASS"),
+        fan_checker=RecordingFanChecker(fan=7, can_hu=False),
+    )
+
+    rec = advisor.recommend(
+        {
+            "seat": 0,
+            "turn": 0,
+            "available_actions": {"hu": [0], "discard": [120]},
+            "hand": [0, 4, 8, 12, 16, 20, 76, 80, 84, 112, 116, 120, 120, 120],
+            "last_draw": {"seat": 0, "tile": 120},
+            "last_win_event": {
+                "seat": 0,
+                "tile": 120,
+                "source": "draw",
+                "is_self_draw": True,
+                "is_about_kong": True,
+            },
+            "last_discard": {"seat": 1, "tile": 36},
+            "visible_counts": {120 >> 2: 3},
+            "wall_count": 0,
+        }
+    )
+
+    assert rec["action"] == "discard"
+    assert rec["fan"] == 7
 
 
 def test_recommend_skips_aleo_when_no_decision_is_pending(monkeypatch):

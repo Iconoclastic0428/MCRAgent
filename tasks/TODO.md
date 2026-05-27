@@ -655,3 +655,262 @@ Review:
   - Ask for concrete performance-improvement strategy toward matching or beating the original 64-game result.
   - Ask GPT Pro to consider recent papers/strategies when useful.
   - Wait for the full response before summarizing.
+
+### Fan8 effective-tile overlay and Lawlorentz DRL review
+
+- [x] Review `lawlorentz/Chinese-Standard-Mahjong-DRL` as a primary-source architecture reference.
+  - Check whether it contains a runnable checkpoint or benchmark result that can be compared with the current `21/64` official sample-bot gate.
+  - Extract reusable ideas for RL, value learning, rule/search, fan gating, and suit augmentation.
+  - 2026-05-26 result: cloned commit `52e680174e48f900d299341e5c04e5ae3f5cc623` under `external/Chinese-Standard-Mahjong-DRL`.
+  - The repo uses PyMahjongGB, 71-ish observation features, 235 masked actions, supervised pretraining, PPO/GAE actor-learner training, value learning, a model pool, and W/T/B suit augmentation.
+  - No comparable model checkpoint or benchmark result is present in GitHub: `eval.log` is empty, `rl1-bot.zip` contains source only, and `__main__.py` expects `/data/model_78789.pt`.
+  - Conclusion: use its RL/value/masked-action structure as a reference, but do not replace the current ensemble unless a trained checkpoint is obtained or retrained and beats the official gate.
+- [x] Implement the user-specified effective-tile hierarchy as a tested local rule module.
+  - Primary objective: reach a stable `>=8` fan structure with the most waits.
+  - Exclude incidental fan sources when evaluating future fan potential: `is_last=False`, `is_about_kong=False`, and no rob-kong/after-kong credit.
+  - Track immediate fan-valid waits, first-class shanten-reducing effective tiles, second-class tiles that increase first-class options without worsening shanten, and third-class tiles that increase second-class options.
+  - Added `scripts/effective_tiles.py` and `tests/test_effective_tiles.py`.
+  - Runtime fast mode `levels=0` scores immediate fan8 waits only; offline modes `levels=1..3` add first/second/third-class effective-tile hierarchy.
+- [x] Wire the effective-tile rule into policy construction as an optional overlay.
+  - Keep the existing best ensemble unchanged by default.
+  - Preserve the hard HU invariant: no `HU` unless the official fan checker proves `>=8` fan.
+  - Added optional `effective_tile_overlay` payload support in `scripts/policy_bot.py`.
+  - Added `scripts/create_effective_overlay_policy.py` to wrap an existing policy pickle without mutating the base model.
+  - Created local overlay artifacts:
+    - `models/ensemble_draw_public1000_2026_tziakcha256_winner_025_060_015_reaction1000_prefer_hu_effective_l1.pkl`
+    - `models/ensemble_draw_public1000_2026_tziakcha256_winner_025_060_015_reaction1000_prefer_hu_effective_fast_l0.pkl`
+- [x] Verify with focused tests before any official sample-bot screen.
+  - Focused overlay tests: `python -m pytest tests\test_policy_bot.py tests\test_create_effective_overlay_policy.py tests\test_effective_tiles.py -q --basetemp tmp\pytest_effective_policy` passed with 26 tests.
+  - Full suite: `python -m pytest tests -q --basetemp tmp\pytest_effective_full` passed with 162 tests and 1 existing sklearn convergence warning.
+  - Official smoke: fast `levels=0` overlay scored 1/4 wins, average 9.25 on `data/raw/botzone_mcr_1000.jsonl`; incumbent current best scored 2/4, average 17.0 on the same first four games.
+  - Conclusion: the overlay is implemented and safe to search, but the immediate-wait runtime wrapper is not promoted.
+- [x] Execute the first GPT Pro plan phase: instrument and search the reachable fan8 overlay path under the official judge.
+  - Added policy diagnostics for draw turns, model predictions, overlay choices, overlay-changed draws, fan-check calls/accepts/rejects/errors, legal Hu sightings, and taken Hu actions.
+  - Added official-match terminal summaries: terminal action counts plus player-0 Hu fan list/min/max.
+  - Added `scripts/policy_search_effective_overlay.py` for official-judge searches over overlay configs, ranked by player-0 win rate then average score.
+  - Aggressive immediate-wait overlay search: `runs/policy_search_effective_overlay_sample4/effective_l0_sample4_report.json` tied at 1/4 wins, average 9.25, terminal actions 1 `HU` / 3 `HUANG`, player-0 Hu fan `[13]`, with 35/74 player-0 draw choices changed. This is too disruptive.
+  - Tuned fan8-positive overlay search: `runs/policy_search_effective_overlay_sample4_tuned/effective_l0_tuned_sample4_report.json` tied at 1/4 wins, average 8.0; it changed only 1 player-0 draw but still lost one incumbent Hu, with terminal actions 1 `HU` / 3 `HUANG`.
+  - Refreshed incumbent diagnostic smoke: `runs/official_judge_current_best_vs_sample_smoke4_diagnostics.json` scored 2/4 wins, average 17.0, terminal actions 2 `HU` / 2 `HUANG`, player-0 Hu fans `[8, 12]`.
+  - Verification: `python -m pytest tests -q --basetemp tmp\pytest_gpt_plan_full_final` passed with 170 tests and 1 existing sklearn convergence warning.
+  - Conclusion: the immediate fan8-wait overlay is not the right promotion path. The next GPT Pro-plan step should be a state-value/beam-search trainer that evaluates future fan-valid waits over multiple draws, not a one-ply runtime override.
+- [ ] Build the next GPT Pro-plan architecture only after the one-ply overlay negative result.
+  - Extract reusable state/action tensors with masked legal actions, exposed-pack state, visible tiles, shanten, fan-potential, and wait-count features.
+  - Train a value or Q/reranker target from official trajectories and Tziakcha positive-outcome games.
+  - Use the user guideline as a reward/feature term: maximize >=8-fan structure with many waits, then first/second/third-class effective tiles.
+  - Gate every candidate on the original official sample-bot benchmark before promotion; keep `HU` fail-closed unless official fan checking proves fan >= 8.
+
+### Hard reset: Lawlorentz-first effective-tile base policy
+
+- [x] Record the failure lesson from the prior >30-hour path.
+  - The old model-search path optimized proxy/offline labels before enforcing the effective-tile rule as the base policy.
+  - Old learned artifacts are no longer promotion candidates.
+- [x] Delete old learned artifacts while preserving datasets and interfaces.
+  - Preserve `data/`, official judge/fan interfaces, dataset converters, and `external/Chinese-Standard-Mahjong-DRL`.
+  - Remove old `models/`, `runs/`, `dist/`, temp outputs, packaged bots, and committed historical search reports.
+- 2026-05-26 reset result: deleted local generated `models/`, `runs/`, `dist/`, `tmp/`, `.pytest_cache/`, root `mcr_*.zip` files, old pure sklearn Botzone export code, and stale export tests that depended on removed pickle artifacts.
+- [x] Reimplement the main policy from a Lawlorentz-style masked action structure with the effective-tile guideline as the base scorer.
+  - Use Lawlorentz action IDs and response mapping as the action interface.
+  - PyMahjongGB is a required dependency for fan/shanten evaluation; dependency failures must be fixed rather than skipped.
+  - Use the effective-tile hierarchy as the sole draw-discard ranking rule before any learned score.
+  - Reactions stay conservative: take legal `HU`; otherwise only take melds when the resulting discard improves the effective-tile score.
+- 2026-05-26 dependency result: installed Visual Studio Build Tools 2022 C++ workload and installed `PyMahjongGB`; Lawlorentz imports verified with `FeatureAgent.ACT_SIZE == 235` and `OBS_SIZE == 71`.
+- 2026-05-26 implementation result: added `scripts/lawlorentz_policy.py`, made `scripts/botzone_json_policy_bot.py` Lawlorentz-first, added official-judge `lawlorentz_effective` policy support, and moved the read-only Tziakcha advisor default away from deleted sklearn model artifacts.
+- [x] Test the new policy on all preserved dataset families.
+  - Official sample-bot gates over public Botzone, 2026 organizer, Tziakcha, and suit-permuted initdata files.
+  - Offline action/replay diagnostics for datasets whose records include response logs.
+  - Summarize results in `runs/lawlorentz_effective_all_datasets_report.json`.
+  - 2026-05-26 all-dataset screen: `runs/lawlorentz_effective_all_datasets_report_4each.json` covered 18 usable raw/eval datasets at 4 games/examples each. Official initdata screens ranged from 1/4 to 4/4 player-0 wins depending on slice; replay-action agreement was about 0.74 on 2026 strong-AI logs and about 0.90 on Tziakcha logs. This is a screen, not a statistically meaningful full win-rate claim.
+  - 2026-05-26 current 32-game gate: `runs/lawlorentz_effective_vs_botzone1000_sample_32.json` scored 10/32 player-0 wins, 31.25% win rate, 13.6875 average score, terminal actions 10 `HU` / 22 `HUANG`, minimum player-0 Hu fan 8.
+
+### Tziakcha plugin fan-context Hu gate
+
+- [x] Add RED tests for Tziakcha state fan context.
+  - Cover after-kong draw, flower replacement after kong, rob-kong prompt, visible-count last-tile tracking, stale-discard prompt classification, and below-8 Hu suppression.
+  - Red check: `python -m pytest tests\test_tziakcha_state.py::test_state_tracks_kong_draw_and_robbing_kong_win_context tests\test_tziakcha_state.py::test_state_tracks_visible_tiles_for_last_tile_hu_context tests\test_tziakcha_advisor.py::test_model_advisor_passes_last_tile_and_self_draw_flags_to_fan_checker tests\test_tziakcha_advisor.py::test_model_advisor_passes_after_kong_and_robbing_kong_flags_to_fan_checker tests\test_tziakcha_advisor.py::test_model_advisor_keeps_hu_suppressed_when_fan_checker_rejects_special_context -q --basetemp tmp\pytest_tziakcha_fan_red` failed because the state snapshot did not expose `last_win_event`/`visible_counts` and the advisor still passed false special flags.
+- [x] Track official-fan context in the read-only Tziakcha state.
+  - Preserve observed discard/chi/pung/kong semantics closely enough to calculate last tile, after-kong draw, rob-kong, self-draw, and no-point-hand contexts.
+  - Keep the extension read-only; do not send actions to the site.
+- [x] Pass full context into the official fan checker before recommending Hu.
+  - `HU` remains legal only when the fan checker explicitly returns `can_hu` with fan >= 8.
+  - Unknown fan or checker errors must suppress `HU`.
+- [x] Verify focused advisor/state tests and the relevant broader suite.
+  - Focused stale-discard regression: `python -m pytest tests\test_tziakcha_advisor.py::test_model_advisor_keeps_hu_suppressed_when_fan_checker_rejects_special_context -q --basetemp tmp\pytest_tziakcha_stale_discard_red` failed before the prompt-classification fix and passed after with `tmp\pytest_tziakcha_stale_discard_green`.
+  - Focused fan-context check: `python -m pytest tests\test_tziakcha_state.py::test_state_tracks_kong_draw_and_robbing_kong_win_context tests\test_tziakcha_state.py::test_state_tracks_visible_tiles_for_last_tile_hu_context tests\test_tziakcha_state.py::test_state_preserves_after_kong_flag_through_flower_replacement tests\test_tziakcha_advisor.py::test_model_advisor_passes_last_tile_and_self_draw_flags_to_fan_checker tests\test_tziakcha_advisor.py::test_model_advisor_passes_after_kong_and_robbing_kong_flags_to_fan_checker tests\test_tziakcha_advisor.py::test_model_advisor_keeps_hu_suppressed_when_fan_checker_rejects_special_context -q --basetemp tmp\pytest_tziakcha_fan_green4` passed with 6 tests.
+  - Tziakcha suite: `python -m pytest tests\test_tziakcha_state.py tests\test_tziakcha_advisor.py tests\test_tziakcha_server.py -q --basetemp tmp\pytest_tziakcha_fan_targeted3` passed with 24 tests.
+  - Full suite: `python -m pytest tests -q --basetemp tmp\pytest_tziakcha_fan_full3` passed with 157 tests and 1 existing sklearn convergence warning.
+
+### Tziakcha live result recording
+
+- [x] Add RED tests for result/stat tracking.
+  - Cover a ron/deal-in result with Tziakcha settlement bit flags, a self-draw win, a drawn hand, `/results` exposure, and persistent JSONL logging.
+  - Red check: `python -m pytest tests\test_tziakcha_state.py::test_state_records_ron_result_and_deal_in_rate_from_settlement_flags tests\test_tziakcha_state.py::test_state_records_self_draw_win_and_drawn_game_rates tests\test_tziakcha_server.py::test_results_route_exposes_stats_and_persists_jsonl -q --basetemp tmp\pytest_tziakcha_results_red` failed because result fields and `/results` did not exist.
+- [x] Track completed game results in the read-only observer state.
+  - Record winner, discarder, self-draw/ron/draw, scores, fan when visible, local-seat win/deal-in booleans, win rate, and deal-in rate.
+  - Do not send actions or mutate the live site.
+- [x] Expose results through the local service and plugin UI.
+  - Add `/results` and show the running stats in the dashboard/overlay.
+  - Append new completed results to a repo-local JSONL ledger for later audit.
+- [x] Verify focused state/server tests and the full suite.
+  - Focused green check: `python -m pytest tests\test_tziakcha_state.py::test_state_records_ron_result_and_deal_in_rate_from_settlement_flags tests\test_tziakcha_state.py::test_state_records_self_draw_win_and_drawn_game_rates tests\test_tziakcha_server.py::test_results_route_exposes_stats_and_persists_jsonl -q --basetemp tmp\pytest_tziakcha_results_green` passed with 3 tests.
+  - Tziakcha suite: `python -m pytest tests\test_tziakcha_state.py tests\test_tziakcha_advisor.py tests\test_tziakcha_server.py -q --basetemp tmp\pytest_tziakcha_results_targeted` passed with 27 tests.
+  - Full suite: `python -m pytest tests -q --basetemp tmp\pytest_tziakcha_results_full` passed with 160 tests and 1 existing sklearn convergence warning.
+  - Live service restart: `http://127.0.0.1:8765/health` returned `ok=true`, `model_loaded=true`, `read_only=true`; `/results` returned zero-game stats until the next observed completed game.
+
+### Lawlorentz-format retraining dataset
+
+- [x] Build a GitHub-version-format dataset from Tziakcha and preserved local raw logs.
+  - Use `lawlorentz/Chinese-Standard-Mahjong-DRL` `FeatureAgent` observations, action masks, and 235-action labels.
+  - Include Tziakcha converted raw logs plus local Botzone/public/organizer logs.
+  - Preserve the hard rule: do not invent `HU` labels; only train `HU` where the source replay already accepted it, and runtime fan checks must still fail closed.
+- 2026-05-26 result: added `scripts/build_lawlorentz_dataset.py`; built `data/processed/lawlorentz_tziakcha_local_balanced_v1` from 517 Tziakcha records, 1,000 public Botzone records, and 1,000 organizer-local records.
+- Dataset artifact: 9 GitHub-style `.npz` shards under `data/processed/lawlorentz_tziakcha_local_balanced_v1/cooked_data_without0`, `count.json`, and `manifest.json`; 161,196 examples; zero invalid shanten one-hot observations after filtering.
+- [x] Train a new Lawlorentz CNN supervised checkpoint from that dataset.
+  - Use the upstream `CNNModel` architecture, but make the local trainer CPU/GPU-safe and artifact-oriented.
+  - Save manifest, metrics, checkpoint, and a quick official-judge screen before considering any promotion.
+- 2026-05-26 CPU training result: added `scripts/train_lawlorentz_supervised.py` and `LawlorentzModelPolicy` support in `scripts/lawlorentz_policy.py` / `scripts/official_judge_match.py`.
+- Dependency fix: installed missing PyTorch optimizer dependencies (`mpmath<1.4`, `filelock`, `fsspec`, `networkx`; plus `regex` and `psutil` for reported package requirements).
+- Full 30k-sample CNN training did not finish one epoch within 30 minutes on CPU, so it was stopped and replaced by CPU-bounded checkpoints:
+  - `models/lawlorentz_supervised_tziakcha_local_balanced_v1_8k.pt`: 8,192 train samples, 2,048 validation samples, validation action accuracy 37.84%; official 8-game sample-bot screen `runs/official_judge_lawlorentz_supervised_8k_vs_sample_8.json` scored 1/8 wins, average score 4.25, minimum player-0 Hu fan 10.
+  - `models/lawlorentz_supervised_tziakcha_local_balanced_v1_8k_e3.pt`: continued to validation action accuracy 42.58%, but official 8-game screen `runs/official_judge_lawlorentz_supervised_8k_e3_vs_sample_8.json` regressed to 0/8 wins.
+- Conclusion: the retraining pipeline works and produces legal fan-gated checkpoints, but the first CPU-bounded neural checkpoints are worse than the current `lawlorentz_effective` 32-game baseline and must not be promoted.
+
+### All-dataset and Tziakcha-focused evaluation
+
+- [x] Extend the all-dataset evaluator so explicit dataset patterns do not accidentally include default patterns, and so it can evaluate either the current Lawlorentz-effective policy or a trained Lawlorentz checkpoint.
+  - Updated `scripts/evaluate_lawlorentz_effective_all_datasets.py` with explicit `--dataset-pattern` semantics and `--policy lawlorentz_model --model ...` support.
+- [x] Run a full replay-agreement evaluation on the Tziakcha converted test files, especially `data/raw/tziakcha_human_botzone_raw_517.jsonl`.
+  - Full `levels=0` Tziakcha 517 artifact: `runs/lawlorentz_effective_l0_tziakcha517_full_replay.json`.
+  - Tziakcha 517 result: 517 matches, 213,556 decisions, exact agreement 0.89355, action-type agreement 0.97716, active-draw exact 0.32178, active-draw action-type 0.98208, reaction action-type 0.97598.
+  - Full Tziakcha family artifact: `runs/lawlorentz_effective_l0_tziakcha_all_full_replay.json`; suit-augmented 517x6 result: 3,102 matches, 1,281,336 decisions, exact agreement 0.89368, action-type agreement 0.97715.
+  - `levels=1` full 517 replay did not finish within 15 minutes on CPU and was stopped. A 32-record `levels=1` Tziakcha run wrote `runs/lawlorentz_effective_l1_tziakcha32_full_replay.json` and slightly improved exact/action-type agreement versus `levels=0` on that 32-record file.
+- [x] Run an all preserved dataset coverage pass across `data/raw/*.jsonl` and `data/eval/*.jsonl`.
+  - Artifact: `runs/lawlorentz_effective_l0_all_datasets_16each.json`.
+  - Covered 18 supported raw/eval JSONL files with 16 records/games each where available; no dataset errors.
+  - Official sample slices ranged from 2/8 to 7/16 player-0 wins depending on initdata file; all recorded player-0 Hu fan minima were >=8.
+  - Replay slices: Tziakcha action-type agreement stayed around 0.977-0.984; organizer strong-AI replay action-type agreement was about 0.764 and draw action-type only about 0.087, showing that source is not aligned with this rule policy.
+- [x] Record the exact artifacts, results, and promotion decision.
+  - Built Tziakcha-only cooked eval set `data/processed/lawlorentz_tziakcha517_eval_v1` with 34,424 examples.
+  - Full CNN checkpoint evaluation over all 34,424 Tziakcha examples timed out after 15 minutes on CPU and was stopped; prefix-2,048 artifact `runs/lawlorentz_checkpoint_tziakcha517_prefix2048_action_accuracy.json` showed 36.13% accuracy for the 8k checkpoint and 41.99% for the continued checkpoint.
+  - Promotion decision remains unchanged: do not promote either trained checkpoint; keep the current Lawlorentz-effective policy as the working model.
+
+### Hu-rate and average-Hu-turn retest
+
+- [x] Add explicit Hu-rate and average-Hu-turn metrics to replay and official-judge reports.
+  - Replay metrics now include actual/predicted Hu response counts, match-level Hu rates, and average first-Hu turn.
+  - Official judge terminal summaries now include terminal Hu count/rate and average Hu turn, plus player-0 Hu count/rate/average turn.
+- [x] Re-run the focused Tziakcha 517 replay test with the new Hu metrics.
+  - Artifact: `runs/lawlorentz_effective_l0_tziakcha517_full_replay_hu_metrics.json`.
+  - Result: 517 matches, actual Hu match rate 0.93617, average actual first-Hu turn 98.38843, predicted Hu match rate 0.93617, average predicted first-Hu turn 97.85537.
+  - Actual Hu responses: 484; predicted Hu responses: 525; action-type agreement remained 0.97716.
+- [x] Re-run an official sample-bot gate with the new terminal Hu metrics.
+  - Artifact: `runs/official_judge_lawlorentz_effective_l0_vs_sample_32_hu_metrics.json`.
+  - Result: 32 games, player-0 wins 8/32, average score 10.4375, terminal Hu rate 0.25, average Hu turn 118.125, minimum player-0 Hu fan 8.
+- [x] Re-run all supported dataset coverage with the new Hu metrics.
+  - Artifact: `runs/lawlorentz_effective_l0_all_datasets_16each_hu_metrics.json`.
+  - Covered 18 supported raw/eval JSONL files with 16 records/games each where available.
+  - Tziakcha slices had actual Hu rates from 0.75 to 0.9375 and predicted Hu rates from 0.9375 to 1.0 on the 16-record slices; official initdata slices had terminal Hu rates from 0.1875 to 0.4375.
+
+### CHAGA replay agreement
+
+- [x] Find public Tziakcha records whose visible player names match `CHAGA02` through `CHAGA08`.
+  - Public history page 0 exposed six CHAGA-containing sessions; pages 1+ returned HTTP 403 from the shell fetch path.
+  - Found selected names in fetched records: `CHAGA02`, `CHAGA03`, `CHAGA04`, `CHAGA07`, `CHAGA08`; no `CHAGA05` or `CHAGA06` in the accessible page-0 sample.
+- [x] Fetch those bot-including records and preserve the raw player names needed for seat filtering.
+  - Artifacts: `data/raw/tziakcha_chaga0208_records.jsonl`, `data/raw/tziakcha_chaga0208_botzone_raw.jsonl`, `runs/tziakcha_chaga0208_fetch_convert_summary.json`.
+  - Result: six sessions, 76 records attempted/written/converted, zero fetch errors and zero conversion errors.
+- [x] Add a replay evaluator that counts only CHAGA02-CHAGA08 decisions while still feeding full-table context to the policy.
+  - Added `scripts/evaluate_chaga_replay.py` and `tests/test_evaluate_chaga_replay.py`.
+- [x] Report CHAGA-filtered Hu exact-match rate, play exact-match rate, play action-type rate, and source artifacts.
+  - Artifact: `runs/lawlorentz_effective_l0_tziakcha_chaga0208_replay.json`.
+  - Aggregate result: 17,973 selected CHAGA02-08 decisions, exact agreement 90.124%, action-type agreement 98.359%, actual-Hu exact match 51/53 = 96.226%, PLAY exact match 715/2,098 = 34.080%, PLAY action-type match 2,098/2,098 = 100%.
+
+### CHAGA play-exact training pass
+
+- [x] Try to expand CHAGA02-CHAGA08 data beyond page-0 public history.
+  - Full Tziakcha history requires logged-in `TZI_HISTORY_COOKIE`; current shell environment does not have it, and page 1+ public POSTs return HTTP 403.
+  - Do not print or persist any browser cookie value if one becomes available.
+- [x] Build a reproducible CHAGA-only training/eval split.
+  - Preserve full-table replay context, but mark only `CHAGA02`-`CHAGA08` seats as trainable.
+  - Hold out complete records so the PLAY exact rate is not measured on training records.
+- [x] Make existing candidate trainers honor `train_players` so non-CHAGA seats do not become labels.
+- [x] Train CHAGA teacher models with PLAY exact rate as the primary target.
+  - Start with fast legal feature rankers before slower Lawlorentz CNN/RL work.
+  - Keep the official fan gate unchanged; CHAGA training must not relax `HU`.
+- [x] Evaluate held-out CHAGA PLAY exact rate against the current Lawlorentz-effective baseline and record artifacts.
+  - Split artifacts: `data/processed/chaga0208/tziakcha_chaga0208_train.jsonl`, `data/processed/chaga0208/tziakcha_chaga0208_eval.jsonl`, `data/processed/chaga0208/tziakcha_chaga0208_summary.json`.
+  - Baseline held-out artifact: `runs/lawlorentz_effective_l0_tziakcha_chaga0208_eval_replay.json`, PLAY exact `165/535 = 30.841%`.
+  - Best CHAGA feature artifact: `models/composite_chaga0208_drawnumeric_lr004_i320_leaf3_reactionfan.pkl`; held-out artifact `runs/composite_chaga0208_drawnumeric_lr004_i320_leaf3_reactionfan_eval_replay.json`, PLAY exact `255/535 = 47.664%`.
+  - Official sanity gate: `runs/official_judge_composite_chaga0208_drawnumeric_lr004_i320_leaf3_reactionfan_vs_sample_16.json`, 2/16 wins, average score 5.4375, min player-0 Hu fan 9; this is a CHAGA imitation base, not a promoted play-strength model.
+  - Lawlorentz CHAGA base dataset/checkpoint: `data/processed/lawlorentz_chaga0208_train_v1`, `models/lawlorentz_supervised_chaga0208_train_v1.pt`; full eval timed out on CPU, prefix-3 artifact `runs/lawlorentz_supervised_chaga0208_train_v1_eval_prefix3_replay.json` had PLAY exact `42/96 = 43.75%`.
+
+### NRP L40 Transformer training pass
+
+- [ ] Request and verify NRP L40/L40S compute for this repo.
+  - Use the signed-in NRP portal to inspect resource availability and the local `nautilus` Kubernetes context.
+    - Prefer 1 to 2 L40/L40S GPUs for the first Transformer run; do not create idle sleep pods.
+    - Correction: do not use the NRP/Airtable reservation form for this workflow. Use only Kubernetes scheduling and, if no L40/L40S is free, wait and check every 15 minutes.
+    - Record the submitted pod/job name, scheduling status, node/GPU type, and training log path.
+    - 2026-05-27 update: Kubernetes-only job `mcr-transformer-l40-fit-20260527` completed on `rci-tide-gpu-04.sdsu.edu` (`NVIDIA-L40`).
+    - First L40 Transformer result: 4,593,154 parameters, best epoch 23, held-out CHAGA PLAY exact `0.491589`, overall exact `0.524444`; final epoch overfit to PLAY exact `0.364486`.
+    - Added best-checkpoint selection by held-out CHAGA PLAY exact rate so future jobs save the best epoch rather than the overfit final epoch.
+    - Compact follow-up job `mcr-transformer-l40-sweep-20260527a` is running on `rci-tide-gpu-06.sdsu.edu` (`NVIDIA-L40`); current observed best from logs is compact `d_model=128`, 3 layers, `lr=1e-4`, PLAY exact `0.495327`.
+    - Deep-research strategy file `C:\Users\Shengqi Li\Downloads\deep-research-report.md` is now treated as the governing training plan: rule-augmented candidate-action Transformer, exact legal masks, no `HU` below 8 fan, value supervision, high-ELO/tziakcha-first data, CHAGA as optional teacher, and model-size ablations.
+    - Size-scaling job `mcr-transformer-l40-size-20260527a` was submitted through Kubernetes only and is pending an additional L40/L40S. It tests 4.6M, 13.5M, 30.0M, and 73.0M parameter Transformers before deciding whether to push size further.
+    - 2026-05-27 size update: `mcr-transformer-l40-size-20260527a` started on `rci-tide-gpu-02.sdsu.edu` (`NVIDIA-L40`). Observed completed size metrics so far: 4.6M params PLAY exact `0.491589`; 13.5M params PLAY exact `0.508411`; 30.0M params PLAY exact `0.495327`; 73.0M params reached PLAY exact `0.521495` by epoch 18 while still running.
+    - Because the 73.0M model improved the best metric, submitted Kubernetes-only size-push job `mcr-transformer-l40-sizepush-20260527a` for 178.8M and 356.8M parameter tests. It is pending an additional L40/L40S.
+    - 2026-05-27 size-push result: 178.8M params reached PLAY exact `0.525234`; 356.8M params reached PLAY exact `0.527103`. Since larger size was still improving, submitted Kubernetes-only `mcr-transformer-l40-sizepush2-20260527a` for a 625.8M parameter test.
+    - 2026-05-27 largest-size result: `mcr-transformer-l40-sizepush2-20260527a` completed on `rci-tide-gpu-06.sdsu.edu` (`NVIDIA-L40`). The 625.8M parameter model peaked at PLAY exact `0.512150`, below the 356.8M run, so current scaling no longer improves this flat held-out imitation setup.
+    - Downloaded public GitHub ELO source to `data/raw/tziakcha_current_elo.csv` after verifying `tziakcha-stats/tziakcha_records/rank/current_elo.csv` through the GitHub connector. The file has 2,422 player rows and 448 players with ELO greater than 2300.
+    - Added ELO/min-score filtering to the training-data prep path and generated score-filtered splits under `data/processed/high_elo2300/`: CHAGA page-0 records select 76/76 records; local human256 records select 160/256 records. This is the current available high-ELO dataset, but it does not yet satisfy the larger "all tziakcha history" requirement.
+    - Submitted Kubernetes-only high-ELO training job `mcr-transformer-l40-highelo-20260527a`: train on score-filtered CHAGA page-0 train plus human256 train; evaluate on score-filtered CHAGA held-out eval.
+    - 2026-05-27 high-ELO mixed result: `mcr-transformer-l40-highelo-20260527a` completed on `rci-tide-gpu-02.sdsu.edu` (`NVIDIA-L40`). The 178.8M parameter high-ELO-mixed run peaked at PLAY exact `0.516640`, below the CHAGA-only 356.8M run.
+    - 2026-05-27 CHAGA review alignment audit: `runs/chaga_review_alignment_audit_1000_summary.json` sampled 1,000 random aligned reviewed states from 2,080 aligned review states. Recorded action vs CHAGA review candidates was top-1 `0.961`, top-3 `0.961`, and first-six-discard-top-3-else-top-1 `0.961`; offered tile, drawn tile, current actor, and hand-size checks were all `1.0` in the sample, with one claim-window mismatch and actual-in-legal-mask `0.962`.
+- [ ] Add tests for a rule-augmented Transformer candidate scorer.
+  - Cover grouped candidate examples, candidate masks, policy/value forward shapes, and fail-closed `HU` masking.
+  - Keep `HU` legal only when the candidate source/rule gate already proves fan >= 8; unknown fan must be masked.
+- [ ] Implement a compact Transformer training script that follows the current plan.
+  - Use structured Lawlorentz observation tensors, action-history tokens, scalar context, candidate-action features, and a value head.
+  - Train only over exact legal candidates; never use a flat unmasked action distribution.
+  - Support CHAGA/tziakcha train-player filters and held-out PLAY exact evaluation.
+- [ ] Run local CPU smoke tests before using the NRP job.
+  - Required checks: focused pytest, tiny overfit/smoke train, and no-low-fan-Hu invariant.
+- [ ] Sync the verified repo snapshot to the NRP PVC and launch the L40/L40S training job.
+  - Use a finite Kubernetes Job with real training work, mounted persistent storage, and artifact output under `models/` and `runs/`.
+  - Periodically check job/pod status until allocated/running, then collect final metrics.
+- [ ] Evaluate and record whether the Transformer is promotable.
+  - Primary replay metric: held-out CHAGA PLAY exact rate.
+  - Strength gate: official sample-bot screen with minimum player-0 Hu fan >= 8.
+  - Do not promote a checkpoint that beats replay imitation but regresses official-judge strength.
+
+### CHAGA soft-distillation Transformer pass
+
+- [ ] Add test-first support for CHAGA review candidate distributions in the Transformer trainer.
+  - Map CHAGA candidate strings to legal Lawlorentz action IDs by tile type/family, not physical tile ID.
+  - Collate optional teacher distributions over the legal candidate list.
+  - Train with hard recorded-action loss plus soft CHAGA candidate cross-entropy/KL.
+  - Report teacher top-1/top-3 metrics separately from recorded-action PLAY exact.
+  - 2026-05-27 implementation update: added tested CHAGA soft-target mapping, optional teacher distributions in batches, finite-loss teacher CE, and model-vs-review top-1/top-3/relaxed metrics. Regression tests cover padded `-inf` logits so teacher loss cannot become `NaN`.
+- [ ] Build an all-aligned CHAGA review target file from the current accessible CHAGA02-08 records.
+  - Use the CHAGA review API cache and the existing 1,000-state audit logic, but write every aligned state instead of a sample.
+  - Keep only states whose offered tile, drawn tile, actor, hand-size, and window checks pass.
+  - 2026-05-27 artifact: `runs/chaga_review_alignment_audit_all.jsonl` contains 2,080 aligned review states from 76 accessible CHAGA-containing records.
+- [ ] Train the next model on L40 through Kubernetes only after local tests pass.
+  - Use the public GitHub ELO file to keep `>2300` filtering.
+  - Include every currently available filtered dataset shard; do not silently drop a source.
+  - Stop scaling size blindly unless the soft-distillation design improves the validation metrics.
+  - 2026-05-27 corrected baseline metric: `runs/transformer_chaga0208_l40_eval_model_vs_chaga_review_metrics_script.json` evaluates the local 4.6M L40 checkpoint against held-out reviewed CHAGA states. Model-vs-review top-1 is `0.371648`, top-3 is `0.557471`, first-six-discard relaxed is `0.471264`; PLAY-only relaxed is `0.484211`.
+  - 2026-05-27 Kubernetes-only job `mcr-transformer-l40-softdistill-20260527a` started on `rci-tide-gpu-06.sdsu.edu` (`NVIDIA-L40`) and is training the high-ELO soft-distillation model against this review-candidate metric.
+
+### Turn-level CHAGA mismatch visualization and cleanup
+
+- [x] Generate a turn-level visualization of where model decisions differ from CHAGA review candidates.
+  - Use model-predicted action vs CHAGA candidates, not recorded player action vs CHAGA candidates.
+  - Apply the corrected relaxed metric: top-3 is accepted only for a player's first six `PLAY`/discard decisions; otherwise require top-1.
+  - Artifact: `runs/transformer_chaga0208_l40_eval_mismatch_by_turn.svg`.
+  - Companion artifacts: `runs/transformer_chaga0208_l40_eval_mismatch_by_turn.png`, `runs/transformer_chaga0208_l40_eval_mismatch_by_turn.csv`, and `runs/transformer_chaga0208_l40_eval_mismatch_by_turn_summary.json`.
+  - Current local 4.6M checkpoint result on 522 held-out reviewed states: 276 relaxed mismatches, relaxed mismatch rate `0.528736`.
+- [x] Clear completed Kubernetes pods/jobs without touching the running L40 job.
+  - Deleted only completed `app=mcr-transformer` jobs: `mcr-transformer-l40-fit-20260527`, `mcr-transformer-l40-highelo-20260527a`, `mcr-transformer-l40-size-20260527a`, `mcr-transformer-l40-sizepush-20260527a`, `mcr-transformer-l40-sizepush2-20260527a`, and `mcr-transformer-l40-sweep-20260527a`.
+  - Verified only `mcr-transformer-l40-softdistill-20260527a` remains active on `rci-tide-gpu-06.sdsu.edu` (`NVIDIA L40`).
+- [ ] Push the current repo snapshot to GitHub before requesting the GPT Pro review.
+- [ ] Ask GPT Pro for a repo-grounded precision-improvement review and use the advice to choose the next training change.

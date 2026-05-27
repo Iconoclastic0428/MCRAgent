@@ -31,6 +31,7 @@
     overlay.innerHTML = [
       '<div style="font-size:11px;color:#9fb0c0;text-transform:uppercase;letter-spacing:.04em">MCR Model Advisor</div>',
       '<div data-role="rec" style="font-size:22px;font-weight:750;color:#7dd3fc;margin-top:3px">Waiting</div>',
+      '<div data-role="stats" style="font-size:12px;color:#d7dde5;margin-top:5px;line-height:1.35"></div>',
       '<div data-role="hand" style="font-size:12px;color:#c6d0dc;margin-top:5px;line-height:1.35"></div>'
     ].join('');
     (document.body || document.documentElement).appendChild(overlay);
@@ -48,14 +49,23 @@
     const overlay = document.getElementById('tziakcha-mcr-advisor-overlay');
     if (!overlay) return;
     try {
-      const [state, rec] = await Promise.all([
+      const [state, rec, results] = await Promise.all([
         fetch(`${ADVISOR_BASE}/state`).then((response) => response.json()),
-        fetch(`${ADVISOR_BASE}/recommendation`).then((response) => response.json())
+        fetch(`${ADVISOR_BASE}/recommendation`).then((response) => response.json()),
+        fetch(`${ADVISOR_BASE}/results`).then((response) => response.json())
       ]);
+      const stats = results.stats || {};
       overlay.querySelector('[data-role="rec"]').textContent = rec.text || 'Waiting';
+      overlay.querySelector('[data-role="stats"]').textContent = [
+        `G ${stats.games || 0}`,
+        `W ${(100 * (stats.win_rate || 0)).toFixed(1)}%`,
+        `D-in ${(100 * (stats.deal_in_rate || 0)).toFixed(1)}%`,
+        `Avg ${Number(stats.average_score_delta || 0).toFixed(1)}`
+      ].join(' | ');
       overlay.querySelector('[data-role="hand"]').textContent = (state.hand_display || []).join(' ');
     } catch (error) {
       overlay.querySelector('[data-role="rec"]').textContent = 'Advisor offline';
+      overlay.querySelector('[data-role="stats"]').textContent = '';
       overlay.querySelector('[data-role="hand"]').textContent = '';
     }
   }

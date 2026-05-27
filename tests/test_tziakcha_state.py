@@ -138,3 +138,127 @@ def test_self_melds_remove_tiles_and_record_pack():
     snapshot = state.snapshot()
     assert snapshot["hand"] == [39, 72]
     assert snapshot["melds"][-1] == kong_pack
+
+
+def test_state_tracks_kong_draw_and_robbing_kong_win_context():
+    state = AdvisorState()
+    state.ingest({"m": 4, "v": 0, "i": {"t": 0}})
+    state.ingest({"m": 2, "r": 2, "v": [36, 37, 38, 39, 72]})
+    kong_pack = (2 << 8) | (36 >> 2)
+    state.ingest({"m": 2, "r": 10, "v": 0, "p": kong_pack})
+    state.ingest({"m": 2, "r": 6, "v": 0, "t": 120, "h": 12, "a": {"6": [0]}})
+
+    snapshot = state.snapshot()
+
+    assert snapshot["last_win_event"] == {
+        "seat": 0,
+        "tile": 120,
+        "source": "draw",
+        "is_self_draw": True,
+        "is_about_kong": True,
+    }
+
+    state.ingest({"m": 2, "r": 7, "v": 1, "t": 40})
+    promoted_kong_pack = (3 << 8) | (40 >> 2)
+    state.ingest({"m": 2, "r": 10, "v": 1, "p": promoted_kong_pack, "a": {"6": [0], "8": [0]}})
+
+    snapshot = state.snapshot()
+
+    assert snapshot["last_win_event"] == {
+        "seat": 1,
+        "tile": 40,
+        "source": "bugang",
+        "is_self_draw": False,
+        "is_about_kong": True,
+    }
+
+
+def test_state_tracks_visible_tiles_for_last_tile_hu_context():
+    state = AdvisorState()
+    state.ingest({"m": 4, "v": 0, "i": {"t": 0}})
+    for seat in (1, 2, 3):
+        state.ingest({"m": 2, "r": 7, "v": seat, "t": 36})
+        state.ingest({"m": 2, "r": 6, "v": seat, "t": 72})
+
+    state.ingest({"m": 2, "r": 7, "v": 1, "t": 36, "a": {"6": [0], "8": [0]}})
+    snapshot = state.snapshot()
+
+    assert snapshot["visible_counts"][36 >> 2] == 3
+    assert snapshot["last_win_event"]["tile"] == 36
+
+
+def test_state_preserves_after_kong_flag_through_flower_replacement():
+    state = AdvisorState()
+    state.ingest({"m": 4, "v": 0, "i": {"t": 0}})
+    state.ingest({"m": 2, "r": 2, "v": [36, 37, 38, 39, 72]})
+    kong_pack = (2 << 8) | (36 >> 2)
+    state.ingest({"m": 2, "r": 10, "v": 0, "p": kong_pack})
+    state.ingest({"m": 2, "r": 4, "v": 0, "t": 120, "h": 12, "a": {"6": [0]}})
+
+    assert state.snapshot()["last_win_event"] == {
+        "seat": 0,
+        "tile": 120,
+        "source": "draw",
+        "is_self_draw": True,
+        "is_about_kong": True,
+    }
+
+
+def test_state_records_ron_result_and_deal_in_rate_from_settlement_flags():
+    state = AdvisorState()
+    state.ingest({"m": 4, "v": 1, "i": {"t": 1}})
+    state.ingest({"m": 2, "r": 2, "v": [0, 4, 8]})
+    state.ingest({"m": 2, "r": 7, "v": 1, "t": 36})
+    state.ingest(
+        {
+            "m": 2,
+            "r": 12,
+            "b": (1 << 2) | (1 << (1 + 4)),
+            "s": [-8, -16, 32, -8],
+            "h": 8,
+        }
+    )
+
+    snapshot = state.snapshot()
+
+    assert snapshot["last_result"] == {
+        "round_index": 1,
+        "seat": 1,
+        "winner": 2,
+        "discarder": 1,
+        "is_draw": False,
+        "is_self_draw": False,
+        "is_win": False,
+        "is_deal_in": True,
+        "scores": [-8, -16, 32, -8],
+        "score_delta": -16,
+        "fan": 8,
+        "source": "settlement",
+        "event_count": 4,
+    }
+    assert snapshot["result_stats"]["games"] == 1
+    assert snapshot["result_stats"]["wins"] == 0
+    assert snapshot["result_stats"]["deal_ins"] == 1
+    assert snapshot["result_stats"]["win_rate"] == 0.0
+    assert snapshot["result_stats"]["deal_in_rate"] == 1.0
+
+
+def test_state_records_self_draw_win_and_drawn_game_rates():
+    state = AdvisorState()
+    state.ingest({"m": 4, "v": 0, "i": {"t": 0}})
+    state.ingest({"m": 2, "r": 2, "v": [0, 4, 8]})
+    state.ingest({"m": 2, "r": 6, "v": 0, "t": 36})
+    state.ingest({"m": 2, "r": 12, "v": 0, "s": [48, -16, -16, -16], "h": 8})
+    state.ingest({"m": 2, "r": 14, "v": 0})
+    state.ingest({"m": 2, "r": 2, "v": [0, 4, 8]})
+    state.ingest({"m": 2, "r": 13, "s": [0, 0, 0, 0]})
+
+    stats = state.snapshot()["result_stats"]
+
+    assert stats["games"] == 2
+    assert stats["wins"] == 1
+    assert stats["draws"] == 1
+    assert stats["deal_ins"] == 0
+    assert stats["win_rate"] == 0.5
+    assert stats["deal_in_rate"] == 0.0
+    assert state.snapshot()["result_history"][-1]["is_draw"] is True
