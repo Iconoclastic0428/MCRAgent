@@ -973,4 +973,11 @@ Review:
 - [ ] Expand the reviewed CHAGA/tziakcha corpus before the next serious L40 training run.
   - Preferred route: fetch more tziakcha sessions/records through the available authenticated pipeline without printing or persisting credentials.
   - Then rebuild the audit with `--no-sample` and either `--use-train-players` or a verified `--player-regex`, split by session, and only launch L40 training once the reviewed-state counts are large enough to make validation meaningful.
-- [ ] Push the pass-2 hardening commit and ask GPT Pro for the next review before launching another large training job.
+- [x] Push the pass-2 hardening commit and ask GPT Pro for the next review before launching another large training job.
+  - Pushed commit `efcf71f` and saved the next GPT Pro response to `docs/reviews/gpt-pro-chaga-precision-expansion-2026-05-27.md`.
+  - Key advice: the hardening is sufficient for data expansion, but the trainer must expose original-candidate validation metrics in-loop before the next L40 run; then expand the reviewed corpus and train reviewed-only accepted-set first.
+- [x] Add in-loop original-candidate validation metrics to the trainer.
+  - `collate_transformer_examples()` now carries original CHAGA top-1/top-3 masks, original-reviewed row flags, and top-1-is-PLAY flags.
+  - `evaluate_model()` now reports `original_top1_accuracy`, `original_top3_inclusion`, `original_relaxed_accuracy`, `original_play_relaxed_accuracy`, and sample counts so future runs can use `--monitor-metric val_original_relaxed_accuracy`.
+- [ ] Add a pre-L40 dry-run gate for expanded reviewed corpora.
+  - Required checks from GPT Pro: full 235 candidate width, no candidate truncation, no reviewed rows without teacher distributions/original targets, no malformed top-3 relaxation rows, and no accepted `HU` outside the legal/rule mask.

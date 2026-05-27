@@ -24,6 +24,7 @@ from train_transformer_candidate import (  # noqa: E402
     collate_transformer_examples,
     count_model_parameters,
     encode_history_event,
+    evaluate_model,
     filter_reviewed_examples,
     hu_gated_candidate_mask,
     is_better_checkpoint_metric,
@@ -113,6 +114,18 @@ def accepted_actions_from_batch(batch: dict[str, torch.Tensor], row: int = 0) ->
         if ok:
             accepted.append(action_response(int(action)).upper())
     return accepted
+
+
+def original_mask_actions_from_batch(
+    batch: dict[str, torch.Tensor],
+    mask_name: str,
+    row: int = 0,
+) -> list[str]:
+    matched: list[str] = []
+    for action, ok in zip(batch["candidate_actions"][row].tolist(), batch[mask_name][row].tolist()):
+        if ok:
+            matched.append(action_response(int(action)).upper())
+    return matched
 
 
 def test_build_transformer_examples_keeps_legal_candidates_and_train_player_filter():
@@ -335,6 +348,60 @@ def test_teacher_accepted_set_loss_rejects_second_choice_when_not_relaxed():
     loss = teacher_accepted_set_loss(logits, batch)
 
     assert loss.item() > 9.0
+
+
+def test_collate_tracks_original_candidate_masks_without_soft_distribution():
+    example = minimal_transformer_example(
+        ["Play W1", "Play W2", "Play W3"],
+        target_response="Play W1",
+        teacher_candidate_norms=("PLAY W1", "PLAY W2", "PLAY W3"),
+        teacher_accept_top3=True,
+    )
+
+    batch = collate_transformer_examples([example], max_candidates=235)
+
+    assert batch["has_teacher_original"].tolist() == [True]
+    assert batch["teacher_original_top1_is_play"].tolist() == [True]
+    assert original_mask_actions_from_batch(batch, "teacher_original_top1_mask") == ["PLAY W1"]
+    assert original_mask_actions_from_batch(batch, "teacher_original_top3_mask") == [
+        "PLAY W1",
+        "PLAY W2",
+        "PLAY W3",
+    ]
+    assert accepted_actions_from_batch(batch) == ["PLAY W1", "PLAY W2", "PLAY W3"]
+
+
+class FixedActionModel(torch.nn.Module):
+    def __init__(self, response: str) -> None:
+        super().__init__()
+        self.action = action_id_for_response(response)
+
+    def forward(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        logits = torch.full_like(batch["candidate_mask"].float(), -10.0)
+        for row in range(logits.shape[0]):
+            matches = batch["candidate_actions"][row] == self.action
+            logits[row, matches] = 10.0
+        return logits, torch.zeros((logits.shape[0],), dtype=torch.float32, device=logits.device)
+
+
+def test_evaluate_model_reports_original_candidate_metrics_without_teacher_distribution():
+    example = minimal_transformer_example(
+        ["Play W1", "Play W2", "Play W3"],
+        target_response="Play W1",
+        teacher_candidate_norms=("PLAY W1", "PLAY W2", "PLAY W3"),
+        teacher_accept_top3=True,
+    )
+    batch = collate_transformer_examples([example], max_candidates=235)
+
+    metrics = evaluate_model(FixedActionModel("Play W2"), [batch], torch.device("cpu"))
+
+    assert metrics["teacher_samples"] == 0
+    assert metrics["original_samples"] == 1
+    assert metrics["original_top1_accuracy"] == 0.0
+    assert metrics["original_top3_inclusion"] == 1.0
+    assert metrics["original_relaxed_accuracy"] == 1.0
+    assert metrics["original_play_samples"] == 1
+    assert metrics["original_play_relaxed_accuracy"] == 1.0
 
 
 def test_row_aware_policy_loss_treats_accept_set_rows_as_reviewed_without_distribution():

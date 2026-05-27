@@ -482,6 +482,10 @@ def collate_transformer_examples(
     teacher_accept_top3 = torch.zeros((len(examples),), dtype=torch.bool)
     teacher_accept_mask = torch.zeros((len(examples), max_candidates), dtype=torch.bool)
     has_teacher_accept_set = torch.zeros((len(examples),), dtype=torch.bool)
+    teacher_original_top1_mask = torch.zeros((len(examples), max_candidates), dtype=torch.bool)
+    teacher_original_top3_mask = torch.zeros((len(examples), max_candidates), dtype=torch.bool)
+    has_teacher_original = torch.zeros((len(examples),), dtype=torch.bool)
+    teacher_original_top1_is_play = torch.zeros((len(examples),), dtype=torch.bool)
 
     for row, example in enumerate(examples):
         gated_mask = hu_gated_candidate_mask(example.action_mask, allow_hu=example.allow_hu)
@@ -505,6 +509,26 @@ def collate_transformer_examples(
                 teacher_target_dist[row, : len(candidates)] = torch.from_numpy(teacher_values / teacher_total)
                 has_teacher_target[row] = True
                 teacher_accept_top3[row] = bool(example.teacher_accept_top3)
+        original_top1_norms = {
+            normalize_teacher_action(action)
+            for action in example.teacher_candidate_norms[:1]
+            if normalize_teacher_action(action)
+        }
+        original_top3_norms = {
+            normalize_teacher_action(action)
+            for action in example.teacher_candidate_norms[:3]
+            if normalize_teacher_action(action)
+        }
+        if original_top1_norms:
+            has_teacher_original[row] = True
+            teacher_original_top1_is_play[row] = any(action.startswith("PLAY ") for action in original_top1_norms)
+            for slot, action in enumerate(candidates):
+                candidate_norm = normalize_teacher_action(action_response(int(action)))
+                if candidate_norm in original_top1_norms:
+                    teacher_original_top1_mask[row, slot] = True
+                if candidate_norm in original_top3_norms:
+                    teacher_original_top3_mask[row, slot] = True
+
         accepted_teacher_candidates = (
             example.teacher_candidate_norms[:3]
             if example.teacher_accept_top3
@@ -536,6 +560,10 @@ def collate_transformer_examples(
         "teacher_accept_top3": teacher_accept_top3,
         "teacher_accept_mask": teacher_accept_mask,
         "has_teacher_accept_set": has_teacher_accept_set,
+        "teacher_original_top1_mask": teacher_original_top1_mask,
+        "teacher_original_top3_mask": teacher_original_top3_mask,
+        "has_teacher_original": has_teacher_original,
+        "teacher_original_top1_is_play": teacher_original_top1_is_play,
         "value_target": values,
         "scalar_features": scalar_features,
     }
@@ -892,6 +920,8 @@ def evaluate_model(
     total = correct = play_total = play_correct = 0
     teacher_total = teacher_top1_correct = teacher_top3_correct = teacher_relaxed_correct = 0
     teacher_play_total = teacher_play_top1_correct = teacher_play_top3_correct = teacher_play_relaxed_correct = 0
+    original_total = original_top1_correct = original_top3_correct = original_relaxed_correct = 0
+    original_play_total = original_play_top1_correct = original_play_top3_correct = original_play_relaxed_correct = 0
     loss_total = value_loss_total = 0.0
     with torch.no_grad():
         for batch in loader:
@@ -932,6 +962,32 @@ def evaluate_model(
                             teacher_play_top3_correct += 1
                         if pred_slot == top1_index or (accept_top3 and top3_match):
                             teacher_play_relaxed_correct += 1
+            has_original = batch.get("has_teacher_original")
+            if has_original is not None and bool(has_original.any().item()):
+                top1_mask = batch["teacher_original_top1_mask"].bool()
+                top3_mask = batch["teacher_original_top3_mask"].bool()
+                accept_mask = batch["teacher_accept_mask"].bool()
+                top1_is_play = batch["teacher_original_top1_is_play"].bool()
+                for row in torch.nonzero(has_original, as_tuple=False).flatten().detach().cpu().tolist():
+                    pred_slot = int(pred_index[row].item())
+                    top1_match = bool(top1_mask[row, pred_slot].item())
+                    top3_match = bool(top3_mask[row, pred_slot].item())
+                    relaxed_match = bool(accept_mask[row, pred_slot].item())
+                    original_total += 1
+                    if top1_match:
+                        original_top1_correct += 1
+                    if top3_match:
+                        original_top3_correct += 1
+                    if relaxed_match:
+                        original_relaxed_correct += 1
+                    if bool(top1_is_play[row].item()):
+                        original_play_total += 1
+                        if top1_match:
+                            original_play_top1_correct += 1
+                        if top3_match:
+                            original_play_top3_correct += 1
+                        if relaxed_match:
+                            original_play_relaxed_correct += 1
             batch_size = int(target_actions.numel())
             total += batch_size
             correct += int((pred_actions == target_actions).sum().item())
@@ -955,6 +1011,14 @@ def evaluate_model(
         "teacher_play_top3_inclusion": teacher_play_top3_correct / teacher_play_total if teacher_play_total else None,
         "teacher_play_relaxed_accuracy": teacher_play_relaxed_correct / teacher_play_total if teacher_play_total else None,
         "teacher_play_samples": teacher_play_total,
+        "original_top1_accuracy": original_top1_correct / original_total if original_total else None,
+        "original_top3_inclusion": original_top3_correct / original_total if original_total else None,
+        "original_relaxed_accuracy": original_relaxed_correct / original_total if original_total else None,
+        "original_samples": original_total,
+        "original_play_top1_accuracy": original_play_top1_correct / original_play_total if original_play_total else None,
+        "original_play_top3_inclusion": original_play_top3_correct / original_play_total if original_play_total else None,
+        "original_play_relaxed_accuracy": original_play_relaxed_correct / original_play_total if original_play_total else None,
+        "original_play_samples": original_play_total,
         "samples": total,
         "play_samples": play_total,
     }
