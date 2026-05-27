@@ -80,6 +80,7 @@ class TransformerExample:
     candidate_rule_features: np.ndarray
     teacher_action_distribution: np.ndarray | None = None
     teacher_accept_top3: bool = False
+    teacher_candidate_norms: tuple[str, ...] = ()
 
 
 @dataclass
@@ -195,6 +196,18 @@ def normalize_teacher_action(action: str | None) -> str:
     return " ".join(part.upper() for part in parts)
 
 
+def normalize_teacher_candidates(candidates: list, *, limit: int | None = None) -> tuple[str, ...]:
+    normalized: list[str] = []
+    items = candidates[:limit] if limit is not None else candidates
+    for item in items:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        action = normalize_teacher_action(str(item[1]))
+        if action:
+            normalized.append(action)
+    return tuple(normalized)
+
+
 def build_transformer_examples_from_record(
     record: dict,
     *,
@@ -273,6 +286,7 @@ def build_transformer_examples_from_record(
             allow_hu = rule_gated_hu_allowed(obs["action_mask"], runtimes[player].agent.action2response)
             teacher_distribution = None
             teacher_accept_top3 = False
+            teacher_candidate_norms: tuple[str, ...] = ()
             if teacher_lookup is not None:
                 try:
                     teacher_result = teacher_lookup(
@@ -294,6 +308,9 @@ def build_transformer_examples_from_record(
                 else:
                     teacher_candidates = teacher_result
                 if teacher_candidates:
+                    teacher_candidate_norms = normalize_teacher_candidates(teacher_candidates)
+                    if teacher_candidate_norms:
+                        stats["teacher_original_targets"] += 1
                     teacher_distribution = chaga_candidates_to_action_distribution(
                         teacher_candidates,
                         obs["action_mask"],
@@ -324,6 +341,7 @@ def build_transformer_examples_from_record(
                     ),
                     teacher_action_distribution=teacher_distribution,
                     teacher_accept_top3=teacher_accept_top3,
+                    teacher_candidate_norms=teacher_candidate_norms,
                 )
             )
             stats["examples"] += 1

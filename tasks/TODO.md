@@ -918,6 +918,7 @@ Review:
   - Key advice: do not scale the flat Transformer further until correctness gates pass; fix rule-gated Hu target attachment, turn-aware review lookup, original-candidate evaluation, action normalization, reviewed-state oversampling, `max_candidates=235`, and a reviewed-only overfit proof.
   - Applied first correctness patch: CHAGA Transformer example building now derives `allow_hu` from the legal/rule action mask instead of the recorded human response; audit entries now preserve `state_turn`/`state_action`; review target lookup can disambiguate repeated same request/response rows by turn with fallback for old artifacts; CHAGA review `Play` tile id `0` is accepted as `W1`.
   - Verification after patch: focused new regressions passed (`3 passed`), broader CHAGA/Transformer suite passed (`31 passed`), and current local checkpoint re-evaluation stayed at top-1 `0.371648`, top-3 `0.557471`, relaxed `0.471264`, PLAY relaxed `0.484211` because the existing checkpoint was trained before the fix.
+  - 2026-05-27 follow-up review saved to `docs/reviews/gpt-pro-chaga-precision-followup-2026-05-27.md`. GPT Pro's next highest-impact recommendation was to stop using the reconstructed teacher distribution as the main evaluator and instead score predicted normalized actions against the original CHAGA candidate strings, with evaluation candidate width forced to 235.
 
 ### GPT Pro pass-1 correctness and overfit gates
 
@@ -929,6 +930,11 @@ Review:
 - [x] Make review lookup keys turn-aware.
   - New audit entries write `state_turn` and `state_context.turn`.
   - Lookup first uses `(record_id, seat, request, normalized_response, turn)`, then falls back to old no-turn keys for existing artifacts.
-- [ ] Make the evaluator compare the predicted normalized action against the original CHAGA candidate strings, not only the reconstructed teacher distribution.
+- [x] Make the evaluator compare the predicted normalized action against the original CHAGA candidate strings, not only the reconstructed teacher distribution.
+  - `TransformerExample` now preserves `teacher_candidate_norms` even if candidate-to-action distribution mapping fails.
+  - `scripts/evaluate_transformer_chaga_review.py` now reports `original_top1_accuracy`, `original_top3_inclusion`, `original_relaxed_accuracy`, PLAY-only original metrics, `evaluated_candidate_width`, `candidate_truncation_count`, and `reviewed_without_teacher_distribution`.
+  - The evaluator and turn graph use the CLI candidate width, defaulting to 235, rather than the checkpoint's training-time `max_candidates`.
+  - Current local 4.6M checkpoint original-candidate result: 522 reviewed examples, original top-1 `0.371648`, original top-3 `0.557471`, original relaxed `0.471264`, original PLAY relaxed `0.484211`, candidate truncation `0`, reviewed-without-distribution `0`.
+  - Original-candidate graph artifacts: `runs/transformer_chaga0208_l40_eval_mismatch_by_turn_original.svg`, `.png`, `.csv`, and `_summary.json`.
 - [ ] Add a reviewed-only train-on-eval overfit gate; require `>95%` relaxed match before trusting more L40 training.
 - [ ] Add reviewed-only session split and reviewed-oversampled high-ELO experiments before any new size scaling.

@@ -10,13 +10,15 @@ import json
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
 
-from evaluate_transformer_chaga_review import load_checkpoint, select_reviewed_examples
+from evaluate_transformer_chaga_review import (
+    collect_original_prediction_rows,
+    load_checkpoint,
+    resolve_eval_max_candidates,
+    select_reviewed_examples,
+)
 from train_transformer_candidate import (
-    TransformerRawDataset,
-    action_response,
-    collate_transformer_examples,
+    FeatureAgent,
     load_examples,
     load_review_target_lookup,
 )
@@ -125,47 +127,14 @@ def collect_prediction_rows(args: argparse.Namespace) -> tuple[list[dict], dict]
     reviewed = select_reviewed_examples(examples)
     if not reviewed:
         raise ValueError("no reviewed examples matched")
-    max_candidates = int(config.get("max_candidates", args.max_candidates))
-    loader = DataLoader(
-        TransformerRawDataset(reviewed),
+    max_candidates = resolve_eval_max_candidates(config, args.max_candidates)
+    rows = collect_original_prediction_rows(
+        model,
+        reviewed,
+        max_candidates=max_candidates,
         batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=0,
-        collate_fn=lambda items: collate_transformer_examples(items, max_candidates=max_candidates),
+        device=device,
     )
-    rows: list[dict] = []
-    model.eval()
-    offset = 0
-    with torch.no_grad():
-        for batch in loader:
-            current_examples = reviewed[offset : offset + int(batch["target_index"].numel())]
-            offset += len(current_examples)
-            device_batch = {key: value.to(device) for key, value in batch.items()}
-            logits, _ = model(device_batch)
-            pred_slots = torch.argmax(logits, dim=1).cpu()
-            for index, example in enumerate(current_examples):
-                pred_slot = int(pred_slots[index].item())
-                pred_action = int(batch["candidate_actions"][index, pred_slot].item())
-                teacher_dist = batch["teacher_target_dist"][index]
-                positive = torch.nonzero(teacher_dist > 0, as_tuple=False).flatten()
-                top1_slot = int(torch.argmax(teacher_dist).item())
-                top3_slots = set(torch.topk(teacher_dist, k=min(3, int(positive.numel()))).indices.tolist())
-                top1_match = pred_slot == top1_slot
-                top3_match = pred_slot in top3_slots
-                relaxed_match = top1_match or (bool(batch["teacher_accept_top3"][index].item()) and top3_match)
-                rows.append(
-                    {
-                        "turn": int(example.turn),
-                        "player": int(example.player),
-                        "response": example.response,
-                        "predicted_action": action_response(pred_action),
-                        "chaga_top1_action": action_response(int(batch["candidate_actions"][index, top1_slot].item())),
-                        "teacher_accept_top3": bool(batch["teacher_accept_top3"][index].item()),
-                        "top1_match": top1_match,
-                        "top3_match": top3_match,
-                        "relaxed_match": relaxed_match,
-                    }
-                )
     return rows, {"examples": len(examples), "reviewed_examples": len(reviewed), "load_summary": load_summary}
 
 
@@ -187,7 +156,7 @@ def main() -> int:
     parser.add_argument("--summary-out", required=True)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--history-len", type=int, default=80)
-    parser.add_argument("--max-candidates", type=int, default=96)
+    parser.add_argument("--max-candidates", type=int, default=FeatureAgent.ACT_SIZE)
     parser.add_argument("--max-records-per-source", type=int, default=None)
     parser.add_argument("--max-examples", type=int, default=None)
     parser.add_argument("--teacher-temperature", type=float, default=1.0)
