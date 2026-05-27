@@ -1016,9 +1016,10 @@ Review:
 
 ### Full tziakcha high-ELO corpus expansion
 
-- [ ] Fix corpus selection so high-ELO training rows are selected per hand by player name, not by stale session seat.
+- [x] Fix corpus selection so high-ELO training rows are selected per hand by player name, not by stale session seat.
   - Required because `record_step(...).p` can rotate between hands; `train_players` must refer to the current record's seat indexes.
   - Add a session-time ELO mode so the full corpus is not limited to current leaderboard players.
+  - 2026-05-27 hardening: future corpus builds now also require the selected record-local `step.p[].e` to be strictly above 2300 before a seat can enter `train_players`.
 - [x] Build the all-player `session ELO > 2300` corpus from the local public `tziakcha_records` archive.
   - Current archive count check: 42,984 history sessions, 679,008 session-listed record ids, and 683,785 record JSON files.
   - Selection with `--player-pattern '.+' --selection-mode session --min-elo 2300` currently targets 30,211 sessions and 467,398 records.
@@ -1030,15 +1031,25 @@ Review:
   - Use `scripts/validate_high_elo_corpus.py` on the generated raw corpus before training.
   - Validation artifact: `data/processed/tziakcha_all_elo2300_session/tziakcha_all_elo2300_session_validation_summary.json`.
   - Result: 467,398 records, 858,835 high-ELO train-player slots, 0 train-player mismatches, 0 below-threshold training seats.
+  - 2026-05-27 hardening: the validator now also checks the prepared training JSONL against the audit raw JSONL. Archive paired validation passed with 467,398 prepared rows, 0 prepared row-count mismatches, 0 prepared train-player mismatches, and 0 prepared source-record mismatches.
 - [x] Collect live tziakcha history session IDs missing from the public archive.
   - Live public history reports `total=66747`; page 1+ requires authenticated browser access.
   - Authenticated Chrome scrape covered pages 0..1188, where archive overlap begins.
   - Scrape artifact: `data/raw/tziakcha_live_history_20260527_scrape_summary.json`.
   - Result: 1,189 pages, 23,780 session-id rows, 23,775 unique session IDs, 23,760 unique IDs not in the public archive.
-- [ ] Fetch and convert the live missing sessions, then apply the same `>2300` train-player filter.
+- [x] Fetch and convert the live missing sessions, then apply the same `>2300` train-player filter.
   - Smoke 8-session run: 8 sessions fetched, 124 records converted/prepared, 0 errors.
   - Smoke 100-session run with 32 workers: 100 sessions fetched, 1,204 records converted/prepared, 0 errors.
   - Full run input: `data/raw/tziakcha_live_missing_archive_session_ids.txt`.
+  - Full live run result: 23,760 sessions fetched, 18,728 sessions with `>2300` players, 295,960 records converted/prepared, 597,193 high-ELO train-player slots, 0 fetch errors, 0 convert errors.
+  - Live validation artifact: `data/processed/tziakcha_live_missing_elo2300/tziakcha_live_missing_elo2300_validation_summary.json`.
+  - Live paired validation result: 295,960 raw records and 295,960 prepared rows, 0 train-player mismatches, 0 below-threshold training seats, 0 prepared train-player mismatches.
+- [x] Create and validate the combined archive+live all-player high-ELO corpus.
+  - Combined raw: `data/raw/tziakcha_all_plus_live_elo2300_session_audit_raw.jsonl`.
+  - Combined prepared: `data/processed/tziakcha_all_plus_live_elo2300_session/tziakcha_all_plus_live_elo2300_session_all.prepared.jsonl`.
+  - Combined build summary: `data/processed/tziakcha_all_plus_live_elo2300_session/tziakcha_all_plus_live_elo2300_session_build_summary.json`.
+  - Combined validation summary: `data/processed/tziakcha_all_plus_live_elo2300_session/tziakcha_all_plus_live_elo2300_session_validation_summary.json`.
+  - Result: 763,358 raw/prepared records, 1,456,028 high-ELO train-player slots, 0 train-player mismatches, 0 below-threshold training seats, 0 prepared row-count mismatches, 0 prepared train-player mismatches, and 0 prepared source-record mismatches.
 - [ ] Verify and push the high-ELO corpus code before any new L40 training.
   - Run focused builder/audit/gate tests.
   - Clear completed Kubernetes pods/jobs.

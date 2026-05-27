@@ -125,7 +125,7 @@ def fetch_live_high_elo(
                         continue
                     summary["records_fetched"] += 1
                     summary["records_converted"] += 1
-                    selected_players = selected_players_for_record(raw_record, target_names)
+                    selected_players = selected_players_for_record(raw_record, target_names, min_elo=min_elo)
                     prepared = prepare_record(raw_record, converted, selected_players)
                     if prepared is None:
                         summary["prepare_drops"] += 1

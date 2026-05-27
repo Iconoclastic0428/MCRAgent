@@ -124,7 +124,12 @@ def test_build_github_chaga_corpus_writes_only_eligible_train_players(tmp_path):
         "id": "r1",
         "belongs": "s1",
         "step": {
-            "p": [{"n": "CHAGA01"}, {"n": "CHAGA02"}, {"n": "CHAGA06"}, {"n": "CHAGA08"}],
+            "p": [
+                {"n": "CHAGA01", "e": 2800},
+                {"n": "CHAGA02", "e": 2400},
+                {"n": "CHAGA06", "e": 2299},
+                {"n": "CHAGA08", "e": 2500},
+            ],
         },
     }
 
@@ -234,3 +239,19 @@ def test_selected_players_for_record_remaps_rotated_hand_order_by_name():
     selected = selected_players_for_record(raw_record, {"CHAGA02", "CHAGA04"})
 
     assert selected == {"1": "CHAGA04", "2": "CHAGA02"}
+
+
+def test_selected_players_for_record_can_require_record_local_high_elo():
+    raw_record = {
+        "step": {
+            "p": [
+                {"n": "Strong", "e": 2401},
+                {"n": "Dropped", "e": 2299},
+                {"n": "Missing", "e": None},
+            ]
+        }
+    }
+
+    selected = selected_players_for_record(raw_record, {"Strong", "Dropped", "Missing"}, min_elo=2300)
+
+    assert selected == {"0": "Strong"}

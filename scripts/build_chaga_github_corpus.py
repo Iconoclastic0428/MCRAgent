@@ -164,7 +164,7 @@ def annotate_audit_raw_record(raw_record: dict, selected_players: dict[str, str]
     return audit_raw
 
 
-def selected_players_for_record(raw_record: dict, target_names: set[str]) -> dict[str, str]:
+def selected_players_for_record(raw_record: dict, target_names: set[str], *, min_elo: float | None = None) -> dict[str, str]:
     if not target_names:
         return {}
     selected: dict[str, str] = {}
@@ -177,8 +177,18 @@ def selected_players_for_record(raw_record: dict, target_names: set[str]) -> dic
             name = str(player.get("n") or "").strip()
         else:
             name = str(player).strip()
-        if name in target_names:
-            selected[str(index)] = name
+        if name not in target_names:
+            continue
+        if min_elo is not None:
+            if not isinstance(player, dict):
+                continue
+            try:
+                elo = float(player.get("e") if player.get("e") is not None else 0.0)
+            except (TypeError, ValueError):
+                continue
+            if elo <= min_elo:
+                continue
+        selected[str(index)] = name
     return selected
 
 
@@ -271,7 +281,11 @@ def build_github_chaga_corpus(
                 summary["convert_errors"].append({"record": location.record_id, "period": location.period, "error": str(exc)})
                 continue
             summary["records_converted"] += 1
-            selected_players = selected_players_for_record(raw_record, selected_by_session.get(location.session_id, set()))
+            selected_players = selected_players_for_record(
+                raw_record,
+                selected_by_session.get(location.session_id, set()),
+                min_elo=min_elo,
+            )
             prepared = prepare_record(raw_record, converted, selected_players)
             if prepared is None:
                 summary["prepare_drops"] += 1
