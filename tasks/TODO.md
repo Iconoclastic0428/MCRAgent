@@ -984,3 +984,21 @@ Review:
   - Implemented `scripts/check_chaga_training_corpus.py` with tests in `tests/test_check_chaga_training_corpus.py`.
   - Smoke gate on the current tiny split passed with low thresholds: train 1,139 reviewed, val 339, test 599; candidate truncation `0`, reviewed rows without distribution `0`, empty accept masks `0`, malformed top-3 relaxation `0`, and accepted `HU` outside legal mask `0`.
   - The real pre-L40 gate should keep the default minimums: train reviewed >=25,000, val reviewed >=5,000, test reviewed >=5,000, and session minimums 50/10/10.
+- [x] Add GitHub archive corpus expansion plumbing for CHAGA02-08 high-ELO data.
+  - New script: `scripts/build_chaga_github_corpus.py`.
+  - It selects only `^CHAGA0[2-8]$` players with current and session ELO above 2300, so `CHAGA01` is excluded.
+  - Smoke build succeeded on 5 selected sessions / 80 records with no convert errors.
+  - Full raw-GitHub pass found 4,617 eligible sessions and 68,114 record locations, but only prepared 44,892 records before GitHub raw returned 23,222 HTTP 429 fetch errors.
+  - Added `--archive-root` so the next full rebuild can read a local `tziakcha_records` clone/extract instead of relying on per-record raw GitHub requests.
+
+### Current visualization and review loop
+
+- [x] Regenerate the current model-vs-CHAGA turn graph before more training.
+  - Tracked artifact: `docs/figures/chaga_mismatch_by_turn_current.png`.
+  - Source artifacts: `docs/figures/chaga_mismatch_by_turn_current.svg`, `.csv`, and `_summary.json`.
+  - Metric is model predicted action vs original CHAGA candidate strings; first-six `PLAY` rows accept top-3, all other rows require top-1.
+  - Current accepted-set checkpoint on held-out high-ELO CHAGA eval: 560 reviewed states, 215 relaxed mismatches, relaxed match `0.616071`.
+- [x] Clear completed Kubernetes pods/jobs.
+  - 2026-05-27 check: no Succeeded/Failed pods and no completed jobs were present in `nourish-sdsc`; only the unrelated running `idl-download` job/pod remains.
+- [ ] Push the current repo snapshot to GitHub.
+- [ ] Ask GPT Pro for another repo-grounded precision review in the requested ChatGPT conversation and apply the next verified recommendation.
