@@ -261,3 +261,11 @@ Added live result recording to the read-only Tziakcha advisor service. `AdvisorS
 - Held-out CHAGA val+test benchmark for the basic algorithm baseline wrote `docs/figures/mahjong_algorithm_chaga_valtest_rows.csv`, `docs/figures/mahjong_algorithm_chaga_valtest_mismatch_by_turn.svg`, and `docs/figures/mahjong_algorithm_chaga_valtest_summary.json`. Result: 19,645 reviewed states, top-1 `0.459252`, top-3 `0.618783`, relaxed `0.546500`.
 - Family slices show the deterministic rule baseline is useful but not sufficient as the main policy: `HU` relaxed `1.0`, `PENG` `0.951662`, `CHI` `0.908108`, `PLAY` `0.505250`, and `GANG` `0.096774`.
 - Verification: focused algorithmic/visualization/evaluator tests passed with 12 tests, and `python -m pytest tests -q --basetemp tmp\pytest_algorithmic_side_full_after_cleanup` passed with 271 tests and one existing sklearn convergence warning.
+
+# 2026-05-27 - Mortal Rule-Q Side Experiment Design
+
+- User approved starting from the mahjong-algorithm baseline and adding Mortal/LuckyJ-style training ideas on the collected `>2300` tziakcha corpus.
+- Wrote `docs/superpowers/specs/2026-05-27-mortal-rule-q-design.md`.
+- Selected design: create a separate `mortal_rule_q` side trainer with a Transformer-dueling-Q candidate scorer, CQL-style offline regularization, CHAGA soft/accepted-set supervision, and mahjong-algorithm effective-tile prior features.
+- Deferred full LuckyJ-style regret/search because it is too large for this phase; only the practical LuckyJ idea of using rule/search returns as model features is included.
+- Active `20260527d` jobs are left running. During this design pass, the medium job reached batch 8000 with validation original relaxed `0.608447` and PLAY relaxed `0.636236`, while the large job had also scheduled on an L40.

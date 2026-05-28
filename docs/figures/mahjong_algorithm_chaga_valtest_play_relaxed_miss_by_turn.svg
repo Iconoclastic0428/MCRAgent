@@ -1,0 +1,744 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1456" height="520" viewBox="0 0 1456 520">
+<rect width="100%" height="100%" fill="#fbfbfa"/>
+<text x="728.0" y="34" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="700">Mahjong-algorithm PLAY relaxed misses vs CHAGA by turn</text>
+<text x="20" y="260" transform="rotate(-90 20 260)" font-family="Arial, sans-serif" font-size="13" fill="#444">PLAY decisions</text>
+<line x1="70" y1="430" x2="1426" y2="430" stroke="#333" stroke-width="1"/>
+<line x1="70" y1="70" x2="70" y2="430" stroke="#333" stroke-width="1"/>
+<line x1="65" y1="430.0" x2="1426" y2="430.0" stroke="#e4e4e0"/>
+<text x="60" y="434.0" text-anchor="end" font-family="Arial, sans-serif" font-size="11" fill="#444">0</text>
+<line x1="65" y1="351.6" x2="1426" y2="351.6" stroke="#e4e4e0"/>
+<text x="60" y="355.6" text-anchor="end" font-family="Arial, sans-serif" font-size="11" fill="#444">82</text>
+<line x1="65" y1="273.1" x2="1426" y2="273.1" stroke="#e4e4e0"/>
+<text x="60" y="277.1" text-anchor="end" font-family="Arial, sans-serif" font-size="11" fill="#444">164</text>
+<line x1="65" y1="194.7" x2="1426" y2="194.7" stroke="#e4e4e0"/>
+<text x="60" y="198.7" text-anchor="end" font-family="Arial, sans-serif" font-size="11" fill="#444">246</text>
+<line x1="65" y1="116.3" x2="1426" y2="116.3" stroke="#e4e4e0"/>
+<text x="60" y="120.3" text-anchor="end" font-family="Arial, sans-serif" font-size="11" fill="#444">328</text>
+<line x1="65" y1="37.9" x2="1426" y2="37.9" stroke="#e4e4e0"/>
+<text x="60" y="41.9" text-anchor="end" font-family="Arial, sans-serif" font-size="11" fill="#444">410</text>
+<g><title>turn 2: PLAY total=413, relaxed misses=304, miss rate=73.6%</title>
+<rect x="70.0" y="35.0" width="5.9" height="395.0" fill="#d9e2ec"/>
+<rect x="70.0" y="139.2" width="5.9" height="290.8" fill="#c94f4f"/>
+<text x="72.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 72.9 448)">2</text>
+</g>
+<g><title>turn 4: PLAY total=383, relaxed misses=259, miss rate=67.6%</title>
+<rect x="77.9" y="63.7" width="5.9" height="366.3" fill="#d9e2ec"/>
+<rect x="77.9" y="182.3" width="5.9" height="247.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 5: PLAY total=37, relaxed misses=28, miss rate=75.7%</title>
+<rect x="85.7" y="394.6" width="5.9" height="35.4" fill="#d9e2ec"/>
+<rect x="85.7" y="403.2" width="5.9" height="26.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 6: PLAY total=343, relaxed misses=256, miss rate=74.6%</title>
+<rect x="93.6" y="101.9" width="5.9" height="328.1" fill="#d9e2ec"/>
+<rect x="93.6" y="185.2" width="5.9" height="244.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 7: PLAY total=56, relaxed misses=42, miss rate=75.0%</title>
+<rect x="101.5" y="376.4" width="5.9" height="53.6" fill="#d9e2ec"/>
+<rect x="101.5" y="389.8" width="5.9" height="40.2" fill="#c94f4f"/>
+</g>
+<g><title>turn 8: PLAY total=341, relaxed misses=238, miss rate=69.8%</title>
+<rect x="109.3" y="103.9" width="5.9" height="326.1" fill="#d9e2ec"/>
+<rect x="109.3" y="202.4" width="5.9" height="227.6" fill="#c94f4f"/>
+<text x="112.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 112.3 448)">8</text>
+</g>
+<g><title>turn 9: PLAY total=72, relaxed misses=48, miss rate=66.7%</title>
+<rect x="117.2" y="361.1" width="5.9" height="68.9" fill="#d9e2ec"/>
+<rect x="117.2" y="384.1" width="5.9" height="45.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 10: PLAY total=326, relaxed misses=234, miss rate=71.8%</title>
+<rect x="125.1" y="118.2" width="5.9" height="311.8" fill="#d9e2ec"/>
+<rect x="125.1" y="206.2" width="5.9" height="223.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 11: PLAY total=87, relaxed misses=46, miss rate=52.9%</title>
+<rect x="132.9" y="346.8" width="5.9" height="83.2" fill="#d9e2ec"/>
+<rect x="132.9" y="386.0" width="5.9" height="44.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 12: PLAY total=302, relaxed misses=200, miss rate=66.2%</title>
+<rect x="140.8" y="141.2" width="5.9" height="288.8" fill="#d9e2ec"/>
+<rect x="140.8" y="238.7" width="5.9" height="191.3" fill="#c94f4f"/>
+</g>
+<g><title>turn 13: PLAY total=110, relaxed misses=77, miss rate=70.0%</title>
+<rect x="148.7" y="324.8" width="5.9" height="105.2" fill="#d9e2ec"/>
+<rect x="148.7" y="356.4" width="5.9" height="73.6" fill="#c94f4f"/>
+<text x="151.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 151.6 448)">13</text>
+</g>
+<g><title>turn 14: PLAY total=273, relaxed misses=183, miss rate=67.0%</title>
+<rect x="156.5" y="168.9" width="5.9" height="261.1" fill="#d9e2ec"/>
+<rect x="156.5" y="255.0" width="5.9" height="175.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 15: PLAY total=121, relaxed misses=78, miss rate=64.5%</title>
+<rect x="164.4" y="314.3" width="5.9" height="115.7" fill="#d9e2ec"/>
+<rect x="164.4" y="355.4" width="5.9" height="74.6" fill="#c94f4f"/>
+</g>
+<g><title>turn 16: PLAY total=275, relaxed misses=184, miss rate=66.9%</title>
+<rect x="172.3" y="167.0" width="5.9" height="263.0" fill="#d9e2ec"/>
+<rect x="172.3" y="254.0" width="5.9" height="176.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 17: PLAY total=123, relaxed misses=74, miss rate=60.2%</title>
+<rect x="180.1" y="312.4" width="5.9" height="117.6" fill="#d9e2ec"/>
+<rect x="180.1" y="359.2" width="5.9" height="70.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 18: PLAY total=266, relaxed misses=172, miss rate=64.7%</title>
+<rect x="188.0" y="175.6" width="5.9" height="254.4" fill="#d9e2ec"/>
+<rect x="188.0" y="265.5" width="5.9" height="164.5" fill="#c94f4f"/>
+<text x="190.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 190.9 448)">18</text>
+</g>
+<g><title>turn 19: PLAY total=139, relaxed misses=78, miss rate=56.1%</title>
+<rect x="195.9" y="297.1" width="5.9" height="132.9" fill="#d9e2ec"/>
+<rect x="195.9" y="355.4" width="5.9" height="74.6" fill="#c94f4f"/>
+</g>
+<g><title>turn 20: PLAY total=250, relaxed misses=139, miss rate=55.6%</title>
+<rect x="203.7" y="190.9" width="5.9" height="239.1" fill="#d9e2ec"/>
+<rect x="203.7" y="297.1" width="5.9" height="132.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 21: PLAY total=153, relaxed misses=96, miss rate=62.7%</title>
+<rect x="211.6" y="283.7" width="5.9" height="146.3" fill="#d9e2ec"/>
+<rect x="211.6" y="338.2" width="5.9" height="91.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 22: PLAY total=235, relaxed misses=148, miss rate=63.0%</title>
+<rect x="219.5" y="205.2" width="5.9" height="224.8" fill="#d9e2ec"/>
+<rect x="219.5" y="288.5" width="5.9" height="141.5" fill="#c94f4f"/>
+</g>
+<g><title>turn 23: PLAY total=144, relaxed misses=81, miss rate=56.2%</title>
+<rect x="227.3" y="292.3" width="5.9" height="137.7" fill="#d9e2ec"/>
+<rect x="227.3" y="352.5" width="5.9" height="77.5" fill="#c94f4f"/>
+<text x="230.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 230.3 448)">23</text>
+</g>
+<g><title>turn 24: PLAY total=235, relaxed misses=144, miss rate=61.3%</title>
+<rect x="235.2" y="205.2" width="5.9" height="224.8" fill="#d9e2ec"/>
+<rect x="235.2" y="292.3" width="5.9" height="137.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 25: PLAY total=158, relaxed misses=74, miss rate=46.8%</title>
+<rect x="243.1" y="278.9" width="5.9" height="151.1" fill="#d9e2ec"/>
+<rect x="243.1" y="359.2" width="5.9" height="70.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 26: PLAY total=229, relaxed misses=142, miss rate=62.0%</title>
+<rect x="250.9" y="211.0" width="5.9" height="219.0" fill="#d9e2ec"/>
+<rect x="250.9" y="294.2" width="5.9" height="135.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 27: PLAY total=166, relaxed misses=91, miss rate=54.8%</title>
+<rect x="258.8" y="271.2" width="5.9" height="158.8" fill="#d9e2ec"/>
+<rect x="258.8" y="343.0" width="5.9" height="87.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 28: PLAY total=220, relaxed misses=116, miss rate=52.7%</title>
+<rect x="266.7" y="219.6" width="5.9" height="210.4" fill="#d9e2ec"/>
+<rect x="266.7" y="319.1" width="5.9" height="110.9" fill="#c94f4f"/>
+<text x="269.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 269.6 448)">28</text>
+</g>
+<g><title>turn 29: PLAY total=157, relaxed misses=86, miss rate=54.8%</title>
+<rect x="274.5" y="279.8" width="5.9" height="150.2" fill="#d9e2ec"/>
+<rect x="274.5" y="347.7" width="5.9" height="82.3" fill="#c94f4f"/>
+</g>
+<g><title>turn 30: PLAY total=209, relaxed misses=115, miss rate=55.0%</title>
+<rect x="282.4" y="230.1" width="5.9" height="199.9" fill="#d9e2ec"/>
+<rect x="282.4" y="320.0" width="5.9" height="110.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 31: PLAY total=175, relaxed misses=90, miss rate=51.4%</title>
+<rect x="290.3" y="262.6" width="5.9" height="167.4" fill="#d9e2ec"/>
+<rect x="290.3" y="343.9" width="5.9" height="86.1" fill="#c94f4f"/>
+</g>
+<g><title>turn 32: PLAY total=218, relaxed misses=107, miss rate=49.1%</title>
+<rect x="298.1" y="221.5" width="5.9" height="208.5" fill="#d9e2ec"/>
+<rect x="298.1" y="327.7" width="5.9" height="102.3" fill="#c94f4f"/>
+</g>
+<g><title>turn 33: PLAY total=169, relaxed misses=78, miss rate=46.2%</title>
+<rect x="306.0" y="268.4" width="5.9" height="161.6" fill="#d9e2ec"/>
+<rect x="306.0" y="355.4" width="5.9" height="74.6" fill="#c94f4f"/>
+<text x="308.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 308.9 448)">33</text>
+</g>
+<g><title>turn 34: PLAY total=204, relaxed misses=113, miss rate=55.4%</title>
+<rect x="313.9" y="234.9" width="5.9" height="195.1" fill="#d9e2ec"/>
+<rect x="313.9" y="321.9" width="5.9" height="108.1" fill="#c94f4f"/>
+</g>
+<g><title>turn 35: PLAY total=197, relaxed misses=89, miss rate=45.2%</title>
+<rect x="321.7" y="241.6" width="5.9" height="188.4" fill="#d9e2ec"/>
+<rect x="321.7" y="344.9" width="5.9" height="85.1" fill="#c94f4f"/>
+</g>
+<g><title>turn 36: PLAY total=195, relaxed misses=80, miss rate=41.0%</title>
+<rect x="329.6" y="243.5" width="5.9" height="186.5" fill="#d9e2ec"/>
+<rect x="329.6" y="353.5" width="5.9" height="76.5" fill="#c94f4f"/>
+</g>
+<g><title>turn 37: PLAY total=174, relaxed misses=80, miss rate=46.0%</title>
+<rect x="337.5" y="263.6" width="5.9" height="166.4" fill="#d9e2ec"/>
+<rect x="337.5" y="353.5" width="5.9" height="76.5" fill="#c94f4f"/>
+</g>
+<g><title>turn 38: PLAY total=213, relaxed misses=104, miss rate=48.8%</title>
+<rect x="345.3" y="226.3" width="5.9" height="203.7" fill="#d9e2ec"/>
+<rect x="345.3" y="330.5" width="5.9" height="99.5" fill="#c94f4f"/>
+<text x="348.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 348.3 448)">38</text>
+</g>
+<g><title>turn 39: PLAY total=186, relaxed misses=75, miss rate=40.3%</title>
+<rect x="353.2" y="252.1" width="5.9" height="177.9" fill="#d9e2ec"/>
+<rect x="353.2" y="358.3" width="5.9" height="71.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 40: PLAY total=200, relaxed misses=93, miss rate=46.5%</title>
+<rect x="361.1" y="238.7" width="5.9" height="191.3" fill="#d9e2ec"/>
+<rect x="361.1" y="341.1" width="5.9" height="88.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 41: PLAY total=179, relaxed misses=83, miss rate=46.4%</title>
+<rect x="368.9" y="258.8" width="5.9" height="171.2" fill="#d9e2ec"/>
+<rect x="368.9" y="350.6" width="5.9" height="79.4" fill="#c94f4f"/>
+</g>
+<g><title>turn 42: PLAY total=183, relaxed misses=85, miss rate=46.4%</title>
+<rect x="376.8" y="255.0" width="5.9" height="175.0" fill="#d9e2ec"/>
+<rect x="376.8" y="348.7" width="5.9" height="81.3" fill="#c94f4f"/>
+</g>
+<g><title>turn 43: PLAY total=195, relaxed misses=90, miss rate=46.2%</title>
+<rect x="384.7" y="243.5" width="5.9" height="186.5" fill="#d9e2ec"/>
+<rect x="384.7" y="343.9" width="5.9" height="86.1" fill="#c94f4f"/>
+<text x="387.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 387.6 448)">43</text>
+</g>
+<g><title>turn 44: PLAY total=170, relaxed misses=75, miss rate=44.1%</title>
+<rect x="392.5" y="267.4" width="5.9" height="162.6" fill="#d9e2ec"/>
+<rect x="392.5" y="358.3" width="5.9" height="71.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 45: PLAY total=187, relaxed misses=85, miss rate=45.5%</title>
+<rect x="400.4" y="251.2" width="5.9" height="178.8" fill="#d9e2ec"/>
+<rect x="400.4" y="348.7" width="5.9" height="81.3" fill="#c94f4f"/>
+</g>
+<g><title>turn 46: PLAY total=185, relaxed misses=75, miss rate=40.5%</title>
+<rect x="408.2" y="253.1" width="5.9" height="176.9" fill="#d9e2ec"/>
+<rect x="408.2" y="358.3" width="5.9" height="71.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 47: PLAY total=190, relaxed misses=99, miss rate=52.1%</title>
+<rect x="416.1" y="248.3" width="5.9" height="181.7" fill="#d9e2ec"/>
+<rect x="416.1" y="335.3" width="5.9" height="94.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 48: PLAY total=171, relaxed misses=82, miss rate=48.0%</title>
+<rect x="424.0" y="266.5" width="5.9" height="163.5" fill="#d9e2ec"/>
+<rect x="424.0" y="351.6" width="5.9" height="78.4" fill="#c94f4f"/>
+<text x="426.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 426.9 448)">48</text>
+</g>
+<g><title>turn 49: PLAY total=181, relaxed misses=100, miss rate=55.2%</title>
+<rect x="431.8" y="256.9" width="5.9" height="173.1" fill="#d9e2ec"/>
+<rect x="431.8" y="334.4" width="5.9" height="95.6" fill="#c94f4f"/>
+</g>
+<g><title>turn 50: PLAY total=187, relaxed misses=100, miss rate=53.5%</title>
+<rect x="439.7" y="251.2" width="5.9" height="178.8" fill="#d9e2ec"/>
+<rect x="439.7" y="334.4" width="5.9" height="95.6" fill="#c94f4f"/>
+</g>
+<g><title>turn 51: PLAY total=196, relaxed misses=102, miss rate=52.0%</title>
+<rect x="447.6" y="242.5" width="5.9" height="187.5" fill="#d9e2ec"/>
+<rect x="447.6" y="332.4" width="5.9" height="97.6" fill="#c94f4f"/>
+</g>
+<g><title>turn 52: PLAY total=141, relaxed misses=59, miss rate=41.8%</title>
+<rect x="455.4" y="295.1" width="5.9" height="134.9" fill="#d9e2ec"/>
+<rect x="455.4" y="373.6" width="5.9" height="56.4" fill="#c94f4f"/>
+</g>
+<g><title>turn 53: PLAY total=203, relaxed misses=116, miss rate=57.1%</title>
+<rect x="463.3" y="235.8" width="5.9" height="194.2" fill="#d9e2ec"/>
+<rect x="463.3" y="319.1" width="5.9" height="110.9" fill="#c94f4f"/>
+<text x="466.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 466.2 448)">53</text>
+</g>
+<g><title>turn 54: PLAY total=160, relaxed misses=80, miss rate=50.0%</title>
+<rect x="471.2" y="277.0" width="5.9" height="153.0" fill="#d9e2ec"/>
+<rect x="471.2" y="353.5" width="5.9" height="76.5" fill="#c94f4f"/>
+</g>
+<g><title>turn 55: PLAY total=188, relaxed misses=108, miss rate=57.4%</title>
+<rect x="479.0" y="250.2" width="5.9" height="179.8" fill="#d9e2ec"/>
+<rect x="479.0" y="326.7" width="5.9" height="103.3" fill="#c94f4f"/>
+</g>
+<g><title>turn 56: PLAY total=146, relaxed misses=78, miss rate=53.4%</title>
+<rect x="486.9" y="290.4" width="5.9" height="139.6" fill="#d9e2ec"/>
+<rect x="486.9" y="355.4" width="5.9" height="74.6" fill="#c94f4f"/>
+</g>
+<g><title>turn 57: PLAY total=191, relaxed misses=92, miss rate=48.2%</title>
+<rect x="494.8" y="247.3" width="5.9" height="182.7" fill="#d9e2ec"/>
+<rect x="494.8" y="342.0" width="5.9" height="88.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 58: PLAY total=169, relaxed misses=89, miss rate=52.7%</title>
+<rect x="502.6" y="268.4" width="5.9" height="161.6" fill="#d9e2ec"/>
+<rect x="502.6" y="344.9" width="5.9" height="85.1" fill="#c94f4f"/>
+<text x="505.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 505.6 448)">58</text>
+</g>
+<g><title>turn 59: PLAY total=172, relaxed misses=91, miss rate=52.9%</title>
+<rect x="510.5" y="265.5" width="5.9" height="164.5" fill="#d9e2ec"/>
+<rect x="510.5" y="343.0" width="5.9" height="87.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 60: PLAY total=149, relaxed misses=72, miss rate=48.3%</title>
+<rect x="518.4" y="287.5" width="5.9" height="142.5" fill="#d9e2ec"/>
+<rect x="518.4" y="361.1" width="5.9" height="68.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 61: PLAY total=158, relaxed misses=80, miss rate=50.6%</title>
+<rect x="526.2" y="278.9" width="5.9" height="151.1" fill="#d9e2ec"/>
+<rect x="526.2" y="353.5" width="5.9" height="76.5" fill="#c94f4f"/>
+</g>
+<g><title>turn 62: PLAY total=162, relaxed misses=77, miss rate=47.5%</title>
+<rect x="534.1" y="275.1" width="5.9" height="154.9" fill="#d9e2ec"/>
+<rect x="534.1" y="356.4" width="5.9" height="73.6" fill="#c94f4f"/>
+</g>
+<g><title>turn 63: PLAY total=169, relaxed misses=85, miss rate=50.3%</title>
+<rect x="542.0" y="268.4" width="5.9" height="161.6" fill="#d9e2ec"/>
+<rect x="542.0" y="348.7" width="5.9" height="81.3" fill="#c94f4f"/>
+<text x="544.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 544.9 448)">63</text>
+</g>
+<g><title>turn 64: PLAY total=156, relaxed misses=71, miss rate=45.5%</title>
+<rect x="549.8" y="280.8" width="5.9" height="149.2" fill="#d9e2ec"/>
+<rect x="549.8" y="362.1" width="5.9" height="67.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 65: PLAY total=165, relaxed misses=65, miss rate=39.4%</title>
+<rect x="557.7" y="272.2" width="5.9" height="157.8" fill="#d9e2ec"/>
+<rect x="557.7" y="367.8" width="5.9" height="62.2" fill="#c94f4f"/>
+</g>
+<g><title>turn 66: PLAY total=155, relaxed misses=72, miss rate=46.5%</title>
+<rect x="565.6" y="281.8" width="5.9" height="148.2" fill="#d9e2ec"/>
+<rect x="565.6" y="361.1" width="5.9" height="68.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 67: PLAY total=159, relaxed misses=70, miss rate=44.0%</title>
+<rect x="573.4" y="277.9" width="5.9" height="152.1" fill="#d9e2ec"/>
+<rect x="573.4" y="363.1" width="5.9" height="66.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 68: PLAY total=140, relaxed misses=62, miss rate=44.3%</title>
+<rect x="581.3" y="296.1" width="5.9" height="133.9" fill="#d9e2ec"/>
+<rect x="581.3" y="370.7" width="5.9" height="59.3" fill="#c94f4f"/>
+<text x="584.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 584.2 448)">68</text>
+</g>
+<g><title>turn 69: PLAY total=148, relaxed misses=64, miss rate=43.2%</title>
+<rect x="589.2" y="288.5" width="5.9" height="141.5" fill="#d9e2ec"/>
+<rect x="589.2" y="368.8" width="5.9" height="61.2" fill="#c94f4f"/>
+</g>
+<g><title>turn 70: PLAY total=149, relaxed misses=70, miss rate=47.0%</title>
+<rect x="597.0" y="287.5" width="5.9" height="142.5" fill="#d9e2ec"/>
+<rect x="597.0" y="363.1" width="5.9" height="66.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 71: PLAY total=142, relaxed misses=62, miss rate=43.7%</title>
+<rect x="604.9" y="294.2" width="5.9" height="135.8" fill="#d9e2ec"/>
+<rect x="604.9" y="370.7" width="5.9" height="59.3" fill="#c94f4f"/>
+</g>
+<g><title>turn 72: PLAY total=138, relaxed misses=59, miss rate=42.8%</title>
+<rect x="612.8" y="298.0" width="5.9" height="132.0" fill="#d9e2ec"/>
+<rect x="612.8" y="373.6" width="5.9" height="56.4" fill="#c94f4f"/>
+</g>
+<g><title>turn 73: PLAY total=143, relaxed misses=60, miss rate=42.0%</title>
+<rect x="620.6" y="293.2" width="5.9" height="136.8" fill="#d9e2ec"/>
+<rect x="620.6" y="372.6" width="5.9" height="57.4" fill="#c94f4f"/>
+<text x="623.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 623.6 448)">73</text>
+</g>
+<g><title>turn 74: PLAY total=126, relaxed misses=49, miss rate=38.9%</title>
+<rect x="628.5" y="309.5" width="5.9" height="120.5" fill="#d9e2ec"/>
+<rect x="628.5" y="383.1" width="5.9" height="46.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 75: PLAY total=153, relaxed misses=63, miss rate=41.2%</title>
+<rect x="636.4" y="283.7" width="5.9" height="146.3" fill="#d9e2ec"/>
+<rect x="636.4" y="369.7" width="5.9" height="60.3" fill="#c94f4f"/>
+</g>
+<g><title>turn 76: PLAY total=139, relaxed misses=51, miss rate=36.7%</title>
+<rect x="644.2" y="297.1" width="5.9" height="132.9" fill="#d9e2ec"/>
+<rect x="644.2" y="381.2" width="5.9" height="48.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 77: PLAY total=132, relaxed misses=49, miss rate=37.1%</title>
+<rect x="652.1" y="303.8" width="5.9" height="126.2" fill="#d9e2ec"/>
+<rect x="652.1" y="383.1" width="5.9" height="46.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 78: PLAY total=110, relaxed misses=47, miss rate=42.7%</title>
+<rect x="660.0" y="324.8" width="5.9" height="105.2" fill="#d9e2ec"/>
+<rect x="660.0" y="385.0" width="5.9" height="45.0" fill="#c94f4f"/>
+<text x="662.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 662.9 448)">78</text>
+</g>
+<g><title>turn 79: PLAY total=128, relaxed misses=45, miss rate=35.2%</title>
+<rect x="667.8" y="307.6" width="5.9" height="122.4" fill="#d9e2ec"/>
+<rect x="667.8" y="387.0" width="5.9" height="43.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 80: PLAY total=107, relaxed misses=44, miss rate=41.1%</title>
+<rect x="675.7" y="327.7" width="5.9" height="102.3" fill="#d9e2ec"/>
+<rect x="675.7" y="387.9" width="5.9" height="42.1" fill="#c94f4f"/>
+</g>
+<g><title>turn 81: PLAY total=116, relaxed misses=40, miss rate=34.5%</title>
+<rect x="683.6" y="319.1" width="5.9" height="110.9" fill="#d9e2ec"/>
+<rect x="683.6" y="391.7" width="5.9" height="38.3" fill="#c94f4f"/>
+</g>
+<g><title>turn 82: PLAY total=118, relaxed misses=39, miss rate=33.1%</title>
+<rect x="691.4" y="317.1" width="5.9" height="112.9" fill="#d9e2ec"/>
+<rect x="691.4" y="392.7" width="5.9" height="37.3" fill="#c94f4f"/>
+</g>
+<g><title>turn 83: PLAY total=115, relaxed misses=38, miss rate=33.0%</title>
+<rect x="699.3" y="320.0" width="5.9" height="110.0" fill="#d9e2ec"/>
+<rect x="699.3" y="393.7" width="5.9" height="36.3" fill="#c94f4f"/>
+<text x="702.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 702.2 448)">83</text>
+</g>
+<g><title>turn 84: PLAY total=120, relaxed misses=53, miss rate=44.2%</title>
+<rect x="707.2" y="315.2" width="5.9" height="114.8" fill="#d9e2ec"/>
+<rect x="707.2" y="379.3" width="5.9" height="50.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 85: PLAY total=105, relaxed misses=32, miss rate=30.5%</title>
+<rect x="715.0" y="329.6" width="5.9" height="100.4" fill="#d9e2ec"/>
+<rect x="715.0" y="399.4" width="5.9" height="30.6" fill="#c94f4f"/>
+</g>
+<g><title>turn 86: PLAY total=109, relaxed misses=40, miss rate=36.7%</title>
+<rect x="722.9" y="325.8" width="5.9" height="104.2" fill="#d9e2ec"/>
+<rect x="722.9" y="391.7" width="5.9" height="38.3" fill="#c94f4f"/>
+</g>
+<g><title>turn 87: PLAY total=95, relaxed misses=28, miss rate=29.5%</title>
+<rect x="730.8" y="339.1" width="5.9" height="90.9" fill="#d9e2ec"/>
+<rect x="730.8" y="403.2" width="5.9" height="26.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 88: PLAY total=103, relaxed misses=35, miss rate=34.0%</title>
+<rect x="738.6" y="331.5" width="5.9" height="98.5" fill="#d9e2ec"/>
+<rect x="738.6" y="396.5" width="5.9" height="33.5" fill="#c94f4f"/>
+<text x="741.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 741.6 448)">88</text>
+</g>
+<g><title>turn 89: PLAY total=82, relaxed misses=22, miss rate=26.8%</title>
+<rect x="746.5" y="351.6" width="5.9" height="78.4" fill="#d9e2ec"/>
+<rect x="746.5" y="409.0" width="5.9" height="21.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 90: PLAY total=112, relaxed misses=34, miss rate=30.4%</title>
+<rect x="754.4" y="322.9" width="5.9" height="107.1" fill="#d9e2ec"/>
+<rect x="754.4" y="397.5" width="5.9" height="32.5" fill="#c94f4f"/>
+</g>
+<g><title>turn 91: PLAY total=81, relaxed misses=28, miss rate=34.6%</title>
+<rect x="762.2" y="352.5" width="5.9" height="77.5" fill="#d9e2ec"/>
+<rect x="762.2" y="403.2" width="5.9" height="26.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 92: PLAY total=97, relaxed misses=29, miss rate=29.9%</title>
+<rect x="770.1" y="337.2" width="5.9" height="92.8" fill="#d9e2ec"/>
+<rect x="770.1" y="402.3" width="5.9" height="27.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 93: PLAY total=91, relaxed misses=32, miss rate=35.2%</title>
+<rect x="778.0" y="343.0" width="5.9" height="87.0" fill="#d9e2ec"/>
+<rect x="778.0" y="399.4" width="5.9" height="30.6" fill="#c94f4f"/>
+<text x="780.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 780.9 448)">93</text>
+</g>
+<g><title>turn 94: PLAY total=79, relaxed misses=26, miss rate=32.9%</title>
+<rect x="785.8" y="354.4" width="5.9" height="75.6" fill="#d9e2ec"/>
+<rect x="785.8" y="405.1" width="5.9" height="24.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 95: PLAY total=80, relaxed misses=23, miss rate=28.7%</title>
+<rect x="793.7" y="353.5" width="5.9" height="76.5" fill="#d9e2ec"/>
+<rect x="793.7" y="408.0" width="5.9" height="22.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 96: PLAY total=74, relaxed misses=22, miss rate=29.7%</title>
+<rect x="801.6" y="359.2" width="5.9" height="70.8" fill="#d9e2ec"/>
+<rect x="801.6" y="409.0" width="5.9" height="21.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 97: PLAY total=79, relaxed misses=27, miss rate=34.2%</title>
+<rect x="809.4" y="354.4" width="5.9" height="75.6" fill="#d9e2ec"/>
+<rect x="809.4" y="404.2" width="5.9" height="25.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 98: PLAY total=88, relaxed misses=26, miss rate=29.5%</title>
+<rect x="817.3" y="345.8" width="5.9" height="84.2" fill="#d9e2ec"/>
+<rect x="817.3" y="405.1" width="5.9" height="24.9" fill="#c94f4f"/>
+<text x="820.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 820.2 448)">98</text>
+</g>
+<g><title>turn 99: PLAY total=74, relaxed misses=31, miss rate=41.9%</title>
+<rect x="825.2" y="359.2" width="5.9" height="70.8" fill="#d9e2ec"/>
+<rect x="825.2" y="400.4" width="5.9" height="29.6" fill="#c94f4f"/>
+</g>
+<g><title>turn 100: PLAY total=75, relaxed misses=23, miss rate=30.7%</title>
+<rect x="833.0" y="358.3" width="5.9" height="71.7" fill="#d9e2ec"/>
+<rect x="833.0" y="408.0" width="5.9" height="22.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 101: PLAY total=76, relaxed misses=24, miss rate=31.6%</title>
+<rect x="840.9" y="357.3" width="5.9" height="72.7" fill="#d9e2ec"/>
+<rect x="840.9" y="407.0" width="5.9" height="23.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 102: PLAY total=54, relaxed misses=17, miss rate=31.5%</title>
+<rect x="848.8" y="378.4" width="5.9" height="51.6" fill="#d9e2ec"/>
+<rect x="848.8" y="413.7" width="5.9" height="16.3" fill="#c94f4f"/>
+</g>
+<g><title>turn 103: PLAY total=69, relaxed misses=23, miss rate=33.3%</title>
+<rect x="856.6" y="364.0" width="5.9" height="66.0" fill="#d9e2ec"/>
+<rect x="856.6" y="408.0" width="5.9" height="22.0" fill="#c94f4f"/>
+<text x="859.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 859.6 448)">103</text>
+</g>
+<g><title>turn 104: PLAY total=48, relaxed misses=8, miss rate=16.7%</title>
+<rect x="864.5" y="384.1" width="5.9" height="45.9" fill="#d9e2ec"/>
+<rect x="864.5" y="422.3" width="5.9" height="7.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 105: PLAY total=64, relaxed misses=21, miss rate=32.8%</title>
+<rect x="872.4" y="368.8" width="5.9" height="61.2" fill="#d9e2ec"/>
+<rect x="872.4" y="409.9" width="5.9" height="20.1" fill="#c94f4f"/>
+</g>
+<g><title>turn 106: PLAY total=58, relaxed misses=11, miss rate=19.0%</title>
+<rect x="880.2" y="374.5" width="5.9" height="55.5" fill="#d9e2ec"/>
+<rect x="880.2" y="419.5" width="5.9" height="10.5" fill="#c94f4f"/>
+</g>
+<g><title>turn 107: PLAY total=59, relaxed misses=18, miss rate=30.5%</title>
+<rect x="888.1" y="373.6" width="5.9" height="56.4" fill="#d9e2ec"/>
+<rect x="888.1" y="412.8" width="5.9" height="17.2" fill="#c94f4f"/>
+</g>
+<g><title>turn 108: PLAY total=52, relaxed misses=15, miss rate=28.8%</title>
+<rect x="896.0" y="380.3" width="5.9" height="49.7" fill="#d9e2ec"/>
+<rect x="896.0" y="415.7" width="5.9" height="14.3" fill="#c94f4f"/>
+<text x="898.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 898.9 448)">108</text>
+</g>
+<g><title>turn 109: PLAY total=53, relaxed misses=22, miss rate=41.5%</title>
+<rect x="903.8" y="379.3" width="5.9" height="50.7" fill="#d9e2ec"/>
+<rect x="903.8" y="409.0" width="5.9" height="21.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 110: PLAY total=38, relaxed misses=17, miss rate=44.7%</title>
+<rect x="911.7" y="393.7" width="5.9" height="36.3" fill="#d9e2ec"/>
+<rect x="911.7" y="413.7" width="5.9" height="16.3" fill="#c94f4f"/>
+</g>
+<g><title>turn 111: PLAY total=50, relaxed misses=12, miss rate=24.0%</title>
+<rect x="919.6" y="382.2" width="5.9" height="47.8" fill="#d9e2ec"/>
+<rect x="919.6" y="418.5" width="5.9" height="11.5" fill="#c94f4f"/>
+</g>
+<g><title>turn 112: PLAY total=41, relaxed misses=10, miss rate=24.4%</title>
+<rect x="927.4" y="390.8" width="5.9" height="39.2" fill="#d9e2ec"/>
+<rect x="927.4" y="420.4" width="5.9" height="9.6" fill="#c94f4f"/>
+</g>
+<g><title>turn 113: PLAY total=48, relaxed misses=10, miss rate=20.8%</title>
+<rect x="935.3" y="384.1" width="5.9" height="45.9" fill="#d9e2ec"/>
+<rect x="935.3" y="420.4" width="5.9" height="9.6" fill="#c94f4f"/>
+<text x="938.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 938.2 448)">113</text>
+</g>
+<g><title>turn 114: PLAY total=49, relaxed misses=11, miss rate=22.4%</title>
+<rect x="943.2" y="383.1" width="5.9" height="46.9" fill="#d9e2ec"/>
+<rect x="943.2" y="419.5" width="5.9" height="10.5" fill="#c94f4f"/>
+</g>
+<g><title>turn 115: PLAY total=45, relaxed misses=15, miss rate=33.3%</title>
+<rect x="951.0" y="387.0" width="5.9" height="43.0" fill="#d9e2ec"/>
+<rect x="951.0" y="415.7" width="5.9" height="14.3" fill="#c94f4f"/>
+</g>
+<g><title>turn 116: PLAY total=35, relaxed misses=9, miss rate=25.7%</title>
+<rect x="958.9" y="396.5" width="5.9" height="33.5" fill="#d9e2ec"/>
+<rect x="958.9" y="421.4" width="5.9" height="8.6" fill="#c94f4f"/>
+</g>
+<g><title>turn 117: PLAY total=44, relaxed misses=11, miss rate=25.0%</title>
+<rect x="966.8" y="387.9" width="5.9" height="42.1" fill="#d9e2ec"/>
+<rect x="966.8" y="419.5" width="5.9" height="10.5" fill="#c94f4f"/>
+</g>
+<g><title>turn 118: PLAY total=28, relaxed misses=7, miss rate=25.0%</title>
+<rect x="974.6" y="403.2" width="5.9" height="26.8" fill="#d9e2ec"/>
+<rect x="974.6" y="423.3" width="5.9" height="6.7" fill="#c94f4f"/>
+<text x="977.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 977.6 448)">118</text>
+</g>
+<g><title>turn 119: PLAY total=37, relaxed misses=9, miss rate=24.3%</title>
+<rect x="982.5" y="394.6" width="5.9" height="35.4" fill="#d9e2ec"/>
+<rect x="982.5" y="421.4" width="5.9" height="8.6" fill="#c94f4f"/>
+</g>
+<g><title>turn 120: PLAY total=30, relaxed misses=8, miss rate=26.7%</title>
+<rect x="990.4" y="401.3" width="5.9" height="28.7" fill="#d9e2ec"/>
+<rect x="990.4" y="422.3" width="5.9" height="7.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 121: PLAY total=36, relaxed misses=11, miss rate=30.6%</title>
+<rect x="998.2" y="395.6" width="5.9" height="34.4" fill="#d9e2ec"/>
+<rect x="998.2" y="419.5" width="5.9" height="10.5" fill="#c94f4f"/>
+</g>
+<g><title>turn 122: PLAY total=35, relaxed misses=7, miss rate=20.0%</title>
+<rect x="1006.1" y="396.5" width="5.9" height="33.5" fill="#d9e2ec"/>
+<rect x="1006.1" y="423.3" width="5.9" height="6.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 123: PLAY total=33, relaxed misses=10, miss rate=30.3%</title>
+<rect x="1014.0" y="398.4" width="5.9" height="31.6" fill="#d9e2ec"/>
+<rect x="1014.0" y="420.4" width="5.9" height="9.6" fill="#c94f4f"/>
+<text x="1016.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 1016.9 448)">123</text>
+</g>
+<g><title>turn 124: PLAY total=29, relaxed misses=7, miss rate=24.1%</title>
+<rect x="1021.8" y="402.3" width="5.9" height="27.7" fill="#d9e2ec"/>
+<rect x="1021.8" y="423.3" width="5.9" height="6.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 125: PLAY total=37, relaxed misses=12, miss rate=32.4%</title>
+<rect x="1029.7" y="394.6" width="5.9" height="35.4" fill="#d9e2ec"/>
+<rect x="1029.7" y="418.5" width="5.9" height="11.5" fill="#c94f4f"/>
+</g>
+<g><title>turn 126: PLAY total=20, relaxed misses=3, miss rate=15.0%</title>
+<rect x="1037.6" y="410.9" width="5.9" height="19.1" fill="#d9e2ec"/>
+<rect x="1037.6" y="427.1" width="5.9" height="2.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 127: PLAY total=28, relaxed misses=10, miss rate=35.7%</title>
+<rect x="1045.4" y="403.2" width="5.9" height="26.8" fill="#d9e2ec"/>
+<rect x="1045.4" y="420.4" width="5.9" height="9.6" fill="#c94f4f"/>
+</g>
+<g><title>turn 128: PLAY total=19, relaxed misses=3, miss rate=15.8%</title>
+<rect x="1053.3" y="411.8" width="5.9" height="18.2" fill="#d9e2ec"/>
+<rect x="1053.3" y="427.1" width="5.9" height="2.9" fill="#c94f4f"/>
+<text x="1056.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 1056.2 448)">128</text>
+</g>
+<g><title>turn 129: PLAY total=26, relaxed misses=4, miss rate=15.4%</title>
+<rect x="1061.2" y="405.1" width="5.9" height="24.9" fill="#d9e2ec"/>
+<rect x="1061.2" y="426.2" width="5.9" height="3.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 130: PLAY total=26, relaxed misses=7, miss rate=26.9%</title>
+<rect x="1069.0" y="405.1" width="5.9" height="24.9" fill="#d9e2ec"/>
+<rect x="1069.0" y="423.3" width="5.9" height="6.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 131: PLAY total=26, relaxed misses=10, miss rate=38.5%</title>
+<rect x="1076.9" y="405.1" width="5.9" height="24.9" fill="#d9e2ec"/>
+<rect x="1076.9" y="420.4" width="5.9" height="9.6" fill="#c94f4f"/>
+</g>
+<g><title>turn 132: PLAY total=19, relaxed misses=8, miss rate=42.1%</title>
+<rect x="1084.8" y="411.8" width="5.9" height="18.2" fill="#d9e2ec"/>
+<rect x="1084.8" y="422.3" width="5.9" height="7.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 133: PLAY total=32, relaxed misses=11, miss rate=34.4%</title>
+<rect x="1092.6" y="399.4" width="5.9" height="30.6" fill="#d9e2ec"/>
+<rect x="1092.6" y="419.5" width="5.9" height="10.5" fill="#c94f4f"/>
+<text x="1095.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 1095.5 448)">133</text>
+</g>
+<g><title>turn 134: PLAY total=13, relaxed misses=2, miss rate=15.4%</title>
+<rect x="1100.5" y="417.6" width="5.9" height="12.4" fill="#d9e2ec"/>
+<rect x="1100.5" y="428.1" width="5.9" height="1.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 135: PLAY total=21, relaxed misses=8, miss rate=38.1%</title>
+<rect x="1108.3" y="409.9" width="5.9" height="20.1" fill="#d9e2ec"/>
+<rect x="1108.3" y="422.3" width="5.9" height="7.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 136: PLAY total=10, relaxed misses=2, miss rate=20.0%</title>
+<rect x="1116.2" y="420.4" width="5.9" height="9.6" fill="#d9e2ec"/>
+<rect x="1116.2" y="428.1" width="5.9" height="1.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 137: PLAY total=16, relaxed misses=4, miss rate=25.0%</title>
+<rect x="1124.1" y="414.7" width="5.9" height="15.3" fill="#d9e2ec"/>
+<rect x="1124.1" y="426.2" width="5.9" height="3.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 138: PLAY total=17, relaxed misses=2, miss rate=11.8%</title>
+<rect x="1131.9" y="413.7" width="5.9" height="16.3" fill="#d9e2ec"/>
+<rect x="1131.9" y="428.1" width="5.9" height="1.9" fill="#c94f4f"/>
+<text x="1134.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 1134.9 448)">138</text>
+</g>
+<g><title>turn 139: PLAY total=18, relaxed misses=5, miss rate=27.8%</title>
+<rect x="1139.8" y="412.8" width="5.9" height="17.2" fill="#d9e2ec"/>
+<rect x="1139.8" y="425.2" width="5.9" height="4.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 140: PLAY total=13, relaxed misses=3, miss rate=23.1%</title>
+<rect x="1147.7" y="417.6" width="5.9" height="12.4" fill="#d9e2ec"/>
+<rect x="1147.7" y="427.1" width="5.9" height="2.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 141: PLAY total=20, relaxed misses=6, miss rate=30.0%</title>
+<rect x="1155.5" y="410.9" width="5.9" height="19.1" fill="#d9e2ec"/>
+<rect x="1155.5" y="424.3" width="5.9" height="5.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 142: PLAY total=8, relaxed misses=5, miss rate=62.5%</title>
+<rect x="1163.4" y="422.3" width="5.9" height="7.7" fill="#d9e2ec"/>
+<rect x="1163.4" y="425.2" width="5.9" height="4.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 143: PLAY total=12, relaxed misses=3, miss rate=25.0%</title>
+<rect x="1171.3" y="418.5" width="5.9" height="11.5" fill="#d9e2ec"/>
+<rect x="1171.3" y="427.1" width="5.9" height="2.9" fill="#c94f4f"/>
+<text x="1174.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 1174.2 448)">143</text>
+</g>
+<g><title>turn 144: PLAY total=5, relaxed misses=2, miss rate=40.0%</title>
+<rect x="1179.1" y="425.2" width="5.9" height="4.8" fill="#d9e2ec"/>
+<rect x="1179.1" y="428.1" width="5.9" height="1.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 145: PLAY total=10, relaxed misses=3, miss rate=30.0%</title>
+<rect x="1187.0" y="420.4" width="5.9" height="9.6" fill="#d9e2ec"/>
+<rect x="1187.0" y="427.1" width="5.9" height="2.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 146: PLAY total=9, relaxed misses=2, miss rate=22.2%</title>
+<rect x="1194.9" y="421.4" width="5.9" height="8.6" fill="#d9e2ec"/>
+<rect x="1194.9" y="428.1" width="5.9" height="1.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 147: PLAY total=12, relaxed misses=6, miss rate=50.0%</title>
+<rect x="1202.7" y="418.5" width="5.9" height="11.5" fill="#d9e2ec"/>
+<rect x="1202.7" y="424.3" width="5.9" height="5.7" fill="#c94f4f"/>
+</g>
+<g><title>turn 148: PLAY total=8, relaxed misses=4, miss rate=50.0%</title>
+<rect x="1210.6" y="422.3" width="5.9" height="7.7" fill="#d9e2ec"/>
+<rect x="1210.6" y="426.2" width="5.9" height="3.8" fill="#c94f4f"/>
+<text x="1213.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 1213.5 448)">148</text>
+</g>
+<g><title>turn 149: PLAY total=13, relaxed misses=4, miss rate=30.8%</title>
+<rect x="1218.5" y="417.6" width="5.9" height="12.4" fill="#d9e2ec"/>
+<rect x="1218.5" y="426.2" width="5.9" height="3.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 150: PLAY total=5, relaxed misses=1, miss rate=20.0%</title>
+<rect x="1226.3" y="425.2" width="5.9" height="4.8" fill="#d9e2ec"/>
+<rect x="1226.3" y="429.0" width="5.9" height="1.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 151: PLAY total=8, relaxed misses=4, miss rate=50.0%</title>
+<rect x="1234.2" y="422.3" width="5.9" height="7.7" fill="#d9e2ec"/>
+<rect x="1234.2" y="426.2" width="5.9" height="3.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 152: PLAY total=3, relaxed misses=2, miss rate=66.7%</title>
+<rect x="1242.1" y="427.1" width="5.9" height="2.9" fill="#d9e2ec"/>
+<rect x="1242.1" y="428.1" width="5.9" height="1.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 153: PLAY total=3, relaxed misses=1, miss rate=33.3%</title>
+<rect x="1249.9" y="427.1" width="5.9" height="2.9" fill="#d9e2ec"/>
+<rect x="1249.9" y="429.0" width="5.9" height="1.0" fill="#c94f4f"/>
+<text x="1252.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 1252.9 448)">153</text>
+</g>
+<g><title>turn 154: PLAY total=4, relaxed misses=2, miss rate=50.0%</title>
+<rect x="1257.8" y="426.2" width="5.9" height="3.8" fill="#d9e2ec"/>
+<rect x="1257.8" y="428.1" width="5.9" height="1.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 155: PLAY total=6, relaxed misses=1, miss rate=16.7%</title>
+<rect x="1265.7" y="424.3" width="5.9" height="5.7" fill="#d9e2ec"/>
+<rect x="1265.7" y="429.0" width="5.9" height="1.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 156: PLAY total=6, relaxed misses=1, miss rate=16.7%</title>
+<rect x="1273.5" y="424.3" width="5.9" height="5.7" fill="#d9e2ec"/>
+<rect x="1273.5" y="429.0" width="5.9" height="1.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 157: PLAY total=8, relaxed misses=2, miss rate=25.0%</title>
+<rect x="1281.4" y="422.3" width="5.9" height="7.7" fill="#d9e2ec"/>
+<rect x="1281.4" y="428.1" width="5.9" height="1.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 158: PLAY total=3, relaxed misses=1, miss rate=33.3%</title>
+<rect x="1289.3" y="427.1" width="5.9" height="2.9" fill="#d9e2ec"/>
+<rect x="1289.3" y="429.0" width="5.9" height="1.0" fill="#c94f4f"/>
+<text x="1292.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 1292.2 448)">158</text>
+</g>
+<g><title>turn 159: PLAY total=5, relaxed misses=3, miss rate=60.0%</title>
+<rect x="1297.1" y="425.2" width="5.9" height="4.8" fill="#d9e2ec"/>
+<rect x="1297.1" y="427.1" width="5.9" height="2.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 160: PLAY total=3, relaxed misses=2, miss rate=66.7%</title>
+<rect x="1305.0" y="427.1" width="5.9" height="2.9" fill="#d9e2ec"/>
+<rect x="1305.0" y="428.1" width="5.9" height="1.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 161: PLAY total=1, relaxed misses=1, miss rate=100.0%</title>
+<rect x="1312.9" y="429.0" width="5.9" height="1.0" fill="#d9e2ec"/>
+<rect x="1312.9" y="429.0" width="5.9" height="1.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 162: PLAY total=5, relaxed misses=5, miss rate=100.0%</title>
+<rect x="1320.7" y="425.2" width="5.9" height="4.8" fill="#d9e2ec"/>
+<rect x="1320.7" y="425.2" width="5.9" height="4.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 163: PLAY total=3, relaxed misses=0, miss rate=0.0%</title>
+<rect x="1328.6" y="427.1" width="5.9" height="2.9" fill="#d9e2ec"/>
+<rect x="1328.6" y="430.0" width="5.9" height="0.0" fill="#c94f4f"/>
+<text x="1331.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 1331.5 448)">163</text>
+</g>
+<g><title>turn 164: PLAY total=6, relaxed misses=4, miss rate=66.7%</title>
+<rect x="1336.5" y="424.3" width="5.9" height="5.7" fill="#d9e2ec"/>
+<rect x="1336.5" y="426.2" width="5.9" height="3.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 165: PLAY total=3, relaxed misses=1, miss rate=33.3%</title>
+<rect x="1344.3" y="427.1" width="5.9" height="2.9" fill="#d9e2ec"/>
+<rect x="1344.3" y="429.0" width="5.9" height="1.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 166: PLAY total=3, relaxed misses=1, miss rate=33.3%</title>
+<rect x="1352.2" y="427.1" width="5.9" height="2.9" fill="#d9e2ec"/>
+<rect x="1352.2" y="429.0" width="5.9" height="1.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 167: PLAY total=3, relaxed misses=2, miss rate=66.7%</title>
+<rect x="1360.1" y="427.1" width="5.9" height="2.9" fill="#d9e2ec"/>
+<rect x="1360.1" y="428.1" width="5.9" height="1.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 168: PLAY total=3, relaxed misses=2, miss rate=66.7%</title>
+<rect x="1367.9" y="427.1" width="5.9" height="2.9" fill="#d9e2ec"/>
+<rect x="1367.9" y="428.1" width="5.9" height="1.9" fill="#c94f4f"/>
+<text x="1370.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 1370.9 448)">168</text>
+</g>
+<g><title>turn 169: PLAY total=1, relaxed misses=1, miss rate=100.0%</title>
+<rect x="1375.8" y="429.0" width="5.9" height="1.0" fill="#d9e2ec"/>
+<rect x="1375.8" y="429.0" width="5.9" height="1.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 170: PLAY total=5, relaxed misses=4, miss rate=80.0%</title>
+<rect x="1383.7" y="425.2" width="5.9" height="4.8" fill="#d9e2ec"/>
+<rect x="1383.7" y="426.2" width="5.9" height="3.8" fill="#c94f4f"/>
+</g>
+<g><title>turn 171: PLAY total=3, relaxed misses=1, miss rate=33.3%</title>
+<rect x="1391.5" y="427.1" width="5.9" height="2.9" fill="#d9e2ec"/>
+<rect x="1391.5" y="429.0" width="5.9" height="1.0" fill="#c94f4f"/>
+</g>
+<g><title>turn 172: PLAY total=4, relaxed misses=3, miss rate=75.0%</title>
+<rect x="1399.4" y="426.2" width="5.9" height="3.8" fill="#d9e2ec"/>
+<rect x="1399.4" y="427.1" width="5.9" height="2.9" fill="#c94f4f"/>
+</g>
+<g><title>turn 173: PLAY total=1, relaxed misses=0, miss rate=0.0%</title>
+<rect x="1407.3" y="429.0" width="5.9" height="1.0" fill="#d9e2ec"/>
+<rect x="1407.3" y="430.0" width="5.9" height="0.0" fill="#c94f4f"/>
+<text x="1410.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" transform="rotate(65 1410.2 448)">173</text>
+</g>
+<g><title>turn 174: PLAY total=1, relaxed misses=1, miss rate=100.0%</title>
+<rect x="1415.1" y="429.0" width="5.9" height="1.0" fill="#d9e2ec"/>
+<rect x="1415.1" y="429.0" width="5.9" height="1.0" fill="#c94f4f"/>
+</g>
+<rect x="70" y="470" width="14" height="14" fill="#d9e2ec"/><text x="90" y="482" font-family="Arial, sans-serif" font-size="12">CHAGA PLAY reviewed decisions</text>
+<rect x="320" y="470" width="14" height="14" fill="#c94f4f"/><text x="340" y="482" font-family="Arial, sans-serif" font-size="12">relaxed PLAY misses</text>
+</svg>

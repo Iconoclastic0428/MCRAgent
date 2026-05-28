@@ -1110,3 +1110,13 @@ Review:
   - LuckyJ-relevant idea: keep this as a later research branch because regret/search-assisted online adaptation is much heavier than the current supervised/RL pipeline.
   - Result: the deterministic mahjong-algorithm baseline is strong on `HU`, `PENG`, and `CHI`, but weak on `PLAY` and `GANG`; use it as explicit rule/context features and tactical reranking, not as the main policy.
   - Held-out CHAGA val+test result: 19,645 reviewed states, top-1 `0.459252`, top-3 `0.618783`, relaxed `0.546500`; `PLAY` relaxed `0.505250`, `CHI` relaxed `0.908108`, `PENG` relaxed `0.951662`, `HU` relaxed `1.0`, `GANG` relaxed `0.096774`.
+
+### Mortal Rule-Q side experiment
+
+- [x] Write the Mortal/LuckyJ-inspired side-experiment design.
+  - Spec path: `docs/superpowers/specs/2026-05-27-mortal-rule-q-design.md`.
+  - Selected design: a Transformer-dueling-Q candidate scorer with legal masks, CQL-style offline regularization, CHAGA soft/accepted-set losses, and mahjong-algorithm effective-tile prior features.
+  - Keep the active `20260527d` Transformer L40 jobs running; this must be a separate side job.
+- [ ] Write an implementation plan for the Mortal Rule-Q side experiment.
+- [ ] Implement the new trainer with tests before launching an L40 job.
+- [ ] Launch a single-L40 Kubernetes side job and compare against the deterministic baseline and current Transformer snapshots.
