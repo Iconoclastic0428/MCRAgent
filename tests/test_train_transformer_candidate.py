@@ -30,7 +30,10 @@ from train_transformer_candidate import (  # noqa: E402
     count_model_parameters,
     encode_history_event,
     evaluate_model,
+    example_hard_key,
     filter_reviewed_examples,
+    load_initial_checkpoint,
+    training_sampling_weights,
     hu_gated_candidate_mask,
     is_better_checkpoint_metric,
     load_review_target_lookup,
@@ -938,6 +941,80 @@ def test_reviewed_sampling_weights_target_requested_fraction():
     reviewed_mass = float(weights[0] + weights[1])
     unreviewed_mass = float(weights[2])
     assert abs(reviewed_mass / (reviewed_mass + unreviewed_mass) - 0.75) < 1e-6
+
+
+def test_training_sampling_weights_can_boost_hard_reviewed_examples():
+    hard_reviewed = minimal_transformer_example(
+        ["Play W1", "Play W2"],
+        target_response="Play W1",
+        teacher_candidate_norms=("PLAY W1",),
+        teacher_accept_top3=False,
+    )
+    hard_reviewed.record_id = "r1"
+    hard_reviewed.request = "2 W1"
+    ordinary_reviewed = minimal_transformer_example(
+        ["Play W1", "Play W2"],
+        target_response="Play W2",
+        teacher_candidate_norms=("PLAY W2",),
+        teacher_accept_top3=False,
+    )
+    unreviewed = minimal_transformer_example(
+        ["Play W1", "Play W2"],
+        target_response="Play W2",
+        teacher_candidate_norms=(),
+        teacher_accept_top3=False,
+    )
+    weights = training_sampling_weights(
+        [hard_reviewed, ordinary_reviewed, unreviewed],
+        reviewed_batch_fraction=0.75,
+        hard_example_weights={example_hard_key(hard_reviewed): 6.0},
+    )
+
+    assert weights is not None
+    assert float(weights[0]) > float(weights[1])
+    assert float(weights[0]) > float(weights[2])
+
+
+def test_load_initial_checkpoint_restores_model_weights(tmp_path):
+    checkpoint = tmp_path / "checkpoint.pt"
+    model = TransformerCandidateModel(
+        act_size=235,
+        history_vocab_size=512,
+        d_model=32,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=64,
+    )
+    for parameter in model.parameters():
+        torch.nn.init.constant_(parameter, 0.25)
+    torch.save(
+        {
+            "model_state": model.state_dict(),
+            "config": {
+                "history_vocab_size": 512,
+                "d_model": 32,
+                "nhead": 4,
+                "num_layers": 1,
+                "dim_feedforward": 64,
+                "dropout": 0.1,
+            },
+        },
+        checkpoint,
+    )
+    fresh = TransformerCandidateModel(
+        act_size=235,
+        history_vocab_size=512,
+        d_model=32,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=64,
+    )
+
+    info = load_initial_checkpoint(fresh, checkpoint, torch.device("cpu"))
+
+    assert info["checkpoint"] == str(checkpoint)
+    first_param = next(fresh.parameters()).detach()
+    assert torch.allclose(first_param, torch.full_like(first_param, 0.25))
 
 
 def test_reviewed_only_training_requires_full_candidate_width():

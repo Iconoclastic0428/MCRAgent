@@ -95,13 +95,26 @@ def collect_original_prediction_rows(
                 )
                 rows.append(
                     {
+                        "example_key": "|".join(
+                            [
+                                str(getattr(example, "record_id", "") or ""),
+                                str(int(example.player)),
+                                str(int(example.turn)),
+                                str(getattr(example, "request", "") or ""),
+                            ]
+                        ),
+                        "record_id": str(getattr(example, "record_id", "") or ""),
+                        "session_id": str(getattr(example, "session_id", "") or ""),
                         "turn": int(example.turn),
                         "player": int(example.player),
+                        "request": str(getattr(example, "request", "") or ""),
                         "response": example.response,
                         "predicted_action": pred_action,
                         "predicted_normalized": normalize_teacher_action(pred_action),
                         "chaga_top1_action": top1_norm,
                         "chaga_top3_actions": "|".join(top3_norms),
+                        "chaga_top5_actions": "|".join(candidate_norms[:5]),
+                        "candidate_count": int(example.action_mask.sum()),
                         "teacher_accept_top3": bool(getattr(example, "teacher_accept_top3", False)),
                         "has_teacher_distribution": example.teacher_action_distribution is not None,
                         **scores,

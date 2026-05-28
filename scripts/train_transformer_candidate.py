@@ -89,6 +89,9 @@ class TransformerExample:
     teacher_action_distribution: np.ndarray | None = None
     teacher_accept_top3: bool = False
     teacher_candidate_norms: tuple[str, ...] = ()
+    record_id: str = ""
+    session_id: str = ""
+    request: str = ""
 
 
 @dataclass
@@ -423,6 +426,9 @@ def build_transformer_examples_from_record(
                     teacher_action_distribution=teacher_distribution,
                     teacher_accept_top3=teacher_accept_top3,
                     teacher_candidate_norms=teacher_candidate_norms,
+                    record_id=record_id,
+                    session_id=str(record.get("belongs") or record.get("session_id") or ""),
+                    request=request,
                 )
             )
             stats["examples"] += 1
@@ -1075,6 +1081,78 @@ def reviewed_sampling_weights(
     )
 
 
+def example_hard_key(example: TransformerExample) -> str:
+    return "|".join(
+        [
+            str(getattr(example, "record_id", "") or ""),
+            str(getattr(example, "player", "") or ""),
+            str(getattr(example, "turn", "") or ""),
+            str(getattr(example, "request", "") or ""),
+        ]
+    )
+
+
+def load_hard_example_weights(path: str | None) -> dict[str, float]:
+    if not path:
+        return {}
+    weights: dict[str, float] = {}
+    with Path(path).open("r", encoding="utf-8-sig") as src:
+        for line in src:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            key = str(row.get("example_key") or "")
+            if not key:
+                key = "|".join(
+                    [
+                        str(row.get("record_id", "") or ""),
+                        str(row.get("player", "") or ""),
+                        str(row.get("turn", "") or ""),
+                        str(row.get("request", "") or ""),
+                    ]
+                )
+            try:
+                weight = float(row.get("sample_weight", 1.0))
+            except (TypeError, ValueError):
+                weight = 1.0
+            if key:
+                weights[key] = max(weights.get(key, 1.0), max(1.0, weight))
+    return weights
+
+
+def training_sampling_weights(
+    examples: list[TransformerExample],
+    *,
+    reviewed_batch_fraction: float | None,
+    hard_example_weights: dict[str, float] | None = None,
+) -> torch.Tensor | None:
+    weights = reviewed_sampling_weights(
+        examples,
+        reviewed_batch_fraction=reviewed_batch_fraction,
+    )
+    if hard_example_weights:
+        if weights is None:
+            weights = torch.ones((len(examples),), dtype=torch.double)
+        for index, example in enumerate(examples):
+            multiplier = float(hard_example_weights.get(example_hard_key(example), 1.0))
+            if multiplier > 1.0:
+                weights[index] *= multiplier
+    return weights
+
+
+def load_initial_checkpoint(model: nn.Module, checkpoint_path: Path, device: torch.device) -> dict:
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    state = checkpoint.get("model_state")
+    if not isinstance(state, dict):
+        raise ValueError(f"checkpoint has no model_state: {checkpoint_path}")
+    model.load_state_dict(state)
+    return {
+        "checkpoint": str(checkpoint_path),
+        "config": dict(checkpoint.get("config") or {}),
+        "selection": dict(checkpoint.get("selection") or {}),
+    }
+
+
 def validate_reviewed_training_args(args: argparse.Namespace) -> None:
     if (args.train_reviewed_only or args.val_reviewed_only) and args.max_candidates < FeatureAgent.ACT_SIZE:
         raise ValueError(f"reviewed-only CHAGA training requires --max-candidates {FeatureAgent.ACT_SIZE}")
@@ -1082,6 +1160,8 @@ def validate_reviewed_training_args(args: argparse.Namespace) -> None:
         raise ValueError(f"CHAGA-reviewed training/evaluation requires --max-candidates {FeatureAgent.ACT_SIZE}")
     if getattr(args, "stream_train", False) and getattr(args, "reviewed_batch_fraction", None) is not None:
         raise ValueError("--reviewed-batch-fraction is not supported with --stream-train")
+    if getattr(args, "stream_train", False) and getattr(args, "hard_examples_jsonl", None):
+        raise ValueError("--hard-examples-jsonl is not supported with --stream-train")
     if args.reviewed_batch_fraction is not None and not 0.0 <= args.reviewed_batch_fraction < 1.0:
         raise ValueError("--reviewed-batch-fraction must be in [0, 1)")
     reviewed_accept_set_loss_weight = getattr(args, "reviewed_accept_set_loss_weight", None)
@@ -1506,10 +1586,12 @@ def train(args: argparse.Namespace) -> dict:
 
     collate = TransformerExampleCollator(max_candidates=args.max_candidates)
     train_sampler = None
+    hard_example_weights = load_hard_example_weights(args.hard_examples_jsonl)
     if train_examples is not None:
-        train_sampling_weights = reviewed_sampling_weights(
+        train_sampling_weights = training_sampling_weights(
             train_examples,
             reviewed_batch_fraction=args.reviewed_batch_fraction,
+            hard_example_weights=hard_example_weights,
         )
         train_sampler = (
             WeightedRandomSampler(train_sampling_weights, num_samples=len(train_examples), replacement=True)
@@ -1563,6 +1645,9 @@ def train(args: argparse.Namespace) -> dict:
         dropout=args.dropout,
     ).to(device)
     model_size = count_model_parameters(model)
+    init_checkpoint_info = None
+    if args.init_checkpoint:
+        init_checkpoint_info = load_initial_checkpoint(model, Path(args.init_checkpoint), device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     metrics = {
@@ -1593,8 +1678,10 @@ def train(args: argparse.Namespace) -> dict:
         "reviewed_teacher_loss_weight": args.reviewed_teacher_loss_weight,
         "reviewed_accept_set_loss_weight": args.reviewed_accept_set_loss_weight,
         "unreviewed_hard_loss_weight": args.unreviewed_hard_loss_weight,
+        "hard_examples_jsonl": args.hard_examples_jsonl,
         "train_sampling": {
             "weighted": train_sampler is not None,
+            "hard_examples": len(hard_example_weights),
             "reviewed_examples": (
                 None if train_examples is None else sum(1 for example in train_examples if is_reviewed_example(example))
             ),
@@ -1606,6 +1693,7 @@ def train(args: argparse.Namespace) -> dict:
         "review_audit_jsonl": args.review_audit_jsonl,
         "monitor_metric": args.monitor_metric,
         "model_size": model_size,
+        "init_checkpoint": init_checkpoint_info,
         "device": str(device),
         "started_at": int(time.time()),
         "history": [],
@@ -1769,6 +1857,7 @@ def main() -> int:
     parser.add_argument("--eval-raw", action="append", default=None, help="Held-out raw/converted JSONL path; repeatable")
     parser.add_argument("--out", required=True)
     parser.add_argument("--metrics-out", required=True)
+    parser.add_argument("--init-checkpoint", default=None)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -1783,6 +1872,7 @@ def main() -> int:
     parser.add_argument("--unreviewed-hard-loss-weight", type=float, default=None)
     parser.add_argument("--teacher-temperature", type=float, default=1.0)
     parser.add_argument("--review-audit-jsonl", default=None)
+    parser.add_argument("--hard-examples-jsonl", default=None)
     parser.add_argument("--stream-train", action="store_true")
     parser.add_argument("--exclude-sessions-file", default=None)
     parser.add_argument("--no-rule-features", action="store_true")

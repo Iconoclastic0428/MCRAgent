@@ -1146,6 +1146,20 @@ Review:
 - [x] Ask GPT Pro for a review of the plugin implementation plan and apply verified actionable feedback.
   - Accepted immediately: explicit base-fan/flower-exclusion Hu gate.
   - Next implementation target from review: replace the hand-only live wrapper with a FeatureAgent-compatible live state adapter before treating live output as model-strength evidence.
+
+### Medium-checkpoint targeted finetune pass
+
+- [ ] Implement GPT Pro's one-person-feasible finetune path from the 85.04% medium checkpoint.
+  - [x] Add `--init-checkpoint` support to `scripts/train_transformer_candidate.py` so low-LR runs can start from the extracted medium checkpoint instead of restarting from scratch.
+  - [x] Add hard-example sampling weights for non-streaming reviewed finetunes.
+  - [x] Add `scripts/mine_chaga_hard_examples.py` to classify model-vs-CHAGA mismatches and emit JSONL rows with `sample_weight`.
+  - [x] Add `scripts/summarize_chaga_coverage.py` to check reviewed train/validation coverage by family, turn, candidate-count, and relaxed-region slices before spending L40 time.
+  - [x] Run bounded local smoke checks for hard-example mining and coverage.
+    - Coverage smoke on prepared train/val reviewed rows succeeded; the tiny-sample coverage gate failed as expected because it intentionally used only 64/32 examples.
+    - Hard-example mining smoke on 3 prepared records produced 48 reviewed rows and 2 hard rows.
+    - CLI finetune smoke loaded an initial checkpoint, applied 48 hard-example weights, and wrote the tiny finetune checkpoint/metrics.
+  - [ ] Launch a Kubernetes-only `NVIDIA-L40` finetune job from `models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527d_plateau_e2b1000.pt`, with low LR, accepted-set loss, small soft-teacher loss, hard-example weights, and frequent validation.
+  - [ ] Gate promotion on beating relaxed `0.850429` without degrading PLAY relaxed below `0.850933`, with candidate truncation count zero and Hu safety unchanged.
   - Follow-up targets: two-stage claim plus forced-discard ranking, BUGANG candidate support, and recommendation telemetry.
 - [x] Deploy the extracted checkpoint for Chrome play testing.
   - Verified the local advisor service is running on `127.0.0.1:8765` with the extracted 768x12 checkpoint.
