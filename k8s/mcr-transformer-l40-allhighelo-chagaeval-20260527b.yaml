@@ -1,0 +1,170 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mcr-transformer-l40-allhighelo-chagaeval-20260527b
+  namespace: nourish-sdsc
+  labels:
+    app: mcr-transformer
+    task: allhighelo-chagaeval
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 259200
+  template:
+    metadata:
+      labels:
+        app: mcr-transformer
+        task: allhighelo-chagaeval
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-L40
+      containers:
+        - name: allhighelo-chagaeval
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+          command:
+            - sh
+            - -lc
+            - |
+              set -eux
+              python -m pip install --no-cache-dir PyMahjongGB
+              python - <<'PY'
+              import torch
+              import MahjongGB
+              print("repo_commit", "stream-all-highelo-chagaeval-20260527b")
+              print("torch", torch.__version__, "cuda", torch.cuda.is_available(), "device_count", torch.cuda.device_count())
+              print("MahjongGB import ok")
+              PY
+              ALL=data/processed/tziakcha_all_plus_live_elo2300_session/tziakcha_all_plus_live_elo2300_session_all.prepared.jsonl.gz
+              SPLIT=data/processed/chaga0208_all_plus_live_elo2300_cached_reviews/session_split_seed20260527
+              HOLDOUT=data/processed/tziakcha_all_plus_live_elo2300_session/chaga_eval_split_seed20260527/chaga_val_test_holdout_sessions.txt
+              TRAIN_SUMMARY=data/processed/tziakcha_all_plus_live_elo2300_session/chaga_eval_split_seed20260527/all_highelo_train_chaga_eval_split_summary.json
+              test -s "${ALL}"
+              test -s "${HOLDOUT}"
+              test -s "${TRAIN_SUMMARY}"
+              cat "${TRAIN_SUMMARY}"
+              python scripts/check_chaga_training_corpus.py \
+                --train-raw ${SPLIT}/train.prepared.jsonl \
+                --val-raw ${SPLIT}/val.prepared.jsonl \
+                --test-raw ${SPLIT}/test.prepared.jsonl \
+                --train-audit ${SPLIT}/train.audit.jsonl \
+                --val-audit ${SPLIT}/val.audit.jsonl \
+                --test-audit ${SPLIT}/test.audit.jsonl \
+                --train-val-audit ${SPLIT}/train_val.audit.jsonl \
+                --summary-out runs/transformer_candidate_allhighelo_chagaeval_l40_20260527b_corpus_gate.json \
+                --max-candidates 235
+              python scripts/train_transformer_candidate.py \
+                --raw ${ALL} \
+                --raw ${SPLIT}/train.prepared.jsonl \
+                --raw ${SPLIT}/train.prepared.jsonl \
+                --raw ${SPLIT}/train.prepared.jsonl \
+                --eval-raw ${SPLIT}/val.prepared.jsonl \
+                --review-audit-jsonl ${SPLIT}/train_val.audit.jsonl \
+                --stream-train \
+                --val-reviewed-only \
+                --require-teacher-distribution \
+                --exclude-sessions-file ${HOLDOUT} \
+                --max-candidates 235 \
+                --no-rule-features \
+                --hard-loss-weight 1.0 \
+                --teacher-loss-weight 0.25 \
+                --reviewed-accept-set-loss-weight 2.0 \
+                --unreviewed-hard-loss-weight 1.0 \
+                --value-loss-weight 0.0 \
+                --teacher-temperature 0.2 \
+                --monitor-metric val_original_relaxed_accuracy \
+                --epochs 5 \
+                --batch-size 96 \
+                --lr 0.0002 \
+                --weight-decay 0.02 \
+                --d-model 1024 \
+                --nhead 16 \
+                --num-layers 16 \
+                --dim-feedforward 4096 \
+                --dropout 0.15 \
+                --log-every-batches 1000 \
+                --eval-every-batches 5000 \
+                --out models/transformer_candidate_allhighelo_chagaeval_l40_20260527b.pt \
+                --metrics-out runs/transformer_candidate_allhighelo_chagaeval_l40_20260527b_metrics.json
+              python scripts/evaluate_transformer_chaga_review.py \
+                --checkpoint models/transformer_candidate_allhighelo_chagaeval_l40_20260527b.pt \
+                --raw ${SPLIT}/test.prepared.jsonl \
+                --review-audit-jsonl ${SPLIT}/test.audit.jsonl \
+                --max-candidates 235 \
+                --batch-size 128 \
+                --no-rule-features \
+                --metrics-out runs/transformer_candidate_allhighelo_chagaeval_l40_20260527b_test_eval.json
+              python - <<'PY'
+              import json
+              from pathlib import Path
+              metrics = json.loads(Path("runs/transformer_candidate_allhighelo_chagaeval_l40_20260527b_test_eval.json").read_text())
+              train = json.loads(Path("runs/transformer_candidate_allhighelo_chagaeval_l40_20260527b_metrics.json").read_text())
+              gate = json.loads(Path("runs/transformer_candidate_allhighelo_chagaeval_l40_20260527b_corpus_gate.json").read_text())
+              all_train = json.loads(Path("data/processed/tziakcha_all_plus_live_elo2300_session/chaga_eval_split_seed20260527/all_highelo_train_chaga_eval_split_summary.json").read_text())
+              summary = {
+                  "checkpoint": "models/transformer_candidate_allhighelo_chagaeval_l40_20260527b.pt",
+                  "train_mode": "stream_all_players_gt2300_chaga_eval",
+                  "full_train_records_seen": all_train.get("records_seen"),
+                  "stream_train_records": all_train.get("records_for_stream_training"),
+                  "stream_train_player_slots": all_train.get("train_player_slots_for_stream_training"),
+                  "heldout_chaga_sessions": all_train.get("holdout_session_count"),
+                  "corpus_gate": "runs/transformer_candidate_allhighelo_chagaeval_l40_20260527b_corpus_gate.json",
+                  "train_metrics": "runs/transformer_candidate_allhighelo_chagaeval_l40_20260527b_metrics.json",
+                  "test_eval": "runs/transformer_candidate_allhighelo_chagaeval_l40_20260527b_test_eval.json",
+                  "train_reviewed_examples_for_gate": gate["splits"]["train"]["reviewed_examples"],
+                  "val_reviewed_examples": gate["splits"]["val"]["reviewed_examples"],
+                  "test_reviewed_examples": gate["splits"]["test"]["reviewed_examples"],
+                  "best_epoch": train.get("best_epoch"),
+                  "best_metric": train.get("best_metric"),
+                  "monitor_metric": train.get("monitor_metric"),
+                  "compute_rule_features": train.get("compute_rule_features"),
+                  "evaluated_candidate_width": metrics.get("evaluated_candidate_width"),
+                  "candidate_truncation_count": metrics.get("candidate_truncation_count"),
+                  "reviewed_examples": metrics.get("reviewed_examples"),
+                  "reviewed_without_teacher_distribution": metrics.get("reviewed_without_teacher_distribution"),
+                  "original_top1_accuracy": metrics.get("original_top1_accuracy"),
+                  "original_top3_inclusion": metrics.get("original_top3_inclusion"),
+                  "original_relaxed_accuracy": metrics.get("original_relaxed_accuracy"),
+                  "original_play_relaxed_accuracy": metrics.get("original_play_relaxed_accuracy"),
+              }
+              summary["passed_50_relaxed"] = (summary["original_relaxed_accuracy"] or 0.0) >= 0.50
+              summary["passed_65_relaxed"] = (summary["original_relaxed_accuracy"] or 0.0) >= 0.65
+              summary["passed_85_relaxed"] = (summary["original_relaxed_accuracy"] or 0.0) >= 0.85
+              Path("runs/transformer_candidate_allhighelo_chagaeval_l40_20260527b_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2))
+              print(json.dumps(summary, ensure_ascii=False, indent=2))
+              PY
+          resources:
+            requests:
+              cpu: "1"
+              memory: 32Gi
+              ephemeral-storage: "0"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "1"
+              memory: 32Gi
+              ephemeral-storage: 50Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

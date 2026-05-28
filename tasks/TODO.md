@@ -1060,7 +1060,7 @@ Review:
   - Do not launch L40 until the expanded corpus and reviewed gate are clean.
   - Verification: `python -m pytest tests -q --basetemp tmp\pytest_full_high_elo_gate` passed with 258 tests and one existing sklearn convergence warning.
   - Kubernetes cleanup check: no Succeeded/Failed pods in `nourish-sdsc`; no completed jobs to delete. Only the unrelated running `idl-download` job remains.
-- [ ] Push the high-ELO corpus/gate code before launching the next L40 training job.
+- [x] Push the high-ELO corpus/gate code before launching the next L40 training job.
 - [x] Correct the training/eval split after user clarification.
   - Stopped the misaligned CHAGA-only reviewed-row L40 job before it reached GPU training.
   - New rule: train on the combined all-player record-local `>2300` corpus; hold out CHAGA validation/test sessions for CHAGA candidate-match evaluation.
@@ -1070,4 +1070,12 @@ Review:
   - Compressed `tziakcha_all_plus_live_elo2300_session_all.prepared.jsonl` to `tziakcha_all_plus_live_elo2300_session_all.prepared.jsonl.gz` (2.45 GB) and copied it to the shared PVC.
   - Smoke training from the gzipped stream produced nonzero training samples and CHAGA validation metrics.
   - Verification: `python -m pytest tests -q --basetemp tmp\pytest_allhighelo_stream_full` passed with 264 tests and one existing sklearn convergence warning.
-- [ ] Launch the corrected Transformer training job on Kubernetes `NVIDIA-L40` only, streaming all high-ELO players and using CHAGA val/test metrics.
+- [x] Relaunch the corrected Transformer training job on Kubernetes `NVIDIA-L40` only with mid-epoch validation/checkpoint snapshots, streaming all high-ELO players and using CHAGA val/test metrics.
+  - Current 1024x16 L40 job started correctly, but the full all-player stream is too large to rely on epoch-end checkpoints inside a 24h deadline.
+  - Added trainer support for periodic validation snapshots during streaming epochs and verified it with a local smoke run.
+  - Relaunched primary large job `mcr-transformer-l40-allhighelo-chagaeval-20260527b`, 1024x16, batch 96, `--eval-every-batches 5000`; scheduled on `rci-tide-gpu-05.sdsu.edu` (`NVIDIA-L40`).
+  - Added a second single-L40 comparison job `mcr-transformer-l40-allhighelo-chagaeval-med-20260527b`, 768x12, batch 128, `--eval-every-batches 3000`; scheduled on `rci-tide-gpu-04.sdsu.edu` (`NVIDIA-L40`).
+  - Resource requests had to be reduced to schedule additional L40 jobs through Kubernetes; this keeps the L40-only rule and avoids the NRP form.
+- [ ] Monitor the two L40 jobs until the first validation snapshots appear, then copy metrics/checkpoints locally and compare CHAGA relaxed match.
+  - Primary expected artifacts: `runs/transformer_candidate_allhighelo_chagaeval_l40_20260527b_metrics.json`, `models/transformer_candidate_allhighelo_chagaeval_l40_20260527b.pt`.
+  - Medium expected artifacts: `runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b_metrics.json`, `models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b.pt`.

@@ -22,6 +22,7 @@ from train_transformer_candidate import (  # noqa: E402
     TransformerStreamingDataset,
     action_response,
     build_transformer_examples_from_record,
+    build_train_metrics,
     chaga_candidates_to_action_distribution,
     collate_transformer_examples,
     count_model_parameters,
@@ -1040,3 +1041,26 @@ def test_count_model_parameters_reports_trainable_and_state_bytes():
     assert counts["parameters"] > 0
     assert counts["trainable_parameters"] == counts["parameters"]
     assert counts["state_tensor_bytes"] >= counts["parameters"] * 4
+
+
+def test_build_train_metrics_supports_mid_epoch_snapshot_fields():
+    metrics = build_train_metrics(
+        epoch=2,
+        batch_index=3000,
+        phase="batch_snapshot",
+        total=100,
+        loss_total=25.0,
+        policy_loss_total=20.0,
+        value_loss_total=5.0,
+        correct=40,
+        policy_part_totals={"hard_policy_loss": 12.0},
+        val_metrics={"original_relaxed_accuracy": 0.61, "samples": 10},
+    )
+
+    assert metrics["epoch"] == 2
+    assert metrics["batch"] == 3000
+    assert metrics["phase"] == "batch_snapshot"
+    assert metrics["train_loss"] == 0.25
+    assert metrics["train_accuracy"] == 0.4
+    assert metrics["train_hard_policy_loss"] == 0.12
+    assert metrics["val_original_relaxed_accuracy"] == 0.61

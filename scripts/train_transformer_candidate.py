@@ -823,11 +823,45 @@ def write_metrics_snapshot(
     snapshot["checkpoint"] = str(checkpoint)
     snapshot["best_epoch"] = best_epoch_metrics
     snapshot["checkpoint_epoch"] = best_epoch_metrics.get("epoch") if best_epoch_metrics else None
+    snapshot["checkpoint_batch"] = best_epoch_metrics.get("batch") if best_epoch_metrics else None
+    snapshot["checkpoint_phase"] = best_epoch_metrics.get("phase") if best_epoch_metrics else None
     if finished:
         snapshot["finished_at"] = int(time.time())
     else:
         snapshot["last_snapshot_at"] = int(time.time())
     path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def build_train_metrics(
+    *,
+    epoch: int,
+    total: int,
+    loss_total: float,
+    policy_loss_total: float,
+    value_loss_total: float,
+    correct: int,
+    policy_part_totals: Counter[str],
+    val_metrics: dict[str, float | int | None],
+    phase: str,
+    batch_index: int | None = None,
+) -> dict[str, float | int | str | None]:
+    train_metrics: dict[str, float | int | str | None] = {
+        "epoch": epoch,
+        "phase": phase,
+        "train_loss": loss_total / total if total else None,
+        "train_policy_loss": policy_loss_total / total if total else None,
+        "train_value_loss": value_loss_total / total if total else None,
+        "train_accuracy": correct / total if total else None,
+        "train_samples": total,
+    }
+    if batch_index is not None:
+        train_metrics["batch"] = batch_index
+    if total:
+        train_metrics.update(
+            {f"train_{name}": value / total for name, value in policy_part_totals.items()}
+        )
+    train_metrics.update({f"val_{key}": value for key, value in val_metrics.items()})
+    return train_metrics
 
 
 class TransformerRawDataset(Dataset):
@@ -1614,17 +1648,59 @@ def train(args: argparse.Namespace) -> dict:
                     ),
                     flush=True,
                 )
+            if args.eval_every_batches and batch_index % args.eval_every_batches == 0:
+                val_metrics = evaluate_model(model, val_loader, device)
+                snapshot_metrics = build_train_metrics(
+                    epoch=epoch + 1,
+                    batch_index=batch_index,
+                    phase="batch_snapshot",
+                    total=total,
+                    loss_total=loss_total,
+                    policy_loss_total=policy_loss_total,
+                    value_loss_total=value_loss_total,
+                    correct=correct,
+                    policy_part_totals=policy_part_totals,
+                    val_metrics=val_metrics,
+                )
+                metrics["history"].append(snapshot_metrics)
+                if is_better_checkpoint_metric(
+                    snapshot_metrics,
+                    best_epoch_metrics,
+                    monitor_metric=args.monitor_metric,
+                ):
+                    best_epoch_metrics = dict(snapshot_metrics)
+                    best_state = {
+                        key: value.detach().cpu().clone()
+                        for key, value in model.state_dict().items()
+                    }
+                    write_checkpoint(out_path, build_checkpoint_payload(args, best_state, best_epoch_metrics))
+                write_metrics_snapshot(
+                    metrics_path,
+                    metrics,
+                    checkpoint=out_path,
+                    best_epoch_metrics=best_epoch_metrics,
+                    finished=False,
+                )
+                print(
+                    json.dumps(
+                        {"event": "validation_snapshot", **snapshot_metrics},
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+                model.train()
         val_metrics = evaluate_model(model, val_loader, device)
-        epoch_metrics = {
-            "epoch": epoch + 1,
-            "train_loss": loss_total / total if total else None,
-            "train_policy_loss": policy_loss_total / total if total else None,
-            "train_value_loss": value_loss_total / total if total else None,
-            "train_accuracy": correct / total if total else None,
-            "train_samples": total,
-            **({f"train_{name}": value / total for name, value in policy_part_totals.items()} if total else {}),
-            **{f"val_{key}": value for key, value in val_metrics.items()},
-        }
+        epoch_metrics = build_train_metrics(
+            epoch=epoch + 1,
+            phase="epoch",
+            total=total,
+            loss_total=loss_total,
+            policy_loss_total=policy_loss_total,
+            value_loss_total=value_loss_total,
+            correct=correct,
+            policy_part_totals=policy_part_totals,
+            val_metrics=val_metrics,
+        )
         metrics["history"].append(epoch_metrics)
         if is_better_checkpoint_metric(epoch_metrics, best_epoch_metrics, monitor_metric=args.monitor_metric):
             best_epoch_metrics = dict(epoch_metrics)
@@ -1708,6 +1784,7 @@ def main() -> int:
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--grad-clip", type=float, default=5.0)
     parser.add_argument("--log-every-batches", type=int, default=0)
+    parser.add_argument("--eval-every-batches", type=int, default=0)
     parser.add_argument("--seed", type=int, default=20260527)
     parser.add_argument("--device", default=None)
     args = parser.parse_args()

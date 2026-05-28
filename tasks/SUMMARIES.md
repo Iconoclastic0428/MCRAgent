@@ -239,3 +239,11 @@ Added live result recording to the read-only Tziakcha advisor service. `AdvisorS
 - Corrected streaming train source: 762,614 prepared records and 1,453,580 high-ELO train-player slots after CHAGA holdout.
 - Compressed the 29.8 GB all-player prepared JSONL to a 2.45 GB gzip file and copied it to the shared PVC.
 - Verification: targeted streaming/eval tests and full suite passed (`264 passed`, one existing sklearn convergence warning). Kubernetes dry-run for the corrected L40 manifest passed.
+
+# 2026-05-27 - Snapshot-safe all-player L40 relaunch
+
+- Added mid-epoch validation/checkpoint snapshots to `scripts/train_transformer_candidate.py` via `--eval-every-batches`, because a full streaming epoch over 762,614 prepared records / 1,453,580 high-ELO train-player slots is too large to rely on epoch-end checkpointing.
+- Verified the snapshot path with a local streaming smoke train and re-ran the focused train/eval tests plus the full suite (`265 passed`, one existing sklearn convergence warning).
+- Synced the patched trainer to the shared PVC, stopped the old no-snapshot L40 job, and launched `mcr-transformer-l40-allhighelo-chagaeval-20260527b` on Kubernetes only. It is running on `rci-tide-gpu-05.sdsu.edu` with `NVIDIA-L40`.
+- Added a second single-L40 comparison job, `mcr-transformer-l40-allhighelo-chagaeval-med-20260527b`, because requesting more L40 works when done as separate single-GPU jobs. It is running on `rci-tide-gpu-04.sdsu.edu` with `NVIDIA-L40`.
+- The current goal is still active: wait for validation snapshots, copy the checkpoint/metrics artifacts, compare CHAGA relaxed match, and continue model-size/training changes until the requested threshold is actually reached.
