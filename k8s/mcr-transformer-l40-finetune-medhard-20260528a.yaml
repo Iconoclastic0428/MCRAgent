@@ -20,6 +20,9 @@ spec:
         - key: nvidia.com/gpu
           operator: Exists
           effect: PreferNoSchedule
+        - key: nautilus.io/reservation
+          operator: Equal
+          value: csu-tide
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -172,12 +175,12 @@ spec:
               PY
           resources:
             requests:
-              cpu: "4"
+              cpu: "2"
               memory: 48Gi
               ephemeral-storage: "0"
               nvidia.com/gpu: "1"
             limits:
-              cpu: "4800m"
+              cpu: "2400m"
               memory: 57Gi
               ephemeral-storage: 50Gi
               nvidia.com/gpu: "1"
