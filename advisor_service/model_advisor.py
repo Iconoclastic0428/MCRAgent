@@ -188,7 +188,10 @@ class TziakchaModelAdvisor:
         try:
             if hasattr(self.fan_checker, "evaluate"):
                 result = dict(self.fan_checker.evaluate(**context))
-                result.setdefault("can_hu", bool(result.get("fan", -3) >= 8))
+                gate_fan = _fan_gate_value(result)
+                result["can_hu"] = isinstance(gate_fan, int) and gate_fan >= 8 and bool(
+                    result.get("can_hu", True)
+                )
                 return result
             accepted = bool(self.fan_checker.can_hu(**context))
             return {
@@ -223,8 +226,18 @@ class TziakchaModelAdvisor:
         action = parts[0].upper() if parts else "PASS"
         if action == "HU":
             fan = None if hu_result is None else hu_result.get("fan")
+            base_fan = None if hu_result is None else hu_result.get("base_fan")
             text = f"Hu ({fan} fan)" if fan is not None else "Hu"
-            return {"action": "hu", "text": text, "fan": fan, "source": "local-model", "raw_response": response}
+            if base_fan is not None and base_fan != fan:
+                text = f"{text}, base {base_fan}"
+            return {
+                "action": "hu",
+                "text": text,
+                "fan": fan,
+                "base_fan": base_fan,
+                "source": "local-model",
+                "raw_response": response,
+            }
         if action == "PASS":
             rec = {"action": "pass", "text": "Pass", "source": "local-model", "raw_response": response}
             _add_hu_note(rec, hu_result)
@@ -421,8 +434,12 @@ def _pack_to_official_meld(pack: int, player: int) -> dict[str, Any]:
 def _can_hu(hu_result: dict[str, Any] | None) -> bool:
     if not hu_result or not hu_result.get("can_hu"):
         return False
-    fan = hu_result.get("fan")
+    fan = _fan_gate_value(hu_result)
     return isinstance(fan, int) and fan >= 8
+
+
+def _fan_gate_value(hu_result: dict[str, Any]) -> Any:
+    return hu_result.get("base_fan", hu_result.get("fan"))
 
 
 def _visible_count_for_tile(visible_counts: dict[Any, Any], tile_id: int) -> int:
@@ -441,11 +458,17 @@ def _add_hu_note(rec: dict[str, Any], hu_result: dict[str, Any] | None) -> None:
     if not hu_result or hu_result.get("can_hu"):
         return
     fan = hu_result.get("fan")
-    if fan is not None:
+    base_fan = hu_result.get("base_fan")
+    gate_fan = base_fan if base_fan is not None else fan
+    if gate_fan is not None:
         rec["fan"] = fan
-        rec["note"] = f"Hu is {fan} fan, below 8"
+        if base_fan is not None:
+            rec["base_fan"] = base_fan
+            rec["note"] = f"Hu base fan is {base_fan}, below 8"
+        else:
+            rec["note"] = f"Hu is {fan} fan, below 8"
         if rec["action"] == "pass":
-            rec["text"] = f"{rec['text']} (Hu is {fan} fan, below 8)"
+            rec["text"] = f"{rec['text']} ({rec['note']})"
     elif hu_result.get("reason"):
         rec["note"] = f"Hu not recommended: {hu_result['reason']}"
 

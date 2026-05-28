@@ -47,3 +47,25 @@ def test_official_fan_checker_rejects_non_winning_hand():
 
     assert result["fan"] < 8
     assert not result["can_hu"]
+
+
+def test_official_fan_checker_excludes_flowers_from_minimum_hu_gate():
+    checker = OfficialFanChecker(Path("build/official_judge/mcr_fan_check.exe"))
+
+    result = checker.evaluate(
+        packs=[],
+        hand="W1 W2 W3 W2 W3 W4 B2 B3 B4 T5 T6 T7 F1".split(),
+        win_tile="F1",
+        flower_count=4,
+        is_self_draw=False,
+        is_4th_tile=False,
+        is_about_kong=False,
+        is_last=False,
+        seat_wind=0,
+        prevalent_wind=1,
+        player=0,
+    )
+
+    assert result["fan"] >= 8
+    assert result["base_fan"] == 4
+    assert not result["can_hu"]

@@ -57,7 +57,19 @@ class OfficialFanChecker:
             "prevalent_wind": prevalent_wind,
             "player": player,
         }
-        return self._evaluate_cached(json.dumps(payload, sort_keys=True))
+        result = dict(self._evaluate_cached(json.dumps(payload, sort_keys=True)))
+        total_fan = int(result.get("fan", -3))
+        if int(flower_count) == 0:
+            base_result = result
+        else:
+            base_payload = dict(payload)
+            base_payload["flower_count"] = 0
+            base_result = dict(self._evaluate_cached(json.dumps(base_payload, sort_keys=True)))
+        base_fan = int(base_result.get("fan", -3))
+        result["fan"] = total_fan
+        result["base_fan"] = base_fan
+        result["can_hu"] = base_fan >= 8
+        return result
 
     @lru_cache(maxsize=200000)
     def _evaluate_cached(self, payload_text: str) -> dict:

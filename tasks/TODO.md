@@ -1102,6 +1102,9 @@ Review:
   - Restarted the local extension-facing service at `http://127.0.0.1:8765` with the extracted 768x12 checkpoint.
   - HTTP probe through `/observe`, `/state`, and `/recommendation` confirmed chi/pung/kong/Hu/pass prompt decoding, draw-kong decoding, and Hu suppression for below-8 fan synthetic states.
   - Verification: `python -m pytest tests -q --basetemp tmp\pytest_full_transformer_plugin` passed with 275 tests and one existing sklearn convergence warning.
+  - GPT Pro review flagged a real Hu safety gap: the official C++ helper reports total fan with flowers, so the Python bridge now computes `base_fan` with `flower_count=0` and gates `can_hu` on `base_fan >= 8`.
+  - Added regressions proving flowers cannot make a sub-8 base hand legal, including live-advisor suppression when `fan=8` but `base_fan=4`.
+  - Verification after the safety fix: `python -m pytest tests -q --basetemp tmp\pytest_full_after_gptpro_safety` passed with 277 tests and one existing sklearn convergence warning.
 
 ### Mahjong-algorithm side baseline and mismatch graph
 
@@ -1134,5 +1137,8 @@ Review:
 - [x] Extract the plateaued best checkpoint before 90% while keeping Kubernetes training running.
 - [x] Implement the selected checkpoint into the Chrome plugin/local advisor path.
 - [x] Test that the local extension-facing HTTP path correctly identifies tziakcha chi, pong/peng, kang/gang, and hu option windows, with hu suppressed unless the fan gate proves base fan >=8.
-- [ ] Ask GPT Pro for a review of the plugin implementation plan and apply verified actionable feedback.
+- [x] Ask GPT Pro for a review of the plugin implementation plan and apply verified actionable feedback.
+  - Accepted immediately: explicit base-fan/flower-exclusion Hu gate.
+  - Next implementation target from review: replace the hand-only live wrapper with a FeatureAgent-compatible live state adapter before treating live output as model-strength evidence.
+  - Follow-up targets: two-stage claim plus forced-discard ranking, BUGANG candidate support, and recommendation telemetry.
 - [ ] Only after those steps, start the next training run.

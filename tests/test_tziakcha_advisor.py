@@ -24,6 +24,11 @@ class AcceptingFanChecker:
         return {"fan": 8, "can_hu": True}
 
 
+class FlowerOnlyFanChecker:
+    def evaluate(self, **kwargs):
+        return {"fan": 8, "base_fan": 4, "can_hu": True}
+
+
 class RecordingFanChecker:
     def __init__(self, fan=8, can_hu=True):
         self.fan = fan
@@ -124,6 +129,29 @@ def test_model_advisor_prefer_hu_requires_official_fan_acceptance():
     rec = accepting.recommend(snapshot)
     assert rec["action"] == "hu"
     assert rec["fan"] == 8
+
+
+def test_model_advisor_rejects_hu_when_only_flowers_reach_8_fan():
+    advisor = TziakchaModelAdvisor(
+        predictor=PreferHuPredictor("PASS"),
+        fan_checker=FlowerOnlyFanChecker(),
+    )
+
+    rec = advisor.recommend(
+        {
+            "seat": 0,
+            "turn": 0,
+            "available_actions": {"hu": [0], "discard": [120]},
+            "hand": [0, 4, 8, 12, 16, 20, 76, 80, 84, 112, 116, 120, 120, 120],
+            "last_draw": {"seat": 0, "tile": 120},
+            "flowers": 4,
+        }
+    )
+
+    assert rec["action"] == "discard"
+    assert rec["fan"] == 8
+    assert rec["base_fan"] == 4
+    assert "base fan" in rec["note"]
 
 
 def test_model_advisor_passes_last_tile_and_self_draw_flags_to_fan_checker():
