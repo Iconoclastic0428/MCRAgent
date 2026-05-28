@@ -21,9 +21,24 @@ def recommend(
     hu_result = None
     if actions.get("hu") and use_aleo:
         hu_result = calculate_hu_fan(snapshot)
-        if hu_result and hu_result.get("source") == "aleo" and int(hu_result["fan"]) >= 8:
+        if hu_result and hu_result.get("source") == "aleo" and _can_hu(hu_result):
             fan = int(hu_result["fan"])
-            return {"action": "hu", "text": f"Hu ({fan} fan)", "fan": fan, "source": "aleo"}
+            base_fan = hu_result.get("base_fan")
+            fan_items = list(hu_result.get("fan_items") or [])
+            fan_text = _format_fan_items(fan_items)
+            text = f"Hu ({fan} fan: {fan_text})" if fan_text else f"Hu ({fan} fan)"
+            result = {
+                "action": "hu",
+                "text": text,
+                "fan": fan,
+                "fan_items": fan_items,
+                "base_fan_items": list(hu_result.get("base_fan_items") or []),
+                "fan_text": fan_text,
+                "source": "aleo",
+            }
+            if base_fan is not None:
+                result["base_fan"] = int(base_fan)
+            return result
 
     if use_aleo and _can_ask_aleo(snapshot):
         aleo_recommendation = recommend_with_aleo(snapshot)
@@ -105,9 +120,44 @@ def _add_low_fan_note(rec: dict[str, Any], hu_result: dict[str, Any] | None) -> 
     if not hu_result or hu_result.get("source") != "aleo" or "fan" not in hu_result:
         return
     fan = int(hu_result["fan"])
-    if fan >= 8:
+    base_fan = hu_result.get("base_fan")
+    gate_fan = int(base_fan) if base_fan is not None else fan
+    if gate_fan >= 8:
         return
     rec["fan"] = fan
-    rec["note"] = f"Hu is {fan} fan, below 8"
+    if base_fan is not None:
+        rec["base_fan"] = int(base_fan)
+        rec["note"] = f"Hu base fan is {int(base_fan)}, below 8"
+    else:
+        rec["note"] = f"Hu is {fan} fan, below 8"
     if rec["action"] in {"pass", "waive"}:
-        rec["text"] = f"{rec['text']} (Hu is {fan} fan, below 8)"
+        rec["text"] = f"{rec['text']} ({rec['note']})"
+
+
+def _can_hu(hu_result: dict[str, Any]) -> bool:
+    gate_fan = hu_result.get("base_fan", hu_result.get("fan"))
+    try:
+        return int(gate_fan) >= 8
+    except (TypeError, ValueError):
+        return False
+
+
+def _format_fan_items(items: list[dict[str, Any]], limit: int = 6) -> str:
+    parts = []
+    for item in sorted(items, key=_fan_item_sort_key)[:limit]:
+        name = item.get("name")
+        total = item.get("total", item.get("fan"))
+        if name is None or total is None:
+            continue
+        parts.append(f"{name} {total}")
+    if len(items) > limit:
+        parts.append(f"+{len(items) - limit} more")
+    return " + ".join(parts)
+
+
+def _fan_item_sort_key(item: dict[str, Any]) -> tuple[int, str]:
+    try:
+        total = int(item.get("total", item.get("fan", 0)))
+    except (TypeError, ValueError):
+        total = 0
+    return (-total, str(item.get("name") or ""))

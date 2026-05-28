@@ -176,7 +176,15 @@ class TziakchaModelAdvisor:
             seat = _optional_int(snapshot.get("seat"), None)
             actor = actor_seat
             if seat is not None and actor is not None:
-                candidates.extend(generate_chi_responses(event_tile, hand))
+                chi_responses = generate_chi_responses(event_tile, hand)
+                allowed_middles = _allowed_chi_middles(actions.get("chow") or [], event_tile)
+                if allowed_middles is not None:
+                    chi_responses = [
+                        response
+                        for response in chi_responses
+                        if len(response.split()) >= 2 and response.split()[1] in allowed_middles
+                    ]
+                candidates.extend(chi_responses)
         return _dedupe(candidates)
 
     def _hu_result(self, snapshot: dict[str, Any], self_drawn: bool) -> dict[str, Any] | None:
@@ -227,14 +235,27 @@ class TziakchaModelAdvisor:
         if action == "HU":
             fan = None if hu_result is None else hu_result.get("fan")
             base_fan = None if hu_result is None else hu_result.get("base_fan")
+            fan_items = [] if hu_result is None else list(hu_result.get("fan_items") or [])
+            base_fan_items = [] if hu_result is None else list(hu_result.get("base_fan_items") or [])
+            fan_text = _format_fan_items(fan_items)
             text = f"Hu ({fan} fan)" if fan is not None else "Hu"
             if base_fan is not None and base_fan != fan:
                 text = f"{text}, base {base_fan}"
+            if fan_text:
+                if fan is not None:
+                    text = f"Hu ({fan} fan: {fan_text})"
+                    if base_fan is not None and base_fan != fan:
+                        text = f"{text}, base {base_fan}"
+                else:
+                    text = f"Hu ({fan_text})"
             return {
                 "action": "hu",
                 "text": text,
                 "fan": fan,
                 "base_fan": base_fan,
+                "fan_items": fan_items,
+                "base_fan_items": base_fan_items,
+                "fan_text": fan_text,
                 "source": "local-model",
                 "raw_response": response,
             }
@@ -252,8 +273,13 @@ class TziakchaModelAdvisor:
             return rec
         if action == "CHI" and len(parts) >= 3:
             rec = _tile_action("chow", "Chow; discard", parts[2], snapshot, response)
-            rec["meld_tile"] = parts[1]
-            rec["text"] = f"Chow {display_name(_tile_id_for_symbol(parts[1], snapshot))}; discard {rec['tile_display']}"
+            middle = parts[1]
+            shape = _chi_shape(middle)
+            shape_display = [display_name(tile_id_from_botzone_symbol(tile)) for tile in shape]
+            rec["meld_tile"] = middle
+            rec["meld_shape"] = shape
+            rec["meld_shape_display"] = shape_display
+            rec["text"] = f"Chi {middle} ({' '.join(shape_display)}); discard {rec['tile_display']}"
             _add_hu_note(rec, hu_result)
             return rec
         if action in {"GANG", "BUGANG"}:
@@ -442,6 +468,41 @@ def _fan_gate_value(hu_result: dict[str, Any]) -> Any:
     return hu_result.get("base_fan", hu_result.get("fan"))
 
 
+def _allowed_chi_middles(values: list[int], event_tile: str) -> set[str] | None:
+    middles: set[str] = set()
+    for value in values:
+        if not isinstance(value, int) or value <= 0:
+            continue
+        symbol = botzone_symbol(value)
+        if _is_chi_middle_for_event(symbol, event_tile):
+            middles.add(symbol)
+    return middles or None
+
+
+def _is_chi_middle_for_event(middle: str, event_tile: str) -> bool:
+    try:
+        middle_rank = int(middle[1])
+        event_rank = int(event_tile[1])
+    except (IndexError, ValueError):
+        return False
+    return (
+        len(middle) == 2
+        and len(event_tile) == 2
+        and middle[0] == event_tile[0]
+        and middle[0] in {"W", "B", "T"}
+        and 2 <= middle_rank <= 8
+        and middle_rank - 1 <= event_rank <= middle_rank + 1
+    )
+
+
+def _chi_shape(middle: str) -> list[str]:
+    try:
+        rank = int(middle[1])
+    except (IndexError, ValueError):
+        return [middle]
+    return [f"{middle[0]}{rank - 1}", middle, f"{middle[0]}{rank + 1}"]
+
+
 def _visible_count_for_tile(visible_counts: dict[Any, Any], tile_id: int) -> int:
     kind = tile_id >> 2
     for key in (kind, str(kind), botzone_symbol(tile_id)):
@@ -471,6 +532,27 @@ def _add_hu_note(rec: dict[str, Any], hu_result: dict[str, Any] | None) -> None:
             rec["text"] = f"{rec['text']} ({rec['note']})"
     elif hu_result.get("reason"):
         rec["note"] = f"Hu not recommended: {hu_result['reason']}"
+
+
+def _format_fan_items(items: list[dict[str, Any]], limit: int = 6) -> str:
+    parts = []
+    for item in sorted(items, key=_fan_item_sort_key)[:limit]:
+        name = item.get("name")
+        total = item.get("total", item.get("fan"))
+        if name is None or total is None:
+            continue
+        parts.append(f"{name} {total}")
+    if len(items) > limit:
+        parts.append(f"+{len(items) - limit} more")
+    return " + ".join(parts)
+
+
+def _fan_item_sort_key(item: dict[str, Any]) -> tuple[int, str]:
+    try:
+        total = int(item.get("total", item.get("fan", 0)))
+    except (TypeError, ValueError):
+        total = 0
+    return (-total, str(item.get("name") or ""))
 
 
 def _cleanup(hand: Counter[str]) -> None:

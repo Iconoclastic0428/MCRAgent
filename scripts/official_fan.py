@@ -68,7 +68,11 @@ class OfficialFanChecker:
         base_fan = int(base_result.get("fan", -3))
         result["fan"] = total_fan
         result["base_fan"] = base_fan
-        result["can_hu"] = base_fan >= 8
+        result["can_hu"] = bool(base_result.get("can_hu", base_fan >= 8)) and base_fan >= 8
+        result["fan_items"] = result.get("fan_items") or _calculate_fan_items(payload)
+        result["base_fan_items"] = base_result.get("fan_items") or _calculate_fan_items(
+            {**payload, "flower_count": 0}
+        )
         return result
 
     @lru_cache(maxsize=200000)
@@ -84,3 +88,39 @@ class OfficialFanChecker:
         if proc.returncode != 0:
             raise RuntimeError(f"fan checker failed rc={proc.returncode}: {proc.stderr[:500]}")
         return json.loads(proc.stdout)
+
+
+def _calculate_fan_items(payload: dict) -> list[dict]:
+    try:
+        from MahjongGB import MahjongFanCalculator
+    except ImportError:
+        return []
+    try:
+        raw_items = MahjongFanCalculator(
+            tuple(_pack_to_mahjonggb(pack) for pack in payload.get("packs") or []),
+            tuple(payload.get("hand") or []),
+            payload.get("win_tile"),
+            int(payload.get("flower_count") or 0),
+            bool(payload.get("is_self_draw")),
+            bool(payload.get("is_4th_tile")),
+            bool(payload.get("is_about_kong")),
+            bool(payload.get("is_last")),
+            int(payload.get("seat_wind") or 0),
+            int(payload.get("prevalent_wind") or 0),
+        )
+    except Exception:
+        return []
+    return [_normalize_fan_item(value, name) for value, name in raw_items]
+
+
+def _pack_to_mahjonggb(pack: dict) -> tuple:
+    return (str(pack.get("type")), str(pack.get("tile")), int(pack.get("offer") or 0))
+
+
+def _normalize_fan_item(value: int, name: str) -> dict:
+    return {
+        "name": str(name),
+        "fan": int(value),
+        "count": 1,
+        "total": int(value),
+    }

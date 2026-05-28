@@ -26,6 +26,8 @@ def test_official_fan_checker_accepts_high_fan_hand():
 
     assert result["fan"] >= 8
     assert result["can_hu"]
+    assert any(item["name"] == "四暗刻" and item["fan"] == 64 for item in result["fan_items"])
+    assert result["base_fan_items"] == result["fan_items"]
 
 
 def test_official_fan_checker_rejects_non_winning_hand():
@@ -68,4 +70,33 @@ def test_official_fan_checker_excludes_flowers_from_minimum_hu_gate():
 
     assert result["fan"] >= 8
     assert result["base_fan"] == 4
+    assert not result["can_hu"]
+    assert any(item["name"] == "花牌" and item["total"] == 4 for item in result["fan_items"])
+    assert all(item["name"] != "花牌" for item in result["base_fan_items"])
+
+
+def test_official_fan_checker_requires_base_calculator_acceptance(monkeypatch):
+    checker = OfficialFanChecker(Path("unused.exe"))
+
+    def fake_evaluate_cached(payload_text):
+        return {"fan": 8, "can_hu": False}
+
+    monkeypatch.setattr(checker, "_evaluate_cached", fake_evaluate_cached)
+
+    result = checker.evaluate(
+        packs=[],
+        hand="W1 W1 W2 W3 W4 B1 B2 B3 T1 T2 T3 F1 F2".split(),
+        win_tile="J1",
+        flower_count=0,
+        is_self_draw=False,
+        is_4th_tile=False,
+        is_about_kong=False,
+        is_last=False,
+        seat_wind=0,
+        prevalent_wind=0,
+        player=0,
+    )
+
+    assert result["fan"] == 8
+    assert result["base_fan"] == 8
     assert not result["can_hu"]

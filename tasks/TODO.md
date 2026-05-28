@@ -1105,6 +1105,12 @@ Review:
   - GPT Pro review flagged a real Hu safety gap: the official C++ helper reports total fan with flowers, so the Python bridge now computes `base_fan` with `flower_count=0` and gates `can_hu` on `base_fan >= 8`.
   - Added regressions proving flowers cannot make a sub-8 base hand legal, including live-advisor suppression when `fan=8` but `base_fan=4`.
   - Verification after the safety fix: `python -m pytest tests -q --basetemp tmp\pytest_full_after_gptpro_safety` passed with 277 tests and one existing sklearn convergence warning.
+  - Live playtest correction: CHI recommendations now include the selected middle tile and full shape, e.g. `Chi W4 (3m 4m 5m); discard 1m`, and CHI candidates are filtered to the offered middle tile when tziakcha exposes one.
+  - The Aleo/fallback advisor path now also gates Hu on `base_fan` rather than total fan and computes a `flower_count=0` base-fan result when flowers are present.
+  - Verification after live CHI/Hu correction: `python -m pytest tests/test_tziakcha_advisor.py tests/test_transformer_predictor.py tests/test_tziakcha_state.py tests/test_official_fan.py -q --basetemp tmp\pytest-advisor-fix` passed with 34 tests.
+  - Hu recommendations now expose fan breakdowns from the fan checker: API fields `fan_items`, `base_fan_items`, and `fan_text`, plus compact overlay text such as `Hu (10 fan: 花龙 8 + 门前清 2)`.
+  - Verification after fan-breakdown display: `python -m pytest tests/test_tziakcha_advisor.py tests/test_transformer_predictor.py tests/test_tziakcha_state.py tests/test_official_fan.py -q --basetemp tmp\pytest-fan-breakdown-suite` passed with 35 tests.
+  - Smoke check from the official fan checker returned itemized fans for a high-fan hand: `四暗刻 64`, `一色四节高 48`, `清一色 24`, `幺九刻 1`.
 
 ### Mahjong-algorithm side baseline and mismatch graph
 
@@ -1141,4 +1147,22 @@ Review:
   - Accepted immediately: explicit base-fan/flower-exclusion Hu gate.
   - Next implementation target from review: replace the hand-only live wrapper with a FeatureAgent-compatible live state adapter before treating live output as model-strength evidence.
   - Follow-up targets: two-stage claim plus forced-discard ranking, BUGANG candidate support, and recommendation telemetry.
+- [x] Deploy the extracted checkpoint for Chrome play testing.
+  - Verified the local advisor service is running on `127.0.0.1:8765` with the extracted 768x12 checkpoint.
+  - Chrome blocked automated `chrome://extensions` loading, ignored command-line unpacked loading, ignored the external CRX registry install, and denied the managed policy install key.
+  - Opened a dedicated visible Chrome playtest profile at `tmp/chrome-mcr-playtest-profile` with the advisor dashboard and `https://tziakcha.net/play/`.
+  - Injected the read-only observer/overlay into the tziakcha tab through the Chrome debug session and verified the overlay can read `/recommendation`: `Waiting for decision prompt`, stats `G 0 | W 0.0% | D-in 0.0% | Avg 0.0`.
+  - Persistent packaged artifacts are available at `dist/tziakcha_mcr_model_observer.crx` and `dist/tziakcha_mcr_model_observer.pem`, but the active playtest deployment is the debug-injected observer because Chrome did not accept extension installation from automation; the failed external-install registry key was removed afterward.
+  - Preserve the current limitation: the deployed transformer wrapper is a read-only advisor path and still uses the hand-only live adapter until the FeatureAgent-compatible adapter is implemented.
 - [ ] Only after those steps, start the next training run.
+
+### Current live CHAGA playtest monitoring
+
+- [x] Record the user's live tziakcha game against CHAGA from the read-only advisor service.
+  - Poll `/state`, `/recommendation`, `/results`, `/events`, and `/errors`.
+  - Save JSONL under `runs/` and preserve the PID/path so the run is auditable.
+  - Report final win/deal-in stats once the game result appears.
+  - Monitor JSONL: `runs/tziakcha_chaga_live_monitor_20260528_133513.jsonl`; monitor PID was `30052`.
+  - Monitor PID file was updated after stopping the recorder: `runs/tziakcha_chaga_live_monitor.pid.json`.
+  - Final observed match event arrived after 16 hands. Recorded hand stats: 3 wins, 13 losses, 0 draws, 5 deal-ins, win rate `18.75%`, deal-in rate `31.25%`.
+  - Final table event recorded players CHAGA08, CHAGA04, Iconoclastic, and CHAGA07 with displayed final scores `183`, `48`, `-90`, and `-141`; the result decoder still did not extract per-hand score deltas/fan into `result_history`.

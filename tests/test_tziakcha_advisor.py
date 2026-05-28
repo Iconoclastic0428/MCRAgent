@@ -24,6 +24,23 @@ class AcceptingFanChecker:
         return {"fan": 8, "can_hu": True}
 
 
+class FanBreakdownChecker:
+    def evaluate(self, **kwargs):
+        return {
+            "fan": 10,
+            "base_fan": 10,
+            "can_hu": True,
+            "fan_items": [
+                {"name": "花龙", "fan": 8, "count": 1, "total": 8},
+                {"name": "门前清", "fan": 2, "count": 1, "total": 2},
+            ],
+            "base_fan_items": [
+                {"name": "花龙", "fan": 8, "count": 1, "total": 8},
+                {"name": "门前清", "fan": 2, "count": 1, "total": 2},
+            ],
+        }
+
+
 class FlowerOnlyFanChecker:
     def evaluate(self, **kwargs):
         return {"fan": 8, "base_fan": 4, "can_hu": True}
@@ -64,6 +81,20 @@ def test_recommend_sub_8_hu_passes_instead(monkeypatch):
     assert rec["action"] == "pass"
     assert rec["fan"] == 4
     assert "below 8" in rec["text"]
+
+
+def test_recommend_rejects_aleo_hu_when_only_flowers_reach_8(monkeypatch):
+    monkeypatch.setattr(
+        "advisor_service.advisor.calculate_hu_fan",
+        lambda snapshot: {"fan": 8, "base_fan": 4, "source": "aleo"},
+    )
+
+    rec = recommend({"available_actions": {"hu": [0], "pass": [0]}, "hand": [0], "seat": 0}, use_aleo=True)
+
+    assert rec["action"] == "pass"
+    assert rec["fan"] == 8
+    assert rec["base_fan"] == 4
+    assert "base fan" in rec["text"]
 
 
 def test_recommend_discard_uses_display_name():
@@ -108,6 +139,38 @@ def test_model_advisor_uses_model_draw_discard():
     assert rec["text"] == "Discard 2s"
 
 
+def test_model_advisor_chi_recommendation_includes_shape_and_filters_offered_middle():
+    seen_candidates = []
+
+    class RecordingPredictor:
+        def predict_legal_response(self, input_text, hand, player_id, request, candidates):
+            seen_candidates.extend(candidates)
+            return "CHI W4 W1"
+
+    advisor = TziakchaModelAdvisor(
+        predictor=RecordingPredictor(),
+        fan_checker=RejectingFanChecker(),
+    )
+
+    rec = advisor.recommend(
+        {
+            "seat": 0,
+            "turn": 3,
+            "available_actions": {"chow": [12], "pass": [0]},
+            "hand": [0, 4, 12, 16, 72],
+            "last_discard": {"seat": 3, "tile": 8},
+        }
+    )
+
+    assert seen_candidates
+    assert all(candidate == "PASS" or candidate.startswith("CHI W4 ") for candidate in seen_candidates)
+    assert rec["action"] == "chow"
+    assert rec["meld_tile"] == "W4"
+    assert rec["meld_shape"] == ["W3", "W4", "W5"]
+    assert rec["meld_shape_display"] == ["3m", "4m", "5m"]
+    assert rec["text"] == "Chi W4 (3m 4m 5m); discard 1m"
+
+
 def test_model_advisor_prefer_hu_requires_official_fan_acceptance():
     snapshot = {
         "seat": 0,
@@ -129,6 +192,28 @@ def test_model_advisor_prefer_hu_requires_official_fan_acceptance():
     rec = accepting.recommend(snapshot)
     assert rec["action"] == "hu"
     assert rec["fan"] == 8
+
+
+def test_model_advisor_hu_text_includes_fan_breakdown():
+    advisor = TziakchaModelAdvisor(
+        predictor=PreferHuPredictor("PASS"),
+        fan_checker=FanBreakdownChecker(),
+    )
+
+    rec = advisor.recommend(
+        {
+            "seat": 0,
+            "turn": 1,
+            "available_actions": {"hu": [0], "pass": [0]},
+            "hand": [0, 4, 12, 16, 20, 76, 80, 84, 112, 116, 120, 124, 125],
+            "last_discard": {"seat": 1, "tile": 8},
+        }
+    )
+
+    assert rec["action"] == "hu"
+    assert rec["fan_items"][0]["name"] == "花龙"
+    assert rec["fan_text"] == "花龙 8 + 门前清 2"
+    assert rec["text"] == "Hu (10 fan: 花龙 8 + 门前清 2)"
 
 
 def test_model_advisor_rejects_hu_when_only_flowers_reach_8_fan():

@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from .tiles import aleo_kind_from_tile_id, display_name, tile_id_from_aleo_kind
+from .tiles import aleo_kind_from_tile_id, botzone_symbol, display_name, tile_id_from_aleo_kind, tile_id_from_botzone_symbol
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ALEO_BINARY = WORKSPACE_ROOT / "aleo_bridge" / "bin" / "aleo_advisor"
@@ -84,6 +84,32 @@ def calculate_hu_fan(snapshot: dict[str, Any], timeout: float = 8.0) -> dict[str
     args = snapshot_to_hu_fan_args(snapshot)
     if not command or args is None:
         return None
+    result = _run_fan_command(command, args, timeout)
+    if result.get("source") != "aleo":
+        return result
+    fan = int(result["fan"])
+    flowers = int(snapshot.get("flowers") or 0)
+    if flowers <= 0:
+        result["base_fan"] = fan
+        return result
+
+    base_snapshot = dict(snapshot)
+    base_snapshot["flowers"] = 0
+    base_args = snapshot_to_hu_fan_args(base_snapshot)
+    if base_args is None:
+        return {"source": "aleo-error", "error": "missing base-fan Hu context"}
+    base_result = _run_fan_command(command, base_args, timeout)
+    if base_result.get("source") != "aleo":
+        return {
+            "source": "aleo-error",
+            "error": f"base-fan calculation failed: {base_result.get('error', 'unknown error')}",
+            "fan": fan,
+        }
+    result["base_fan"] = int(base_result["fan"])
+    return result
+
+
+def _run_fan_command(command: list[str], args: list[str], timeout: float) -> dict[str, Any]:
     try:
         completed = subprocess.run(
             command + args,
@@ -117,7 +143,7 @@ def parse_aleo_output(output: str, snapshot: dict[str, Any]) -> dict[str, Any]:
     if action == "PENG" and len(parts) >= 2:
         return _tile_recommendation("pung", "Pung; discard", int(parts[1]), hand)
     if action == "CHI" and len(parts) >= 3:
-        return _tile_recommendation("chow", "Chow; discard", int(parts[2]), hand)
+        return _chow_recommendation(int(parts[1]), int(parts[2]), hand)
     if action == "GANG":
         if len(parts) >= 2:
             return _tile_recommendation("kong", "Kong", int(parts[1]), hand)
@@ -198,6 +224,27 @@ def _tile_recommendation(action: str, verb: str, aleo_id: int, hand: list[int]) 
         "text": f"{verb} {display_name(tile)}",
         "source": "aleo",
     }
+
+
+def _chow_recommendation(middle_aleo_id: int, discard_aleo_id: int, hand: list[int]) -> dict[str, Any]:
+    rec = _tile_recommendation("chow", "Chow; discard", discard_aleo_id, hand)
+    middle_tile = aleo_id_to_physical(middle_aleo_id, hand)
+    middle_symbol = botzone_symbol(middle_tile)
+    shape = _chi_shape(middle_symbol)
+    shape_display = [display_name(tile_id_from_botzone_symbol(tile)) for tile in shape]
+    rec["meld_tile"] = middle_symbol
+    rec["meld_shape"] = shape
+    rec["meld_shape_display"] = shape_display
+    rec["text"] = f"Chi {middle_symbol} ({' '.join(shape_display)}); discard {rec['tile_display']}"
+    return rec
+
+
+def _chi_shape(middle: str) -> list[str]:
+    try:
+        rank = int(middle[1])
+    except (IndexError, ValueError):
+        return [middle]
+    return [f"{middle[0]}{rank - 1}", middle, f"{middle[0]}{rank + 1}"]
 
 
 def _hu_win_context(snapshot: dict[str, Any]) -> tuple[int, bool] | None:

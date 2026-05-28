@@ -279,3 +279,33 @@ Added `advisor_service/transformer_predictor.py` to load Transformer candidate c
 Verified synthetic tziakcha-style HTTP observations for chi/pung/kong/Hu/pass and draw/kong prompts; Hu stayed suppressed for below-8 fan states. Full verification passed: `python -m pytest tests -q --basetemp tmp\pytest_full_transformer_plugin` -> 275 passed, 1 existing sklearn convergence warning.
 
 GPT Pro reviewed the pushed plugin implementation and identified the most important risk as live/offline state mismatch, plus one hard safety issue: the C++ fan helper includes flowers in `fan`, so `HU` could be accepted if flowers pushed total fan to 8. Fixed the Python bridge to compute `base_fan` with `flower_count=0` and gate `can_hu` on `base_fan >= 8`; added regressions for the official checker and live advisor. Restarted the local advisor service with the fix. Verification passed: `python -m pytest tests -q --basetemp tmp\pytest_full_after_gptpro_safety` -> 277 passed, 1 existing sklearn convergence warning.
+
+## 2026-05-28 Plateau Extraction Rule Recheck
+
+Reconfirmed the user correction that the 90% relaxed CHAGA target is not an absolute extraction gate. If a running model plateaus, regresses, or improves too slowly, extract the best observed checkpoint for Chrome-plugin play testing while leaving the Kubernetes L40 job running.
+
+Current Kubernetes check: both `20260527d` L40 jobs remain `Running`, pods are `1/1 Running`, and restart count is `0`. The medium job's latest snapshot is epoch 2 batch 27000 with validation original relaxed `0.833598` and PLAY relaxed `0.840356`; its best remains epoch 2 batch 1000 with validation original relaxed `0.850429`, PLAY relaxed `0.853933`, and top-3 `0.915952`, which is the checkpoint already extracted and deployed. The large job's latest snapshot is epoch 1 batch 116000 with validation original relaxed `0.809252`; its best remains epoch 1 batch 113000 with validation original relaxed `0.810310`, below the extracted medium checkpoint.
+
+## 2026-05-28 Chrome Playtest Deployment
+
+Verified the local advisor service at `127.0.0.1:8765` is still serving the extracted 768x12 checkpoint, `models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527d_plateau_e2b1000.pt`, in read-only mode.
+
+Tried the persistent Chrome extension paths first. Automation of `chrome://extensions` was blocked by Chrome browser policy, command-line unpacked loading did not register the extension, the external CRX registry install did not register in a fresh profile, and the managed-policy force-install key was not writable. Packed CRX artifacts were still produced at `dist/tziakcha_mcr_model_observer.crx` and `dist/tziakcha_mcr_model_observer.pem`; the failed external-install registry key was removed after testing.
+
+For immediate play testing, opened a dedicated visible Chrome profile at `tmp/chrome-mcr-playtest-profile` with the advisor dashboard and `https://tziakcha.net/play/`, using local-network/web-security relaxations only in that dedicated profile so the injected page observer can talk to `127.0.0.1:8765`. Injected the same read-only observer/overlay into the tziakcha tab through the Chrome debug session. Verification through CDP showed `overlay=true`, recommendation text `Waiting for decision prompt`, and stats `G 0 | W 0.0% | D-in 0.0% | Avg 0.0`, with direct page fetch to `/recommendation` succeeding.
+
+## 2026-05-28 Live CHI and Hu Fan Correction
+
+During the CHAGA live playtest, the user observed that CHI advice was under-specified and Hu fan handling could still be unsafe. Root cause: the live model advisor collapsed `CHI middle discard` into generic chow text without showing the three-tile shape, and the older Aleo/fallback path gated Hu on total fan instead of base fan. Added tests first, watched them fail, then fixed the source paths.
+
+Changes: `TziakchaModelAdvisor` now filters CHI candidates to the tziakcha-offered middle tile when available and returns `meld_shape` / `meld_shape_display` with text like `Chi W4 (3m 4m 5m); discard 1m`. `advisor_service/aleo_bridge.py` now computes both total `fan` and `base_fan` by re-running fan mode with `flowers=0` when flowers exist. `advisor_service/advisor.py` gates fallback Hu on `base_fan`, and `scripts/official_fan.py` now also requires the base calculator result to accept the hand before setting `can_hu`.
+
+Verification: targeted regression tests passed, then `python -m pytest tests/test_tziakcha_advisor.py tests/test_transformer_predictor.py tests/test_tziakcha_state.py tests/test_official_fan.py -q --basetemp tmp\pytest-advisor-fix` passed with 34 tests. Smoke output for the CHI path returned `Chi W4 (3m 4m 5m); discard 1m`. Restarted the local advisor service on `127.0.0.1:8765` with the extracted checkpoint; `/health` reports the 768x12 model loaded in read-only mode. The JSONL monitor remained alive.
+
+Live playtest record: `runs/tziakcha_chaga_live_monitor_20260528_133513.jsonl`. Final observed match stats were 16 hands, 3 wins, 13 losses, 5 deal-ins, win rate `18.75%`, deal-in rate `31.25%`. The final table event listed CHAGA08, CHAGA04, Iconoclastic, and CHAGA07 with displayed final scores `183`, `48`, `-90`, and `-141`; per-hand fan/score deltas remain undecoded in `result_history`. The game-specific recorder was stopped after the final table event and `runs/tziakcha_chaga_live_monitor.pid.json` was updated with the stop time.
+
+## 2026-05-28 Hu Fan Breakdown Display
+
+Added user-visible Hu fan breakdowns so the player can verify a Hu recommendation without manually recalculating every fan. `scripts/official_fan.py` now attaches `fan_items` and `base_fan_items` using PyMahjongGB's `MahjongFanCalculator` output while still using the existing official helper result for the Hu gate. `advisor_service/model_advisor.py` and `advisor_service/advisor.py` pass those items through the recommendation API and add a compact `fan_text` summary to Hu advice, for example `Hu (10 fan: 花龙 8 + 门前清 2)`.
+
+Verification: the focused red tests failed before implementation, then passed after the change. Final focused suite passed with `python -m pytest tests/test_tziakcha_advisor.py tests/test_transformer_predictor.py tests/test_tziakcha_state.py tests/test_official_fan.py -q --basetemp tmp\pytest-fan-breakdown-suite` -> 35 passed. A direct smoke check from the official fan checker returned `fan=137`, `can_hu=True`, and fan items `四暗刻 64`, `一色四节高 48`, `清一色 24`, `幺九刻 1`. Restarted the local advisor service on `127.0.0.1:8765`; `/health` reports the extracted 768x12 checkpoint loaded in read-only mode.
