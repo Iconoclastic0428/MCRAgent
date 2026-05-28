@@ -119,10 +119,12 @@ def make_handler(runtime: AdvisorRuntime):
         def do_GET(self) -> None:
             path = urlparse(self.path).path
             if path == "/health":
+                model_info = runtime.model_advisor.model_info() if runtime.model_advisor is not None else None
                 self._json(
                     {
                         "ok": True,
                         "model_loaded": bool(runtime.model_advisor),
+                        "model_info": model_info,
                         "read_only": True,
                     }
                 )
@@ -183,7 +185,11 @@ def run_server_in_thread(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the read-only Tziakcha model advisor service.")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--model", default=None, help="Optional legacy policy model path.")
+    parser.add_argument(
+        "--model",
+        default=str(DEFAULT_MODEL) if DEFAULT_MODEL else None,
+        help="Optional local policy or Transformer checkpoint path.",
+    )
     parser.add_argument("--no-model", action="store_true", help="Use only the simple local fallback advisor.")
     parser.add_argument("--local-only", action="store_true", help="Disable the optional Aleo fallback bridge.")
     parser.add_argument(

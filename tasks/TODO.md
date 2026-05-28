@@ -1089,12 +1089,19 @@ Review:
   - Replaced `20260527c` with `20260527d` because the `c` stream order still showed zero teacher loss in early batches; `d` repeats CHAGA-reviewed train rows first and then streams the full all-player `>2300` corpus.
   - `20260527d` medium snapshot at epoch 1 batch 1000: train teacher loss `1.370871`, validation original relaxed `0.509474`, PLAY relaxed `0.508661`.
   - `20260527d` medium snapshot at epoch 1 batch 6000: 768,000 streamed train examples, validation original relaxed `0.583254`, top-1 `0.501217`, top-3 `0.647295`, PLAY relaxed `0.608380`. This is improving and better than the deterministic baseline, but still below the deployment target.
+  - User correction on 2026-05-28: if a model plateaus or the improvement is too small, deploy the best observed checkpoint before 90% while leaving Kubernetes training running.
+  - Medium `20260527d` best observed checkpoint extracted from the running pod at epoch 2 batch 1000: validation original relaxed `0.850429`, PLAY relaxed `0.853933`, top-3 `0.915952`. Local checkpoint path: `models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527d_plateau_e2b1000.pt`; SHA256 `70965907CB6CEBACD248ECC0585F26FBDFC9AACEC5D1A5B70474514C020FA265`.
+  - Later medium snapshots fell back to roughly `0.80-0.82` relaxed; the large job remains below the extracted medium checkpoint. Both L40 jobs are still running and must not be stopped.
 - [ ] After training, visualize model-vs-CHAGA results before deployment.
   - Include turn-level mismatch/match graphs and action-type slices for PLAY, Chi, Peng/Pong, Gang/Kang, Hu, and Pass.
   - Use the corrected metric: model prediction vs original CHAGA candidates, first-six PLAY top-3 relaxed, otherwise top-1.
-- [ ] After a checkpoint is selected, integrate it into the Chrome plugin/local model path.
+- [x] After a checkpoint is selected, integrate it into the Chrome plugin/local model path.
   - Verify the plugin correctly identifies live chi, pong/peng, kang/gang, and hu option windows.
   - Keep Hu blocked unless the fan calculator proves base fan >=8 with flowers excluded.
+  - Implemented `advisor_service/transformer_predictor.py` and wired `.pt` checkpoints into `TziakchaModelAdvisor`.
+  - Restarted the local extension-facing service at `http://127.0.0.1:8765` with the extracted 768x12 checkpoint.
+  - HTTP probe through `/observe`, `/state`, and `/recommendation` confirmed chi/pung/kong/Hu/pass prompt decoding, draw-kong decoding, and Hu suppression for below-8 fan synthetic states.
+  - Verification: `python -m pytest tests -q --basetemp tmp\pytest_full_transformer_plugin` passed with 275 tests and one existing sklearn convergence warning.
 
 ### Mahjong-algorithm side baseline and mismatch graph
 
@@ -1120,3 +1127,12 @@ Review:
 - [ ] Write an implementation plan for the Mortal Rule-Q side experiment.
 - [ ] Implement the new trainer with tests before launching an L40 job.
 - [ ] Launch a single-L40 Kubernetes side job and compare against the deterministic baseline and current Transformer snapshots.
+
+### Current user-directed sequence
+
+- [ ] Keep monitoring the active `20260527d` L40 training jobs every 15 minutes; do not start a new training job yet.
+- [x] Extract the plateaued best checkpoint before 90% while keeping Kubernetes training running.
+- [x] Implement the selected checkpoint into the Chrome plugin/local advisor path.
+- [x] Test that the local extension-facing HTTP path correctly identifies tziakcha chi, pong/peng, kang/gang, and hu option windows, with hu suppressed unless the fan gate proves base fan >=8.
+- [ ] Ask GPT Pro for a review of the plugin implementation plan and apply verified actionable feedback.
+- [ ] Only after those steps, start the next training run.

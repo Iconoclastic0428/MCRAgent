@@ -17,7 +17,10 @@ if str(SCRIPTS_DIR) not in sys.path:
 from legal_actions import generate_chi_responses  # noqa: E402
 from lawlorentz_policy import LawlorentzEffectiveScorer  # noqa: E402
 
-DEFAULT_MODEL = None
+DEFAULT_TRANSFORMER_MODEL = (
+    WORKSPACE_ROOT / "models" / "transformer_candidate_allhighelo_chagaeval_med_l40_20260527d_plateau_e2b1000.pt"
+)
+DEFAULT_MODEL = DEFAULT_TRANSFORMER_MODEL if DEFAULT_TRANSFORMER_MODEL.exists() else None
 
 
 class TziakchaModelAdvisor:
@@ -34,8 +37,22 @@ class TziakchaModelAdvisor:
         fan_checker: Any | None = None,
     ) -> None:
         self.model_path = Path(model_path) if model_path else None
-        self.predictor = predictor
+        self.predictor = predictor if predictor is not None else self._load_predictor(self.model_path)
         self.fan_checker = fan_checker if fan_checker is not None else self._default_fan_checker()
+
+    def _load_predictor(self, model_path: Path | None) -> Any | None:
+        if model_path is None:
+            return None
+        if model_path.suffix.lower() in {".pt", ".pth"}:
+            return _build_transformer_predictor(model_path)
+        return None
+
+    def model_info(self) -> dict[str, Any]:
+        if self.predictor is None:
+            return {"type": "lawlorentz-effective", "path": str(self.model_path) if self.model_path else None}
+        if hasattr(self.predictor, "info"):
+            return dict(self.predictor.info())
+        return {"type": type(self.predictor).__name__, "path": str(self.model_path) if self.model_path else None}
 
     def _default_fan_checker(self) -> Any | None:
         try:
@@ -456,3 +473,9 @@ def _optional_int(value: Any, default: int | None) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _build_transformer_predictor(model_path: Path):
+    from .transformer_predictor import TransformerCheckpointPredictor
+
+    return TransformerCheckpointPredictor(model_path)

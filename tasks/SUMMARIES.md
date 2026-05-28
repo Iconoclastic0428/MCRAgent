@@ -269,3 +269,11 @@ Added live result recording to the read-only Tziakcha advisor service. `AdvisorS
 - Selected design: create a separate `mortal_rule_q` side trainer with a Transformer-dueling-Q candidate scorer, CQL-style offline regularization, CHAGA soft/accepted-set supervision, and mahjong-algorithm effective-tile prior features.
 - Deferred full LuckyJ-style regret/search because it is too large for this phase; only the practical LuckyJ idea of using rule/search returns as model features is included.
 - Active `20260527d` jobs are left running. During this design pass, the medium job reached batch 8000 with validation original relaxed `0.608447` and PLAY relaxed `0.636236`, while the large job had also scheduled on an L40.
+
+## 2026-05-28 Transformer Checkpoint Plugin Deployment
+
+Treated the user's corrected gate as authoritative: plateaued or regressing training can be extracted before 90% for live play testing while Kubernetes keeps training. Verified the extracted medium checkpoint at `models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527d_plateau_e2b1000.pt` with matching SHA256 `70965907CB6CEBACD248ECC0585F26FBDFC9AACEC5D1A5B70474514C020FA265`.
+
+Added `advisor_service/transformer_predictor.py` to load Transformer candidate checkpoints and rank already fan-gated live advisor candidates. Wired `.pt` checkpoint loading into `TziakchaModelAdvisor`, exposed model metadata on `/health`, and restarted the local extension-facing advisor service on `127.0.0.1:8765` with the extracted 768x12 checkpoint.
+
+Verified synthetic tziakcha-style HTTP observations for chi/pung/kong/Hu/pass and draw/kong prompts; Hu stayed suppressed for below-8 fan states. Full verification passed: `python -m pytest tests -q --basetemp tmp\pytest_full_transformer_plugin` -> 275 passed, 1 existing sklearn convergence warning.
