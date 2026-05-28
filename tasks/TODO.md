@@ -1081,7 +1081,9 @@ Review:
   - Primary expected artifacts: `runs/transformer_candidate_allhighelo_chagaeval_l40_20260527b_metrics.json`, `models/transformer_candidate_allhighelo_chagaeval_l40_20260527b.pt`.
   - Medium expected artifacts: `runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b_metrics.json`, `models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b.pt`.
   - First medium snapshot at epoch 1 batch 1000: 128,000 streamed train examples, validation original relaxed `0.448290`, top-1 `0.378109`, top-3 `0.507569`, PLAY relaxed `0.472144`. This is below target and not deployable.
+  - Medium snapshot at epoch 1 batch 2000: 256,000 streamed train examples, validation original relaxed `0.522811`, top-1 `0.445115`, top-3 `0.581243`, PLAY relaxed `0.538741`. Improving, but still below target and not deployable.
   - Copied the medium metrics JSON locally. The checkpoint copy was incomplete and failed `torch.load`, so the corrupt local partial was deleted; the PVC checkpoint remains authoritative.
+  - Throughput diagnosis: single-worker streaming replay conversion was starving the L40. Added sharded multi-worker streaming support and `--train-num-workers 4` to the next L40 relaunch.
 - [ ] After training, visualize model-vs-CHAGA results before deployment.
   - Include turn-level mismatch/match graphs and action-type slices for PLAY, Chi, Peng/Pong, Gang/Kang, Hu, and Pass.
   - Use the corrected metric: model prediction vs original CHAGA candidates, first-six PLAY top-3 relaxed, otherwise top-1.

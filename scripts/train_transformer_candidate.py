@@ -19,7 +19,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset, IterableDataset, WeightedRandomSampler
+from torch.utils.data import DataLoader, Dataset, IterableDataset, WeightedRandomSampler, get_worker_info
 
 
 LAWLORENTZ_DIR = Path(__file__).resolve().parents[1] / "external" / "Chinese-Standard-Mahjong-DRL"
@@ -649,6 +649,14 @@ def collate_transformer_examples(
     }
 
 
+class TransformerExampleCollator:
+    def __init__(self, *, max_candidates: int = DEFAULT_MAX_CANDIDATES) -> None:
+        self.max_candidates = int(max_candidates)
+
+    def __call__(self, examples: list[TransformerExample]) -> dict[str, torch.Tensor]:
+        return collate_transformer_examples(examples, max_candidates=self.max_candidates)
+
+
 class TransformerCandidateModel(nn.Module):
     def __init__(
         self,
@@ -875,6 +883,12 @@ class TransformerRawDataset(Dataset):
         return self.examples[index]
 
 
+def record_belongs_to_stream_worker(record_index: int, worker_id: int, num_workers: int) -> bool:
+    if num_workers <= 1:
+        return True
+    return int(record_index) % int(num_workers) == int(worker_id)
+
+
 def load_examples(
     paths: list[Path],
     *,
@@ -966,6 +980,9 @@ class TransformerStreamingDataset(IterableDataset):
         self.exclude_sessions = set(exclude_sessions or set())
 
     def __iter__(self):
+        worker = get_worker_info()
+        worker_id = int(worker.id) if worker is not None else 0
+        num_workers = int(worker.num_workers) if worker is not None else 1
         teacher_lookup = make_review_lookup(str(self.review_audit_jsonl)) if self.review_audit_jsonl else None
         yielded = 0
         for path in self.paths:
@@ -979,7 +996,10 @@ class TransformerStreamingDataset(IterableDataset):
                         continue
                     if self.max_records_per_source is not None and records >= self.max_records_per_source:
                         break
+                    record_index = records
                     records += 1
+                    if not record_belongs_to_stream_worker(record_index, worker_id, num_workers):
+                        continue
                     try:
                         record_examples, _record_stats = build_transformer_examples_from_record(
                             record,
@@ -1484,7 +1504,7 @@ def train(args: argparse.Namespace) -> dict:
     if not val_examples:
         raise ValueError("no validation examples built")
 
-    collate = lambda items: collate_transformer_examples(items, max_candidates=args.max_candidates)
+    collate = TransformerExampleCollator(max_candidates=args.max_candidates)
     train_sampler = None
     if train_examples is not None:
         train_sampling_weights = reviewed_sampling_weights(
@@ -1513,7 +1533,7 @@ def train(args: argparse.Namespace) -> dict:
                     exclude_sessions=exclude_sessions,
                 ),
                 batch_size=args.batch_size,
-                num_workers=0,
+                num_workers=args.train_num_workers,
                 collate_fn=collate,
             )
         assert train_examples is not None
@@ -1559,6 +1579,7 @@ def train(args: argparse.Namespace) -> dict:
         "max_candidates": args.max_candidates,
         "batch_size": args.batch_size,
         "stream_train": bool(args.stream_train),
+        "train_num_workers": args.train_num_workers,
         "exclude_sessions_file": args.exclude_sessions_file,
         "excluded_train_sessions": len(exclude_sessions),
         "compute_rule_features": compute_rule_features,
@@ -1785,6 +1806,7 @@ def main() -> int:
     parser.add_argument("--grad-clip", type=float, default=5.0)
     parser.add_argument("--log-every-batches", type=int, default=0)
     parser.add_argument("--eval-every-batches", type=int, default=0)
+    parser.add_argument("--train-num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=20260527)
     parser.add_argument("--device", default=None)
     args = parser.parse_args()

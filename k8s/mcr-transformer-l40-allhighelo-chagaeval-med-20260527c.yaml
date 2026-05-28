@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: mcr-transformer-l40-allhighelo-chagaeval-med-20260527b
+  name: mcr-transformer-l40-allhighelo-chagaeval-med-20260527c
   namespace: nourish-sdsc
   labels:
     app: mcr-transformer
@@ -48,7 +48,7 @@ spec:
               python - <<'PY'
               import torch
               import MahjongGB
-              print("repo_commit", "stream-all-highelo-chagaeval-med-20260527b")
+              print("repo_commit", "stream-all-highelo-chagaeval-med-20260527c")
               print("torch", torch.__version__, "cuda", torch.cuda.is_available(), "device_count", torch.cuda.device_count())
               print("MahjongGB import ok")
               PY
@@ -68,7 +68,7 @@ spec:
                 --val-audit ${SPLIT}/val.audit.jsonl \
                 --test-audit ${SPLIT}/test.audit.jsonl \
                 --train-val-audit ${SPLIT}/train_val.audit.jsonl \
-                --summary-out runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b_corpus_gate.json \
+                --summary-out runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527c_corpus_gate.json \
                 --max-candidates 235
               python scripts/train_transformer_candidate.py \
                 --raw ${ALL} \
@@ -102,33 +102,33 @@ spec:
                 --log-every-batches 1000 \
                 --eval-every-batches 1000 \
                 --train-num-workers 4 \
-                --out models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b.pt \
-                --metrics-out runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b_metrics.json
+                --out models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527c.pt \
+                --metrics-out runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527c_metrics.json
               python scripts/evaluate_transformer_chaga_review.py \
-                --checkpoint models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b.pt \
+                --checkpoint models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527c.pt \
                 --raw ${SPLIT}/test.prepared.jsonl \
                 --review-audit-jsonl ${SPLIT}/test.audit.jsonl \
                 --max-candidates 235 \
                 --batch-size 128 \
                 --no-rule-features \
-                --metrics-out runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b_test_eval.json
+                --metrics-out runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527c_test_eval.json
               python - <<'PY'
               import json
               from pathlib import Path
-              metrics = json.loads(Path("runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b_test_eval.json").read_text())
-              train = json.loads(Path("runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b_metrics.json").read_text())
-              gate = json.loads(Path("runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b_corpus_gate.json").read_text())
+              metrics = json.loads(Path("runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527c_test_eval.json").read_text())
+              train = json.loads(Path("runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527c_metrics.json").read_text())
+              gate = json.loads(Path("runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527c_corpus_gate.json").read_text())
               all_train = json.loads(Path("data/processed/tziakcha_all_plus_live_elo2300_session/chaga_eval_split_seed20260527/all_highelo_train_chaga_eval_split_summary.json").read_text())
               summary = {
-                  "checkpoint": "models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b.pt",
+                  "checkpoint": "models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527c.pt",
                   "train_mode": "stream_all_players_gt2300_chaga_eval",
                   "full_train_records_seen": all_train.get("records_seen"),
                   "stream_train_records": all_train.get("records_for_stream_training"),
                   "stream_train_player_slots": all_train.get("train_player_slots_for_stream_training"),
                   "heldout_chaga_sessions": all_train.get("holdout_session_count"),
-                  "corpus_gate": "runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b_corpus_gate.json",
-                  "train_metrics": "runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b_metrics.json",
-                  "test_eval": "runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b_test_eval.json",
+                  "corpus_gate": "runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527c_corpus_gate.json",
+                  "train_metrics": "runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527c_metrics.json",
+                  "test_eval": "runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527c_test_eval.json",
                   "train_reviewed_examples_for_gate": gate["splits"]["train"]["reviewed_examples"],
                   "val_reviewed_examples": gate["splits"]["val"]["reviewed_examples"],
                   "test_reviewed_examples": gate["splits"]["test"]["reviewed_examples"],
@@ -148,7 +148,7 @@ spec:
               summary["passed_50_relaxed"] = (summary["original_relaxed_accuracy"] or 0.0) >= 0.50
               summary["passed_65_relaxed"] = (summary["original_relaxed_accuracy"] or 0.0) >= 0.65
               summary["passed_85_relaxed"] = (summary["original_relaxed_accuracy"] or 0.0) >= 0.85
-              Path("runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2))
+              Path("runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527c_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2))
               print(json.dumps(summary, ensure_ascii=False, indent=2))
               PY
           resources:

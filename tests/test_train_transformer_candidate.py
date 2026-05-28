@@ -1,5 +1,6 @@
 import json
 import gzip
+import pickle
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ from train_transformer_candidate import (  # noqa: E402
     TILE_IDS,
     TransformerExample,
     TransformerCandidateModel,
+    TransformerExampleCollator,
     TransformerStreamingDataset,
     action_response,
     build_transformer_examples_from_record,
@@ -34,6 +36,7 @@ from train_transformer_candidate import (  # noqa: E402
     load_review_target_lookup,
     load_examples,
     policy_loss_with_optional_teacher,
+    record_belongs_to_stream_worker,
     reviewed_sampling_weights,
     rule_gated_hu_allowed,
     teacher_accepted_set_loss,
@@ -527,6 +530,29 @@ def test_streaming_dataset_keeps_unreviewed_examples_in_mixed_training_when_dist
 
     assert examples
     assert examples[0].teacher_candidate_norms == ()
+
+
+def test_streaming_worker_sharding_assigns_each_record_once():
+    assignments = {
+        worker: [record for record in range(10) if record_belongs_to_stream_worker(record, worker, 3)]
+        for worker in range(3)
+    }
+
+    assert assignments == {
+        0: [0, 3, 6, 9],
+        1: [1, 4, 7],
+        2: [2, 5, 8],
+    }
+    assigned = [record for records in assignments.values() for record in records]
+    assert sorted(assigned) == list(range(10))
+
+
+def test_transformer_example_collator_is_picklable_for_worker_loader():
+    collator = TransformerExampleCollator(max_candidates=235)
+
+    restored = pickle.loads(pickle.dumps(collator))
+
+    assert restored.max_candidates == 235
 
 
 def test_reviewed_example_can_use_teacher_action_when_human_action_is_unmapped():

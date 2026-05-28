@@ -101,6 +101,7 @@ spec:
                 --dropout 0.15 \
                 --log-every-batches 1000 \
                 --eval-every-batches 1000 \
+                --train-num-workers 4 \
                 --out models/transformer_candidate_allhighelo_chagaeval_l40_20260527b.pt \
                 --metrics-out runs/transformer_candidate_allhighelo_chagaeval_l40_20260527b_metrics.json
               python scripts/evaluate_transformer_chaga_review.py \
