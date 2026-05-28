@@ -1,0 +1,888 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3886" height="520" viewBox="0 0 3886 520">
+<rect width="100%" height="100%" fill="#fbfbfa"/>
+<text x="1943.0" y="34" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="700">Mahjong-algorithm relaxed mismatches vs CHAGA review candidates by turn</text>
+<text x="20" y="260" transform="rotate(-90 20 260)" font-family="Arial, sans-serif" font-size="13" fill="#444">reviewed decisions</text>
+<line x1="70" y1="430" x2="3856" y2="430" stroke="#333" stroke-width="1"/>
+<line x1="70" y1="70" x2="70" y2="430" stroke="#333" stroke-width="1"/>
+<g font-family="Arial, sans-serif" font-size="11" fill="#444">
+<line x1="65" y1="430.0" x2="3856" y2="430.0" stroke="#e4e4e0" stroke-width="1"/>
+<text x="60" y="434.0" text-anchor="end">0</text>
+<line x1="65" y1="350.6" x2="3856" y2="350.6" stroke="#e4e4e0" stroke-width="1"/>
+<text x="60" y="354.6" text-anchor="end">82</text>
+<line x1="65" y1="271.2" x2="3856" y2="271.2" stroke="#e4e4e0" stroke-width="1"/>
+<text x="60" y="275.2" text-anchor="end">164</text>
+<line x1="65" y1="191.7" x2="3856" y2="191.7" stroke="#e4e4e0" stroke-width="1"/>
+<text x="60" y="195.7" text-anchor="end">246</text>
+<line x1="65" y1="112.3" x2="3856" y2="112.3" stroke="#e4e4e0" stroke-width="1"/>
+<text x="60" y="116.3" text-anchor="end">328</text>
+<line x1="65" y1="32.9" x2="3856" y2="32.9" stroke="#e4e4e0" stroke-width="1"/>
+<text x="60" y="36.9" text-anchor="end">410</text>
+</g>
+<g><title>turn 2: total=413, relaxed mismatches=304, relaxed mismatch rate=73.6%</title>
+<rect x="70.0" y="30.0" width="17.9" height="400.0" fill="#d9e2ec"/>
+<rect x="70.0" y="135.6" width="17.9" height="294.4" fill="#c94f4f"/>
+<text x="79.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 79.0 448)">turn 2</text>
+</g>
+<g><title>turn 3: total=47, relaxed mismatches=2, relaxed mismatch rate=4.3%</title>
+<rect x="91.9" y="384.5" width="17.9" height="45.5" fill="#d9e2ec"/>
+<rect x="91.9" y="428.1" width="17.9" height="1.9" fill="#c94f4f"/>
+<text x="100.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 100.9 448)">turn 3</text>
+</g>
+<g><title>turn 4: total=387, relaxed mismatches=259, relaxed mismatch rate=66.9%</title>
+<rect x="113.8" y="55.2" width="17.9" height="374.8" fill="#d9e2ec"/>
+<rect x="113.8" y="179.2" width="17.9" height="250.8" fill="#c94f4f"/>
+<text x="122.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 122.8 448)">turn 4</text>
+</g>
+<g><title>turn 5: total=70, relaxed mismatches=28, relaxed mismatch rate=40.0%</title>
+<rect x="135.7" y="362.2" width="17.9" height="67.8" fill="#d9e2ec"/>
+<rect x="135.7" y="402.9" width="17.9" height="27.1" fill="#c94f4f"/>
+<text x="144.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 144.7 448)">turn 5</text>
+</g>
+<g><title>turn 6: total=356, relaxed mismatches=257, relaxed mismatch rate=72.2%</title>
+<rect x="157.6" y="85.2" width="17.9" height="344.8" fill="#d9e2ec"/>
+<rect x="157.6" y="181.1" width="17.9" height="248.9" fill="#c94f4f"/>
+<text x="166.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 166.6 448)">turn 6</text>
+</g>
+<g><title>turn 7: total=76, relaxed mismatches=42, relaxed mismatch rate=55.3%</title>
+<rect x="179.5" y="356.4" width="17.9" height="73.6" fill="#d9e2ec"/>
+<rect x="179.5" y="389.3" width="17.9" height="40.7" fill="#c94f4f"/>
+<text x="188.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 188.5 448)">turn 7</text>
+</g>
+<g><title>turn 8: total=346, relaxed mismatches=238, relaxed mismatch rate=68.8%</title>
+<rect x="201.4" y="94.9" width="17.9" height="335.1" fill="#d9e2ec"/>
+<rect x="201.4" y="199.5" width="17.9" height="230.5" fill="#c94f4f"/>
+<text x="210.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 210.4 448)">turn 8</text>
+</g>
+<g><title>turn 9: total=96, relaxed mismatches=49, relaxed mismatch rate=51.0%</title>
+<rect x="223.4" y="337.0" width="17.9" height="93.0" fill="#d9e2ec"/>
+<rect x="223.4" y="382.5" width="17.9" height="47.5" fill="#c94f4f"/>
+<text x="232.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 232.3 448)">turn 9</text>
+</g>
+<g><title>turn 10: total=335, relaxed mismatches=235, relaxed mismatch rate=70.1%</title>
+<rect x="245.3" y="105.5" width="17.9" height="324.5" fill="#d9e2ec"/>
+<rect x="245.3" y="202.4" width="17.9" height="227.6" fill="#c94f4f"/>
+<text x="254.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 254.2 448)">turn 10</text>
+</g>
+<g><title>turn 11: total=115, relaxed mismatches=51, relaxed mismatch rate=44.3%</title>
+<rect x="267.2" y="318.6" width="17.9" height="111.4" fill="#d9e2ec"/>
+<rect x="267.2" y="380.6" width="17.9" height="49.4" fill="#c94f4f"/>
+<text x="276.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 276.1 448)">turn 11</text>
+</g>
+<g><title>turn 12: total=314, relaxed mismatches=202, relaxed mismatch rate=64.3%</title>
+<rect x="289.1" y="125.9" width="17.9" height="304.1" fill="#d9e2ec"/>
+<rect x="289.1" y="234.4" width="17.9" height="195.6" fill="#c94f4f"/>
+<text x="298.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 298.0 448)">turn 12</text>
+</g>
+<g><title>turn 13: total=133, relaxed mismatches=79, relaxed mismatch rate=59.4%</title>
+<rect x="311.0" y="301.2" width="17.9" height="128.8" fill="#d9e2ec"/>
+<rect x="311.0" y="353.5" width="17.9" height="76.5" fill="#c94f4f"/>
+<text x="319.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 319.9 448)">turn 13</text>
+</g>
+<g><title>turn 14: total=284, relaxed mismatches=184, relaxed mismatch rate=64.8%</title>
+<rect x="332.9" y="154.9" width="17.9" height="275.1" fill="#d9e2ec"/>
+<rect x="332.9" y="251.8" width="17.9" height="178.2" fill="#c94f4f"/>
+<text x="341.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 341.8 448)">turn 14</text>
+</g>
+<g><title>turn 15: total=152, relaxed mismatches=83, relaxed mismatch rate=54.6%</title>
+<rect x="354.8" y="282.8" width="17.9" height="147.2" fill="#d9e2ec"/>
+<rect x="354.8" y="349.6" width="17.9" height="80.4" fill="#c94f4f"/>
+<text x="363.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 363.8 448)">turn 15</text>
+</g>
+<g><title>turn 16: total=286, relaxed mismatches=186, relaxed mismatch rate=65.0%</title>
+<rect x="376.7" y="153.0" width="17.9" height="277.0" fill="#d9e2ec"/>
+<rect x="376.7" y="249.9" width="17.9" height="180.1" fill="#c94f4f"/>
+<text x="385.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 385.7 448)">turn 16</text>
+</g>
+<g><title>turn 17: total=149, relaxed mismatches=74, relaxed mismatch rate=49.7%</title>
+<rect x="398.6" y="285.7" width="17.9" height="144.3" fill="#d9e2ec"/>
+<rect x="398.6" y="358.3" width="17.9" height="71.7" fill="#c94f4f"/>
+<text x="407.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 407.6 448)">turn 17</text>
+</g>
+<g><title>turn 18: total=284, relaxed mismatches=173, relaxed mismatch rate=60.9%</title>
+<rect x="420.5" y="154.9" width="17.9" height="275.1" fill="#d9e2ec"/>
+<rect x="420.5" y="262.4" width="17.9" height="167.6" fill="#c94f4f"/>
+<text x="429.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 429.5 448)">turn 18</text>
+</g>
+<g><title>turn 19: total=160, relaxed mismatches=81, relaxed mismatch rate=50.6%</title>
+<rect x="442.4" y="275.0" width="17.9" height="155.0" fill="#d9e2ec"/>
+<rect x="442.4" y="351.5" width="17.9" height="78.5" fill="#c94f4f"/>
+<text x="451.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 451.4 448)">turn 19</text>
+</g>
+<g><title>turn 20: total=269, relaxed mismatches=142, relaxed mismatch rate=52.8%</title>
+<rect x="464.3" y="169.5" width="17.9" height="260.5" fill="#d9e2ec"/>
+<rect x="464.3" y="292.5" width="17.9" height="137.5" fill="#c94f4f"/>
+<text x="473.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 473.3 448)">turn 20</text>
+</g>
+<g><title>turn 21: total=175, relaxed mismatches=98, relaxed mismatch rate=56.0%</title>
+<rect x="486.2" y="260.5" width="17.9" height="169.5" fill="#d9e2ec"/>
+<rect x="486.2" y="335.1" width="17.9" height="94.9" fill="#c94f4f"/>
+<text x="495.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 495.2 448)">turn 21</text>
+</g>
+<g><title>turn 22: total=250, relaxed mismatches=148, relaxed mismatch rate=59.2%</title>
+<rect x="508.2" y="187.9" width="17.9" height="242.1" fill="#d9e2ec"/>
+<rect x="508.2" y="286.7" width="17.9" height="143.3" fill="#c94f4f"/>
+<text x="517.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 517.1 448)">turn 22</text>
+</g>
+<g><title>turn 23: total=176, relaxed mismatches=84, relaxed mismatch rate=47.7%</title>
+<rect x="530.1" y="259.5" width="17.9" height="170.5" fill="#d9e2ec"/>
+<rect x="530.1" y="348.6" width="17.9" height="81.4" fill="#c94f4f"/>
+<text x="539.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 539.0 448)">turn 23</text>
+</g>
+<g><title>turn 24: total=259, relaxed mismatches=147, relaxed mismatch rate=56.8%</title>
+<rect x="552.0" y="179.2" width="17.9" height="250.8" fill="#d9e2ec"/>
+<rect x="552.0" y="287.6" width="17.9" height="142.4" fill="#c94f4f"/>
+<text x="560.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 560.9 448)">turn 24</text>
+</g>
+<g><title>turn 25: total=184, relaxed mismatches=75, relaxed mismatch rate=40.8%</title>
+<rect x="573.9" y="251.8" width="17.9" height="178.2" fill="#d9e2ec"/>
+<rect x="573.9" y="357.4" width="17.9" height="72.6" fill="#c94f4f"/>
+<text x="582.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 582.8 448)">turn 25</text>
+</g>
+<g><title>turn 26: total=251, relaxed mismatches=143, relaxed mismatch rate=57.0%</title>
+<rect x="595.8" y="186.9" width="17.9" height="243.1" fill="#d9e2ec"/>
+<rect x="595.8" y="291.5" width="17.9" height="138.5" fill="#c94f4f"/>
+<text x="604.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 604.7 448)">turn 26</text>
+</g>
+<g><title>turn 27: total=193, relaxed mismatches=95, relaxed mismatch rate=49.2%</title>
+<rect x="617.7" y="243.1" width="17.9" height="186.9" fill="#d9e2ec"/>
+<rect x="617.7" y="338.0" width="17.9" height="92.0" fill="#c94f4f"/>
+<text x="626.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 626.6 448)">turn 27</text>
+</g>
+<g><title>turn 28: total=255, relaxed mismatches=120, relaxed mismatch rate=47.1%</title>
+<rect x="639.6" y="183.0" width="17.9" height="247.0" fill="#d9e2ec"/>
+<rect x="639.6" y="313.8" width="17.9" height="116.2" fill="#c94f4f"/>
+<text x="648.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 648.5 448)">turn 28</text>
+</g>
+<g><title>turn 29: total=192, relaxed mismatches=90, relaxed mismatch rate=46.9%</title>
+<rect x="661.5" y="244.0" width="17.9" height="186.0" fill="#d9e2ec"/>
+<rect x="661.5" y="342.8" width="17.9" height="87.2" fill="#c94f4f"/>
+<text x="670.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 670.5 448)">turn 29</text>
+</g>
+<g><title>turn 30: total=226, relaxed mismatches=116, relaxed mismatch rate=51.3%</title>
+<rect x="683.4" y="211.1" width="17.9" height="218.9" fill="#d9e2ec"/>
+<rect x="683.4" y="317.7" width="17.9" height="112.3" fill="#c94f4f"/>
+<text x="692.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 692.4 448)">turn 30</text>
+</g>
+<g><title>turn 31: total=202, relaxed mismatches=92, relaxed mismatch rate=45.5%</title>
+<rect x="705.3" y="234.4" width="17.9" height="195.6" fill="#d9e2ec"/>
+<rect x="705.3" y="340.9" width="17.9" height="89.1" fill="#c94f4f"/>
+<text x="714.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 714.3 448)">turn 31</text>
+</g>
+<g><title>turn 32: total=236, relaxed mismatches=107, relaxed mismatch rate=45.3%</title>
+<rect x="727.2" y="201.4" width="17.9" height="228.6" fill="#d9e2ec"/>
+<rect x="727.2" y="326.4" width="17.9" height="103.6" fill="#c94f4f"/>
+<text x="736.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 736.2 448)">turn 32</text>
+</g>
+<g><title>turn 33: total=197, relaxed mismatches=80, relaxed mismatch rate=40.6%</title>
+<rect x="749.1" y="239.2" width="17.9" height="190.8" fill="#d9e2ec"/>
+<rect x="749.1" y="352.5" width="17.9" height="77.5" fill="#c94f4f"/>
+<text x="758.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 758.1 448)">turn 33</text>
+</g>
+<g><title>turn 34: total=229, relaxed mismatches=119, relaxed mismatch rate=52.0%</title>
+<rect x="771.0" y="208.2" width="17.9" height="221.8" fill="#d9e2ec"/>
+<rect x="771.0" y="314.7" width="17.9" height="115.3" fill="#c94f4f"/>
+<text x="780.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 780.0 448)">turn 34</text>
+</g>
+<g><title>turn 35: total=216, relaxed mismatches=92, relaxed mismatch rate=42.6%</title>
+<rect x="792.9" y="220.8" width="17.9" height="209.2" fill="#d9e2ec"/>
+<rect x="792.9" y="340.9" width="17.9" height="89.1" fill="#c94f4f"/>
+<text x="801.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 801.9 448)">turn 35</text>
+</g>
+<g><title>turn 36: total=216, relaxed mismatches=81, relaxed mismatch rate=37.5%</title>
+<rect x="814.9" y="220.8" width="17.9" height="209.2" fill="#d9e2ec"/>
+<rect x="814.9" y="351.5" width="17.9" height="78.5" fill="#c94f4f"/>
+<text x="823.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 823.8 448)">turn 36</text>
+</g>
+<g><title>turn 37: total=196, relaxed mismatches=82, relaxed mismatch rate=41.8%</title>
+<rect x="836.8" y="240.2" width="17.9" height="189.8" fill="#d9e2ec"/>
+<rect x="836.8" y="350.6" width="17.9" height="79.4" fill="#c94f4f"/>
+<text x="845.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 845.7 448)">turn 37</text>
+</g>
+<g><title>turn 38: total=238, relaxed mismatches=106, relaxed mismatch rate=44.5%</title>
+<rect x="858.7" y="199.5" width="17.9" height="230.5" fill="#d9e2ec"/>
+<rect x="858.7" y="327.3" width="17.9" height="102.7" fill="#c94f4f"/>
+<text x="867.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 867.6 448)">turn 38</text>
+</g>
+<g><title>turn 39: total=211, relaxed mismatches=76, relaxed mismatch rate=36.0%</title>
+<rect x="880.6" y="225.6" width="17.9" height="204.4" fill="#d9e2ec"/>
+<rect x="880.6" y="356.4" width="17.9" height="73.6" fill="#c94f4f"/>
+<text x="889.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 889.5 448)">turn 39</text>
+</g>
+<g><title>turn 40: total=222, relaxed mismatches=94, relaxed mismatch rate=42.3%</title>
+<rect x="902.5" y="215.0" width="17.9" height="215.0" fill="#d9e2ec"/>
+<rect x="902.5" y="339.0" width="17.9" height="91.0" fill="#c94f4f"/>
+<text x="911.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 911.4 448)">turn 40</text>
+</g>
+<g><title>turn 41: total=202, relaxed mismatches=85, relaxed mismatch rate=42.1%</title>
+<rect x="924.4" y="234.4" width="17.9" height="195.6" fill="#d9e2ec"/>
+<rect x="924.4" y="347.7" width="17.9" height="82.3" fill="#c94f4f"/>
+<text x="933.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 933.3 448)">turn 41</text>
+</g>
+<g><title>turn 42: total=213, relaxed mismatches=89, relaxed mismatch rate=41.8%</title>
+<rect x="946.3" y="223.7" width="17.9" height="206.3" fill="#d9e2ec"/>
+<rect x="946.3" y="343.8" width="17.9" height="86.2" fill="#c94f4f"/>
+<text x="955.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 955.3 448)">turn 42</text>
+</g>
+<g><title>turn 43: total=224, relaxed mismatches=90, relaxed mismatch rate=40.2%</title>
+<rect x="968.2" y="213.1" width="17.9" height="216.9" fill="#d9e2ec"/>
+<rect x="968.2" y="342.8" width="17.9" height="87.2" fill="#c94f4f"/>
+<text x="977.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 977.2 448)">turn 43</text>
+</g>
+<g><title>turn 44: total=191, relaxed mismatches=78, relaxed mismatch rate=40.8%</title>
+<rect x="990.1" y="245.0" width="17.9" height="185.0" fill="#d9e2ec"/>
+<rect x="990.1" y="354.5" width="17.9" height="75.5" fill="#c94f4f"/>
+<text x="999.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 999.1 448)">turn 44</text>
+</g>
+<g><title>turn 45: total=219, relaxed mismatches=88, relaxed mismatch rate=40.2%</title>
+<rect x="1012.0" y="217.9" width="17.9" height="212.1" fill="#d9e2ec"/>
+<rect x="1012.0" y="344.8" width="17.9" height="85.2" fill="#c94f4f"/>
+<text x="1021.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1021.0 448)">turn 45</text>
+</g>
+<g><title>turn 46: total=211, relaxed mismatches=78, relaxed mismatch rate=37.0%</title>
+<rect x="1033.9" y="225.6" width="17.9" height="204.4" fill="#d9e2ec"/>
+<rect x="1033.9" y="354.5" width="17.9" height="75.5" fill="#c94f4f"/>
+<text x="1042.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1042.9 448)">turn 46</text>
+</g>
+<g><title>turn 47: total=211, relaxed mismatches=100, relaxed mismatch rate=47.4%</title>
+<rect x="1055.8" y="225.6" width="17.9" height="204.4" fill="#d9e2ec"/>
+<rect x="1055.8" y="333.1" width="17.9" height="96.9" fill="#c94f4f"/>
+<text x="1064.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1064.8 448)">turn 47</text>
+</g>
+<g><title>turn 48: total=192, relaxed mismatches=82, relaxed mismatch rate=42.7%</title>
+<rect x="1077.7" y="244.0" width="17.9" height="186.0" fill="#d9e2ec"/>
+<rect x="1077.7" y="350.6" width="17.9" height="79.4" fill="#c94f4f"/>
+<text x="1086.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1086.7 448)">turn 48</text>
+</g>
+<g><title>turn 49: total=203, relaxed mismatches=102, relaxed mismatch rate=50.2%</title>
+<rect x="1099.7" y="233.4" width="17.9" height="196.6" fill="#d9e2ec"/>
+<rect x="1099.7" y="331.2" width="17.9" height="98.8" fill="#c94f4f"/>
+<text x="1108.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1108.6 448)">turn 49</text>
+</g>
+<g><title>turn 50: total=204, relaxed mismatches=100, relaxed mismatch rate=49.0%</title>
+<rect x="1121.6" y="232.4" width="17.9" height="197.6" fill="#d9e2ec"/>
+<rect x="1121.6" y="333.1" width="17.9" height="96.9" fill="#c94f4f"/>
+<text x="1130.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1130.5 448)">turn 50</text>
+</g>
+<g><title>turn 51: total=223, relaxed mismatches=108, relaxed mismatch rate=48.4%</title>
+<rect x="1143.5" y="214.0" width="17.9" height="216.0" fill="#d9e2ec"/>
+<rect x="1143.5" y="325.4" width="17.9" height="104.6" fill="#c94f4f"/>
+<text x="1152.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1152.4 448)">turn 51</text>
+</g>
+<g><title>turn 52: total=154, relaxed mismatches=59, relaxed mismatch rate=38.3%</title>
+<rect x="1165.4" y="280.8" width="17.9" height="149.2" fill="#d9e2ec"/>
+<rect x="1165.4" y="372.9" width="17.9" height="57.1" fill="#c94f4f"/>
+<text x="1174.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1174.3 448)">turn 52</text>
+</g>
+<g><title>turn 53: total=224, relaxed mismatches=116, relaxed mismatch rate=51.8%</title>
+<rect x="1187.3" y="213.1" width="17.9" height="216.9" fill="#d9e2ec"/>
+<rect x="1187.3" y="317.7" width="17.9" height="112.3" fill="#c94f4f"/>
+<text x="1196.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1196.2 448)">turn 53</text>
+</g>
+<g><title>turn 54: total=183, relaxed mismatches=80, relaxed mismatch rate=43.7%</title>
+<rect x="1209.2" y="252.8" width="17.9" height="177.2" fill="#d9e2ec"/>
+<rect x="1209.2" y="352.5" width="17.9" height="77.5" fill="#c94f4f"/>
+<text x="1218.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1218.1 448)">turn 54</text>
+</g>
+<g><title>turn 55: total=210, relaxed mismatches=111, relaxed mismatch rate=52.9%</title>
+<rect x="1231.1" y="226.6" width="17.9" height="203.4" fill="#d9e2ec"/>
+<rect x="1231.1" y="322.5" width="17.9" height="107.5" fill="#c94f4f"/>
+<text x="1240.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1240.1 448)">turn 55</text>
+</g>
+<g><title>turn 56: total=171, relaxed mismatches=78, relaxed mismatch rate=45.6%</title>
+<rect x="1253.0" y="264.4" width="17.9" height="165.6" fill="#d9e2ec"/>
+<rect x="1253.0" y="354.5" width="17.9" height="75.5" fill="#c94f4f"/>
+<text x="1262.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1262.0 448)">turn 56</text>
+</g>
+<g><title>turn 57: total=202, relaxed mismatches=92, relaxed mismatch rate=45.5%</title>
+<rect x="1274.9" y="234.4" width="17.9" height="195.6" fill="#d9e2ec"/>
+<rect x="1274.9" y="340.9" width="17.9" height="89.1" fill="#c94f4f"/>
+<text x="1283.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1283.9 448)">turn 57</text>
+</g>
+<g><title>turn 58: total=191, relaxed mismatches=90, relaxed mismatch rate=47.1%</title>
+<rect x="1296.8" y="245.0" width="17.9" height="185.0" fill="#d9e2ec"/>
+<rect x="1296.8" y="342.8" width="17.9" height="87.2" fill="#c94f4f"/>
+<text x="1305.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1305.8 448)">turn 58</text>
+</g>
+<g><title>turn 59: total=191, relaxed mismatches=92, relaxed mismatch rate=48.2%</title>
+<rect x="1318.7" y="245.0" width="17.9" height="185.0" fill="#d9e2ec"/>
+<rect x="1318.7" y="340.9" width="17.9" height="89.1" fill="#c94f4f"/>
+<text x="1327.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1327.7 448)">turn 59</text>
+</g>
+<g><title>turn 60: total=175, relaxed mismatches=75, relaxed mismatch rate=42.9%</title>
+<rect x="1340.6" y="260.5" width="17.9" height="169.5" fill="#d9e2ec"/>
+<rect x="1340.6" y="357.4" width="17.9" height="72.6" fill="#c94f4f"/>
+<text x="1349.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1349.6 448)">turn 60</text>
+</g>
+<g><title>turn 61: total=177, relaxed mismatches=80, relaxed mismatch rate=45.2%</title>
+<rect x="1362.5" y="258.6" width="17.9" height="171.4" fill="#d9e2ec"/>
+<rect x="1362.5" y="352.5" width="17.9" height="77.5" fill="#c94f4f"/>
+<text x="1371.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1371.5 448)">turn 61</text>
+</g>
+<g><title>turn 62: total=176, relaxed mismatches=80, relaxed mismatch rate=45.5%</title>
+<rect x="1384.5" y="259.5" width="17.9" height="170.5" fill="#d9e2ec"/>
+<rect x="1384.5" y="352.5" width="17.9" height="77.5" fill="#c94f4f"/>
+<text x="1393.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1393.4 448)">turn 62</text>
+</g>
+<g><title>turn 63: total=187, relaxed mismatches=86, relaxed mismatch rate=46.0%</title>
+<rect x="1406.4" y="248.9" width="17.9" height="181.1" fill="#d9e2ec"/>
+<rect x="1406.4" y="346.7" width="17.9" height="83.3" fill="#c94f4f"/>
+<text x="1415.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1415.3 448)">turn 63</text>
+</g>
+<g><title>turn 64: total=168, relaxed mismatches=73, relaxed mismatch rate=43.5%</title>
+<rect x="1428.3" y="267.3" width="17.9" height="162.7" fill="#d9e2ec"/>
+<rect x="1428.3" y="359.3" width="17.9" height="70.7" fill="#c94f4f"/>
+<text x="1437.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1437.2 448)">turn 64</text>
+</g>
+<g><title>turn 65: total=184, relaxed mismatches=66, relaxed mismatch rate=35.9%</title>
+<rect x="1450.2" y="251.8" width="17.9" height="178.2" fill="#d9e2ec"/>
+<rect x="1450.2" y="366.1" width="17.9" height="63.9" fill="#c94f4f"/>
+<text x="1459.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1459.1 448)">turn 65</text>
+</g>
+<g><title>turn 66: total=177, relaxed mismatches=74, relaxed mismatch rate=41.8%</title>
+<rect x="1472.1" y="258.6" width="17.9" height="171.4" fill="#d9e2ec"/>
+<rect x="1472.1" y="358.3" width="17.9" height="71.7" fill="#c94f4f"/>
+<text x="1481.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1481.0 448)">turn 66</text>
+</g>
+<g><title>turn 67: total=175, relaxed mismatches=70, relaxed mismatch rate=40.0%</title>
+<rect x="1494.0" y="260.5" width="17.9" height="169.5" fill="#d9e2ec"/>
+<rect x="1494.0" y="362.2" width="17.9" height="67.8" fill="#c94f4f"/>
+<text x="1502.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1502.9 448)">turn 67</text>
+</g>
+<g><title>turn 68: total=154, relaxed mismatches=62, relaxed mismatch rate=40.3%</title>
+<rect x="1515.9" y="280.8" width="17.9" height="149.2" fill="#d9e2ec"/>
+<rect x="1515.9" y="370.0" width="17.9" height="60.0" fill="#c94f4f"/>
+<text x="1524.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1524.8 448)">turn 68</text>
+</g>
+<g><title>turn 69: total=167, relaxed mismatches=66, relaxed mismatch rate=39.5%</title>
+<rect x="1537.8" y="268.3" width="17.9" height="161.7" fill="#d9e2ec"/>
+<rect x="1537.8" y="366.1" width="17.9" height="63.9" fill="#c94f4f"/>
+<text x="1546.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1546.8 448)">turn 69</text>
+</g>
+<g><title>turn 70: total=165, relaxed mismatches=74, relaxed mismatch rate=44.8%</title>
+<rect x="1559.7" y="270.2" width="17.9" height="159.8" fill="#d9e2ec"/>
+<rect x="1559.7" y="358.3" width="17.9" height="71.7" fill="#c94f4f"/>
+<text x="1568.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1568.7 448)">turn 70</text>
+</g>
+<g><title>turn 71: total=154, relaxed mismatches=62, relaxed mismatch rate=40.3%</title>
+<rect x="1581.6" y="280.8" width="17.9" height="149.2" fill="#d9e2ec"/>
+<rect x="1581.6" y="370.0" width="17.9" height="60.0" fill="#c94f4f"/>
+<text x="1590.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1590.6 448)">turn 71</text>
+</g>
+<g><title>turn 72: total=147, relaxed mismatches=60, relaxed mismatch rate=40.8%</title>
+<rect x="1603.5" y="287.6" width="17.9" height="142.4" fill="#d9e2ec"/>
+<rect x="1603.5" y="371.9" width="17.9" height="58.1" fill="#c94f4f"/>
+<text x="1612.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1612.5 448)">turn 72</text>
+</g>
+<g><title>turn 73: total=162, relaxed mismatches=61, relaxed mismatch rate=37.7%</title>
+<rect x="1625.4" y="273.1" width="17.9" height="156.9" fill="#d9e2ec"/>
+<rect x="1625.4" y="370.9" width="17.9" height="59.1" fill="#c94f4f"/>
+<text x="1634.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1634.4 448)">turn 73</text>
+</g>
+<g><title>turn 74: total=143, relaxed mismatches=50, relaxed mismatch rate=35.0%</title>
+<rect x="1647.3" y="291.5" width="17.9" height="138.5" fill="#d9e2ec"/>
+<rect x="1647.3" y="381.6" width="17.9" height="48.4" fill="#c94f4f"/>
+<text x="1656.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1656.3 448)">turn 74</text>
+</g>
+<g><title>turn 75: total=167, relaxed mismatches=65, relaxed mismatch rate=38.9%</title>
+<rect x="1669.2" y="268.3" width="17.9" height="161.7" fill="#d9e2ec"/>
+<rect x="1669.2" y="367.0" width="17.9" height="63.0" fill="#c94f4f"/>
+<text x="1678.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1678.2 448)">turn 75</text>
+</g>
+<g><title>turn 76: total=152, relaxed mismatches=53, relaxed mismatch rate=34.9%</title>
+<rect x="1691.2" y="282.8" width="17.9" height="147.2" fill="#d9e2ec"/>
+<rect x="1691.2" y="378.7" width="17.9" height="51.3" fill="#c94f4f"/>
+<text x="1700.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1700.1 448)">turn 76</text>
+</g>
+<g><title>turn 77: total=145, relaxed mismatches=50, relaxed mismatch rate=34.5%</title>
+<rect x="1713.1" y="289.6" width="17.9" height="140.4" fill="#d9e2ec"/>
+<rect x="1713.1" y="381.6" width="17.9" height="48.4" fill="#c94f4f"/>
+<text x="1722.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1722.0 448)">turn 77</text>
+</g>
+<g><title>turn 78: total=125, relaxed mismatches=47, relaxed mismatch rate=37.6%</title>
+<rect x="1735.0" y="308.9" width="17.9" height="121.1" fill="#d9e2ec"/>
+<rect x="1735.0" y="384.5" width="17.9" height="45.5" fill="#c94f4f"/>
+<text x="1743.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1743.9 448)">turn 78</text>
+</g>
+<g><title>turn 79: total=141, relaxed mismatches=46, relaxed mismatch rate=32.6%</title>
+<rect x="1756.9" y="293.4" width="17.9" height="136.6" fill="#d9e2ec"/>
+<rect x="1756.9" y="385.4" width="17.9" height="44.6" fill="#c94f4f"/>
+<text x="1765.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1765.8 448)">turn 79</text>
+</g>
+<g><title>turn 80: total=123, relaxed mismatches=45, relaxed mismatch rate=36.6%</title>
+<rect x="1778.8" y="310.9" width="17.9" height="119.1" fill="#d9e2ec"/>
+<rect x="1778.8" y="386.4" width="17.9" height="43.6" fill="#c94f4f"/>
+<text x="1787.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1787.7 448)">turn 80</text>
+</g>
+<g><title>turn 81: total=127, relaxed mismatches=40, relaxed mismatch rate=31.5%</title>
+<rect x="1800.7" y="307.0" width="17.9" height="123.0" fill="#d9e2ec"/>
+<rect x="1800.7" y="391.3" width="17.9" height="38.7" fill="#c94f4f"/>
+<text x="1809.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1809.6 448)">turn 81</text>
+</g>
+<g><title>turn 82: total=134, relaxed mismatches=39, relaxed mismatch rate=29.1%</title>
+<rect x="1822.6" y="300.2" width="17.9" height="129.8" fill="#d9e2ec"/>
+<rect x="1822.6" y="392.2" width="17.9" height="37.8" fill="#c94f4f"/>
+<text x="1831.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1831.6 448)">turn 82</text>
+</g>
+<g><title>turn 83: total=125, relaxed mismatches=39, relaxed mismatch rate=31.2%</title>
+<rect x="1844.5" y="308.9" width="17.9" height="121.1" fill="#d9e2ec"/>
+<rect x="1844.5" y="392.2" width="17.9" height="37.8" fill="#c94f4f"/>
+<text x="1853.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1853.5 448)">turn 83</text>
+</g>
+<g><title>turn 84: total=132, relaxed mismatches=53, relaxed mismatch rate=40.2%</title>
+<rect x="1866.4" y="302.2" width="17.9" height="127.8" fill="#d9e2ec"/>
+<rect x="1866.4" y="378.7" width="17.9" height="51.3" fill="#c94f4f"/>
+<text x="1875.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1875.4 448)">turn 84</text>
+</g>
+<g><title>turn 85: total=110, relaxed mismatches=32, relaxed mismatch rate=29.1%</title>
+<rect x="1888.3" y="323.5" width="17.9" height="106.5" fill="#d9e2ec"/>
+<rect x="1888.3" y="399.0" width="17.9" height="31.0" fill="#c94f4f"/>
+<text x="1897.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1897.3 448)">turn 85</text>
+</g>
+<g><title>turn 86: total=122, relaxed mismatches=40, relaxed mismatch rate=32.8%</title>
+<rect x="1910.2" y="311.8" width="17.9" height="118.2" fill="#d9e2ec"/>
+<rect x="1910.2" y="391.3" width="17.9" height="38.7" fill="#c94f4f"/>
+<text x="1919.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1919.2 448)">turn 86</text>
+</g>
+<g><title>turn 87: total=105, relaxed mismatches=28, relaxed mismatch rate=26.7%</title>
+<rect x="1932.1" y="328.3" width="17.9" height="101.7" fill="#d9e2ec"/>
+<rect x="1932.1" y="402.9" width="17.9" height="27.1" fill="#c94f4f"/>
+<text x="1941.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1941.1 448)">turn 87</text>
+</g>
+<g><title>turn 88: total=122, relaxed mismatches=36, relaxed mismatch rate=29.5%</title>
+<rect x="1954.0" y="311.8" width="17.9" height="118.2" fill="#d9e2ec"/>
+<rect x="1954.0" y="395.1" width="17.9" height="34.9" fill="#c94f4f"/>
+<text x="1963.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1963.0 448)">turn 88</text>
+</g>
+<g><title>turn 89: total=94, relaxed mismatches=23, relaxed mismatch rate=24.5%</title>
+<rect x="1976.0" y="339.0" width="17.9" height="91.0" fill="#d9e2ec"/>
+<rect x="1976.0" y="407.7" width="17.9" height="22.3" fill="#c94f4f"/>
+<text x="1984.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 1984.9 448)">turn 89</text>
+</g>
+<g><title>turn 90: total=117, relaxed mismatches=34, relaxed mismatch rate=29.1%</title>
+<rect x="1997.9" y="316.7" width="17.9" height="113.3" fill="#d9e2ec"/>
+<rect x="1997.9" y="397.1" width="17.9" height="32.9" fill="#c94f4f"/>
+<text x="2006.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2006.8 448)">turn 90</text>
+</g>
+<g><title>turn 91: total=94, relaxed mismatches=28, relaxed mismatch rate=29.8%</title>
+<rect x="2019.8" y="339.0" width="17.9" height="91.0" fill="#d9e2ec"/>
+<rect x="2019.8" y="402.9" width="17.9" height="27.1" fill="#c94f4f"/>
+<text x="2028.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2028.7 448)">turn 91</text>
+</g>
+<g><title>turn 92: total=102, relaxed mismatches=31, relaxed mismatch rate=30.4%</title>
+<rect x="2041.7" y="331.2" width="17.9" height="98.8" fill="#d9e2ec"/>
+<rect x="2041.7" y="400.0" width="17.9" height="30.0" fill="#c94f4f"/>
+<text x="2050.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2050.6 448)">turn 92</text>
+</g>
+<g><title>turn 93: total=104, relaxed mismatches=32, relaxed mismatch rate=30.8%</title>
+<rect x="2063.6" y="329.3" width="17.9" height="100.7" fill="#d9e2ec"/>
+<rect x="2063.6" y="399.0" width="17.9" height="31.0" fill="#c94f4f"/>
+<text x="2072.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2072.5 448)">turn 93</text>
+</g>
+<g><title>turn 94: total=87, relaxed mismatches=27, relaxed mismatch rate=31.0%</title>
+<rect x="2085.5" y="345.7" width="17.9" height="84.3" fill="#d9e2ec"/>
+<rect x="2085.5" y="403.8" width="17.9" height="26.2" fill="#c94f4f"/>
+<text x="2094.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2094.4 448)">turn 94</text>
+</g>
+<g><title>turn 95: total=86, relaxed mismatches=24, relaxed mismatch rate=27.9%</title>
+<rect x="2107.4" y="346.7" width="17.9" height="83.3" fill="#d9e2ec"/>
+<rect x="2107.4" y="406.8" width="17.9" height="23.2" fill="#c94f4f"/>
+<text x="2116.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2116.4 448)">turn 95</text>
+</g>
+<g><title>turn 96: total=80, relaxed mismatches=22, relaxed mismatch rate=27.5%</title>
+<rect x="2129.3" y="352.5" width="17.9" height="77.5" fill="#d9e2ec"/>
+<rect x="2129.3" y="408.7" width="17.9" height="21.3" fill="#c94f4f"/>
+<text x="2138.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2138.3 448)">turn 96</text>
+</g>
+<g><title>turn 97: total=85, relaxed mismatches=27, relaxed mismatch rate=31.8%</title>
+<rect x="2151.2" y="347.7" width="17.9" height="82.3" fill="#d9e2ec"/>
+<rect x="2151.2" y="403.8" width="17.9" height="26.2" fill="#c94f4f"/>
+<text x="2160.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2160.2 448)">turn 97</text>
+</g>
+<g><title>turn 98: total=92, relaxed mismatches=26, relaxed mismatch rate=28.3%</title>
+<rect x="2173.1" y="340.9" width="17.9" height="89.1" fill="#d9e2ec"/>
+<rect x="2173.1" y="404.8" width="17.9" height="25.2" fill="#c94f4f"/>
+<text x="2182.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2182.1 448)">turn 98</text>
+</g>
+<g><title>turn 99: total=79, relaxed mismatches=31, relaxed mismatch rate=39.2%</title>
+<rect x="2195.0" y="353.5" width="17.9" height="76.5" fill="#d9e2ec"/>
+<rect x="2195.0" y="400.0" width="17.9" height="30.0" fill="#c94f4f"/>
+<text x="2204.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2204.0 448)">turn 99</text>
+</g>
+<g><title>turn 100: total=82, relaxed mismatches=23, relaxed mismatch rate=28.0%</title>
+<rect x="2216.9" y="350.6" width="17.9" height="79.4" fill="#d9e2ec"/>
+<rect x="2216.9" y="407.7" width="17.9" height="22.3" fill="#c94f4f"/>
+<text x="2225.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2225.9 448)">turn 100</text>
+</g>
+<g><title>turn 101: total=86, relaxed mismatches=25, relaxed mismatch rate=29.1%</title>
+<rect x="2238.8" y="346.7" width="17.9" height="83.3" fill="#d9e2ec"/>
+<rect x="2238.8" y="405.8" width="17.9" height="24.2" fill="#c94f4f"/>
+<text x="2247.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2247.8 448)">turn 101</text>
+</g>
+<g><title>turn 102: total=60, relaxed mismatches=17, relaxed mismatch rate=28.3%</title>
+<rect x="2260.8" y="371.9" width="17.9" height="58.1" fill="#d9e2ec"/>
+<rect x="2260.8" y="413.5" width="17.9" height="16.5" fill="#c94f4f"/>
+<text x="2269.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2269.7 448)">turn 102</text>
+</g>
+<g><title>turn 103: total=78, relaxed mismatches=24, relaxed mismatch rate=30.8%</title>
+<rect x="2282.7" y="354.5" width="17.9" height="75.5" fill="#d9e2ec"/>
+<rect x="2282.7" y="406.8" width="17.9" height="23.2" fill="#c94f4f"/>
+<text x="2291.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2291.6 448)">turn 103</text>
+</g>
+<g><title>turn 104: total=51, relaxed mismatches=8, relaxed mismatch rate=15.7%</title>
+<rect x="2304.6" y="380.6" width="17.9" height="49.4" fill="#d9e2ec"/>
+<rect x="2304.6" y="422.3" width="17.9" height="7.7" fill="#c94f4f"/>
+<text x="2313.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2313.5 448)">turn 104</text>
+</g>
+<g><title>turn 105: total=67, relaxed mismatches=21, relaxed mismatch rate=31.3%</title>
+<rect x="2326.5" y="365.1" width="17.9" height="64.9" fill="#d9e2ec"/>
+<rect x="2326.5" y="409.7" width="17.9" height="20.3" fill="#c94f4f"/>
+<text x="2335.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2335.4 448)">turn 105</text>
+</g>
+<g><title>turn 106: total=67, relaxed mismatches=13, relaxed mismatch rate=19.4%</title>
+<rect x="2348.4" y="365.1" width="17.9" height="64.9" fill="#d9e2ec"/>
+<rect x="2348.4" y="417.4" width="17.9" height="12.6" fill="#c94f4f"/>
+<text x="2357.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2357.3 448)">turn 106</text>
+</g>
+<g><title>turn 107: total=62, relaxed mismatches=18, relaxed mismatch rate=29.0%</title>
+<rect x="2370.3" y="370.0" width="17.9" height="60.0" fill="#d9e2ec"/>
+<rect x="2370.3" y="412.6" width="17.9" height="17.4" fill="#c94f4f"/>
+<text x="2379.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2379.2 448)">turn 107</text>
+</g>
+<g><title>turn 108: total=56, relaxed mismatches=15, relaxed mismatch rate=26.8%</title>
+<rect x="2392.2" y="375.8" width="17.9" height="54.2" fill="#d9e2ec"/>
+<rect x="2392.2" y="415.5" width="17.9" height="14.5" fill="#c94f4f"/>
+<text x="2401.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2401.2 448)">turn 108</text>
+</g>
+<g><title>turn 109: total=55, relaxed mismatches=22, relaxed mismatch rate=40.0%</title>
+<rect x="2414.1" y="376.7" width="17.9" height="53.3" fill="#d9e2ec"/>
+<rect x="2414.1" y="408.7" width="17.9" height="21.3" fill="#c94f4f"/>
+<text x="2423.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2423.1 448)">turn 109</text>
+</g>
+<g><title>turn 110: total=42, relaxed mismatches=17, relaxed mismatch rate=40.5%</title>
+<rect x="2436.0" y="389.3" width="17.9" height="40.7" fill="#d9e2ec"/>
+<rect x="2436.0" y="413.5" width="17.9" height="16.5" fill="#c94f4f"/>
+<text x="2445.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2445.0 448)">turn 110</text>
+</g>
+<g><title>turn 111: total=52, relaxed mismatches=12, relaxed mismatch rate=23.1%</title>
+<rect x="2457.9" y="379.6" width="17.9" height="50.4" fill="#d9e2ec"/>
+<rect x="2457.9" y="418.4" width="17.9" height="11.6" fill="#c94f4f"/>
+<text x="2466.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2466.9 448)">turn 111</text>
+</g>
+<g><title>turn 112: total=45, relaxed mismatches=10, relaxed mismatch rate=22.2%</title>
+<rect x="2479.8" y="386.4" width="17.9" height="43.6" fill="#d9e2ec"/>
+<rect x="2479.8" y="420.3" width="17.9" height="9.7" fill="#c94f4f"/>
+<text x="2488.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2488.8 448)">turn 112</text>
+</g>
+<g><title>turn 113: total=52, relaxed mismatches=11, relaxed mismatch rate=21.2%</title>
+<rect x="2501.7" y="379.6" width="17.9" height="50.4" fill="#d9e2ec"/>
+<rect x="2501.7" y="419.3" width="17.9" height="10.7" fill="#c94f4f"/>
+<text x="2510.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2510.7 448)">turn 113</text>
+</g>
+<g><title>turn 114: total=51, relaxed mismatches=11, relaxed mismatch rate=21.6%</title>
+<rect x="2523.6" y="380.6" width="17.9" height="49.4" fill="#d9e2ec"/>
+<rect x="2523.6" y="419.3" width="17.9" height="10.7" fill="#c94f4f"/>
+<text x="2532.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2532.6 448)">turn 114</text>
+</g>
+<g><title>turn 115: total=47, relaxed mismatches=15, relaxed mismatch rate=31.9%</title>
+<rect x="2545.5" y="384.5" width="17.9" height="45.5" fill="#d9e2ec"/>
+<rect x="2545.5" y="415.5" width="17.9" height="14.5" fill="#c94f4f"/>
+<text x="2554.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2554.5 448)">turn 115</text>
+</g>
+<g><title>turn 116: total=39, relaxed mismatches=10, relaxed mismatch rate=25.6%</title>
+<rect x="2567.5" y="392.2" width="17.9" height="37.8" fill="#d9e2ec"/>
+<rect x="2567.5" y="420.3" width="17.9" height="9.7" fill="#c94f4f"/>
+<text x="2576.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2576.4 448)">turn 116</text>
+</g>
+<g><title>turn 117: total=47, relaxed mismatches=11, relaxed mismatch rate=23.4%</title>
+<rect x="2589.4" y="384.5" width="17.9" height="45.5" fill="#d9e2ec"/>
+<rect x="2589.4" y="419.3" width="17.9" height="10.7" fill="#c94f4f"/>
+<text x="2598.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2598.3 448)">turn 117</text>
+</g>
+<g><title>turn 118: total=30, relaxed mismatches=7, relaxed mismatch rate=23.3%</title>
+<rect x="2611.3" y="400.9" width="17.9" height="29.1" fill="#d9e2ec"/>
+<rect x="2611.3" y="423.2" width="17.9" height="6.8" fill="#c94f4f"/>
+<text x="2620.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2620.2 448)">turn 118</text>
+</g>
+<g><title>turn 119: total=40, relaxed mismatches=9, relaxed mismatch rate=22.5%</title>
+<rect x="2633.2" y="391.3" width="17.9" height="38.7" fill="#d9e2ec"/>
+<rect x="2633.2" y="421.3" width="17.9" height="8.7" fill="#c94f4f"/>
+<text x="2642.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2642.1 448)">turn 119</text>
+</g>
+<g><title>turn 120: total=31, relaxed mismatches=8, relaxed mismatch rate=25.8%</title>
+<rect x="2655.1" y="400.0" width="17.9" height="30.0" fill="#d9e2ec"/>
+<rect x="2655.1" y="422.3" width="17.9" height="7.7" fill="#c94f4f"/>
+<text x="2664.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2664.0 448)">turn 120</text>
+</g>
+<g><title>turn 121: total=37, relaxed mismatches=11, relaxed mismatch rate=29.7%</title>
+<rect x="2677.0" y="394.2" width="17.9" height="35.8" fill="#d9e2ec"/>
+<rect x="2677.0" y="419.3" width="17.9" height="10.7" fill="#c94f4f"/>
+<text x="2685.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2685.9 448)">turn 121</text>
+</g>
+<g><title>turn 122: total=39, relaxed mismatches=8, relaxed mismatch rate=20.5%</title>
+<rect x="2698.9" y="392.2" width="17.9" height="37.8" fill="#d9e2ec"/>
+<rect x="2698.9" y="422.3" width="17.9" height="7.7" fill="#c94f4f"/>
+<text x="2707.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2707.9 448)">turn 122</text>
+</g>
+<g><title>turn 123: total=36, relaxed mismatches=12, relaxed mismatch rate=33.3%</title>
+<rect x="2720.8" y="395.1" width="17.9" height="34.9" fill="#d9e2ec"/>
+<rect x="2720.8" y="418.4" width="17.9" height="11.6" fill="#c94f4f"/>
+<text x="2729.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2729.8 448)">turn 123</text>
+</g>
+<g><title>turn 124: total=32, relaxed mismatches=7, relaxed mismatch rate=21.9%</title>
+<rect x="2742.7" y="399.0" width="17.9" height="31.0" fill="#d9e2ec"/>
+<rect x="2742.7" y="423.2" width="17.9" height="6.8" fill="#c94f4f"/>
+<text x="2751.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2751.7 448)">turn 124</text>
+</g>
+<g><title>turn 125: total=42, relaxed mismatches=12, relaxed mismatch rate=28.6%</title>
+<rect x="2764.6" y="389.3" width="17.9" height="40.7" fill="#d9e2ec"/>
+<rect x="2764.6" y="418.4" width="17.9" height="11.6" fill="#c94f4f"/>
+<text x="2773.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2773.6 448)">turn 125</text>
+</g>
+<g><title>turn 126: total=23, relaxed mismatches=3, relaxed mismatch rate=13.0%</title>
+<rect x="2786.5" y="407.7" width="17.9" height="22.3" fill="#d9e2ec"/>
+<rect x="2786.5" y="427.1" width="17.9" height="2.9" fill="#c94f4f"/>
+<text x="2795.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2795.5 448)">turn 126</text>
+</g>
+<g><title>turn 127: total=31, relaxed mismatches=10, relaxed mismatch rate=32.3%</title>
+<rect x="2808.4" y="400.0" width="17.9" height="30.0" fill="#d9e2ec"/>
+<rect x="2808.4" y="420.3" width="17.9" height="9.7" fill="#c94f4f"/>
+<text x="2817.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2817.4 448)">turn 127</text>
+</g>
+<g><title>turn 128: total=23, relaxed mismatches=3, relaxed mismatch rate=13.0%</title>
+<rect x="2830.3" y="407.7" width="17.9" height="22.3" fill="#d9e2ec"/>
+<rect x="2830.3" y="427.1" width="17.9" height="2.9" fill="#c94f4f"/>
+<text x="2839.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2839.3 448)">turn 128</text>
+</g>
+<g><title>turn 129: total=28, relaxed mismatches=4, relaxed mismatch rate=14.3%</title>
+<rect x="2852.3" y="402.9" width="17.9" height="27.1" fill="#d9e2ec"/>
+<rect x="2852.3" y="426.1" width="17.9" height="3.9" fill="#c94f4f"/>
+<text x="2861.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2861.2 448)">turn 129</text>
+</g>
+<g><title>turn 130: total=30, relaxed mismatches=7, relaxed mismatch rate=23.3%</title>
+<rect x="2874.2" y="400.9" width="17.9" height="29.1" fill="#d9e2ec"/>
+<rect x="2874.2" y="423.2" width="17.9" height="6.8" fill="#c94f4f"/>
+<text x="2883.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2883.1 448)">turn 130</text>
+</g>
+<g><title>turn 131: total=29, relaxed mismatches=10, relaxed mismatch rate=34.5%</title>
+<rect x="2896.1" y="401.9" width="17.9" height="28.1" fill="#d9e2ec"/>
+<rect x="2896.1" y="420.3" width="17.9" height="9.7" fill="#c94f4f"/>
+<text x="2905.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2905.0 448)">turn 131</text>
+</g>
+<g><title>turn 132: total=20, relaxed mismatches=8, relaxed mismatch rate=40.0%</title>
+<rect x="2918.0" y="410.6" width="17.9" height="19.4" fill="#d9e2ec"/>
+<rect x="2918.0" y="422.3" width="17.9" height="7.7" fill="#c94f4f"/>
+<text x="2926.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2926.9 448)">turn 132</text>
+</g>
+<g><title>turn 133: total=34, relaxed mismatches=11, relaxed mismatch rate=32.4%</title>
+<rect x="2939.9" y="397.1" width="17.9" height="32.9" fill="#d9e2ec"/>
+<rect x="2939.9" y="419.3" width="17.9" height="10.7" fill="#c94f4f"/>
+<text x="2948.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2948.8 448)">turn 133</text>
+</g>
+<g><title>turn 134: total=13, relaxed mismatches=2, relaxed mismatch rate=15.4%</title>
+<rect x="2961.8" y="417.4" width="17.9" height="12.6" fill="#d9e2ec"/>
+<rect x="2961.8" y="428.1" width="17.9" height="1.9" fill="#c94f4f"/>
+<text x="2970.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2970.7 448)">turn 134</text>
+</g>
+<g><title>turn 135: total=24, relaxed mismatches=8, relaxed mismatch rate=33.3%</title>
+<rect x="2983.7" y="406.8" width="17.9" height="23.2" fill="#d9e2ec"/>
+<rect x="2983.7" y="422.3" width="17.9" height="7.7" fill="#c94f4f"/>
+<text x="2992.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 2992.7 448)">turn 135</text>
+</g>
+<g><title>turn 136: total=14, relaxed mismatches=2, relaxed mismatch rate=14.3%</title>
+<rect x="3005.6" y="416.4" width="17.9" height="13.6" fill="#d9e2ec"/>
+<rect x="3005.6" y="428.1" width="17.9" height="1.9" fill="#c94f4f"/>
+<text x="3014.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3014.6 448)">turn 136</text>
+</g>
+<g><title>turn 137: total=16, relaxed mismatches=4, relaxed mismatch rate=25.0%</title>
+<rect x="3027.5" y="414.5" width="17.9" height="15.5" fill="#d9e2ec"/>
+<rect x="3027.5" y="426.1" width="17.9" height="3.9" fill="#c94f4f"/>
+<text x="3036.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3036.5 448)">turn 137</text>
+</g>
+<g><title>turn 138: total=18, relaxed mismatches=2, relaxed mismatch rate=11.1%</title>
+<rect x="3049.4" y="412.6" width="17.9" height="17.4" fill="#d9e2ec"/>
+<rect x="3049.4" y="428.1" width="17.9" height="1.9" fill="#c94f4f"/>
+<text x="3058.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3058.4 448)">turn 138</text>
+</g>
+<g><title>turn 139: total=19, relaxed mismatches=5, relaxed mismatch rate=26.3%</title>
+<rect x="3071.3" y="411.6" width="17.9" height="18.4" fill="#d9e2ec"/>
+<rect x="3071.3" y="425.2" width="17.9" height="4.8" fill="#c94f4f"/>
+<text x="3080.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3080.3 448)">turn 139</text>
+</g>
+<g><title>turn 140: total=15, relaxed mismatches=3, relaxed mismatch rate=20.0%</title>
+<rect x="3093.2" y="415.5" width="17.9" height="14.5" fill="#d9e2ec"/>
+<rect x="3093.2" y="427.1" width="17.9" height="2.9" fill="#c94f4f"/>
+<text x="3102.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3102.2 448)">turn 140</text>
+</g>
+<g><title>turn 141: total=21, relaxed mismatches=6, relaxed mismatch rate=28.6%</title>
+<rect x="3115.1" y="409.7" width="17.9" height="20.3" fill="#d9e2ec"/>
+<rect x="3115.1" y="424.2" width="17.9" height="5.8" fill="#c94f4f"/>
+<text x="3124.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3124.1 448)">turn 141</text>
+</g>
+<g><title>turn 142: total=8, relaxed mismatches=5, relaxed mismatch rate=62.5%</title>
+<rect x="3137.1" y="422.3" width="17.9" height="7.7" fill="#d9e2ec"/>
+<rect x="3137.1" y="425.2" width="17.9" height="4.8" fill="#c94f4f"/>
+<text x="3146.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3146.0 448)">turn 142</text>
+</g>
+<g><title>turn 143: total=13, relaxed mismatches=3, relaxed mismatch rate=23.1%</title>
+<rect x="3159.0" y="417.4" width="17.9" height="12.6" fill="#d9e2ec"/>
+<rect x="3159.0" y="427.1" width="17.9" height="2.9" fill="#c94f4f"/>
+<text x="3167.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3167.9 448)">turn 143</text>
+</g>
+<g><title>turn 144: total=7, relaxed mismatches=2, relaxed mismatch rate=28.6%</title>
+<rect x="3180.9" y="423.2" width="17.9" height="6.8" fill="#d9e2ec"/>
+<rect x="3180.9" y="428.1" width="17.9" height="1.9" fill="#c94f4f"/>
+<text x="3189.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3189.8 448)">turn 144</text>
+</g>
+<g><title>turn 145: total=11, relaxed mismatches=3, relaxed mismatch rate=27.3%</title>
+<rect x="3202.8" y="419.3" width="17.9" height="10.7" fill="#d9e2ec"/>
+<rect x="3202.8" y="427.1" width="17.9" height="2.9" fill="#c94f4f"/>
+<text x="3211.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3211.7 448)">turn 145</text>
+</g>
+<g><title>turn 146: total=10, relaxed mismatches=2, relaxed mismatch rate=20.0%</title>
+<rect x="3224.7" y="420.3" width="17.9" height="9.7" fill="#d9e2ec"/>
+<rect x="3224.7" y="428.1" width="17.9" height="1.9" fill="#c94f4f"/>
+<text x="3233.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3233.6 448)">turn 146</text>
+</g>
+<g><title>turn 147: total=12, relaxed mismatches=6, relaxed mismatch rate=50.0%</title>
+<rect x="3246.6" y="418.4" width="17.9" height="11.6" fill="#d9e2ec"/>
+<rect x="3246.6" y="424.2" width="17.9" height="5.8" fill="#c94f4f"/>
+<text x="3255.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3255.5 448)">turn 147</text>
+</g>
+<g><title>turn 148: total=9, relaxed mismatches=4, relaxed mismatch rate=44.4%</title>
+<rect x="3268.5" y="421.3" width="17.9" height="8.7" fill="#d9e2ec"/>
+<rect x="3268.5" y="426.1" width="17.9" height="3.9" fill="#c94f4f"/>
+<text x="3277.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3277.5 448)">turn 148</text>
+</g>
+<g><title>turn 149: total=15, relaxed mismatches=4, relaxed mismatch rate=26.7%</title>
+<rect x="3290.4" y="415.5" width="17.9" height="14.5" fill="#d9e2ec"/>
+<rect x="3290.4" y="426.1" width="17.9" height="3.9" fill="#c94f4f"/>
+<text x="3299.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3299.4 448)">turn 149</text>
+</g>
+<g><title>turn 150: total=6, relaxed mismatches=1, relaxed mismatch rate=16.7%</title>
+<rect x="3312.3" y="424.2" width="17.9" height="5.8" fill="#d9e2ec"/>
+<rect x="3312.3" y="429.0" width="17.9" height="1.0" fill="#c94f4f"/>
+<text x="3321.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3321.3 448)">turn 150</text>
+</g>
+<g><title>turn 151: total=8, relaxed mismatches=4, relaxed mismatch rate=50.0%</title>
+<rect x="3334.2" y="422.3" width="17.9" height="7.7" fill="#d9e2ec"/>
+<rect x="3334.2" y="426.1" width="17.9" height="3.9" fill="#c94f4f"/>
+<text x="3343.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3343.2 448)">turn 151</text>
+</g>
+<g><title>turn 152: total=3, relaxed mismatches=2, relaxed mismatch rate=66.7%</title>
+<rect x="3356.1" y="427.1" width="17.9" height="2.9" fill="#d9e2ec"/>
+<rect x="3356.1" y="428.1" width="17.9" height="1.9" fill="#c94f4f"/>
+<text x="3365.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3365.1 448)">turn 152</text>
+</g>
+<g><title>turn 153: total=3, relaxed mismatches=1, relaxed mismatch rate=33.3%</title>
+<rect x="3378.0" y="427.1" width="17.9" height="2.9" fill="#d9e2ec"/>
+<rect x="3378.0" y="429.0" width="17.9" height="1.0" fill="#c94f4f"/>
+<text x="3387.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3387.0 448)">turn 153</text>
+</g>
+<g><title>turn 154: total=4, relaxed mismatches=2, relaxed mismatch rate=50.0%</title>
+<rect x="3399.9" y="426.1" width="17.9" height="3.9" fill="#d9e2ec"/>
+<rect x="3399.9" y="428.1" width="17.9" height="1.9" fill="#c94f4f"/>
+<text x="3408.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3408.9 448)">turn 154</text>
+</g>
+<g><title>turn 155: total=6, relaxed mismatches=1, relaxed mismatch rate=16.7%</title>
+<rect x="3421.8" y="424.2" width="17.9" height="5.8" fill="#d9e2ec"/>
+<rect x="3421.8" y="429.0" width="17.9" height="1.0" fill="#c94f4f"/>
+<text x="3430.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3430.8 448)">turn 155</text>
+</g>
+<g><title>turn 156: total=7, relaxed mismatches=1, relaxed mismatch rate=14.3%</title>
+<rect x="3443.8" y="423.2" width="17.9" height="6.8" fill="#d9e2ec"/>
+<rect x="3443.8" y="429.0" width="17.9" height="1.0" fill="#c94f4f"/>
+<text x="3452.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3452.7 448)">turn 156</text>
+</g>
+<g><title>turn 157: total=8, relaxed mismatches=2, relaxed mismatch rate=25.0%</title>
+<rect x="3465.7" y="422.3" width="17.9" height="7.7" fill="#d9e2ec"/>
+<rect x="3465.7" y="428.1" width="17.9" height="1.9" fill="#c94f4f"/>
+<text x="3474.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3474.6 448)">turn 157</text>
+</g>
+<g><title>turn 158: total=3, relaxed mismatches=1, relaxed mismatch rate=33.3%</title>
+<rect x="3487.6" y="427.1" width="17.9" height="2.9" fill="#d9e2ec"/>
+<rect x="3487.6" y="429.0" width="17.9" height="1.0" fill="#c94f4f"/>
+<text x="3496.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3496.5 448)">turn 158</text>
+</g>
+<g><title>turn 159: total=5, relaxed mismatches=3, relaxed mismatch rate=60.0%</title>
+<rect x="3509.5" y="425.2" width="17.9" height="4.8" fill="#d9e2ec"/>
+<rect x="3509.5" y="427.1" width="17.9" height="2.9" fill="#c94f4f"/>
+<text x="3518.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3518.4 448)">turn 159</text>
+</g>
+<g><title>turn 160: total=4, relaxed mismatches=2, relaxed mismatch rate=50.0%</title>
+<rect x="3531.4" y="426.1" width="17.9" height="3.9" fill="#d9e2ec"/>
+<rect x="3531.4" y="428.1" width="17.9" height="1.9" fill="#c94f4f"/>
+<text x="3540.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3540.3 448)">turn 160</text>
+</g>
+<g><title>turn 161: total=1, relaxed mismatches=1, relaxed mismatch rate=100.0%</title>
+<rect x="3553.3" y="429.0" width="17.9" height="1.0" fill="#d9e2ec"/>
+<rect x="3553.3" y="429.0" width="17.9" height="1.0" fill="#c94f4f"/>
+<text x="3562.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3562.2 448)">turn 161</text>
+</g>
+<g><title>turn 162: total=6, relaxed mismatches=5, relaxed mismatch rate=83.3%</title>
+<rect x="3575.2" y="424.2" width="17.9" height="5.8" fill="#d9e2ec"/>
+<rect x="3575.2" y="425.2" width="17.9" height="4.8" fill="#c94f4f"/>
+<text x="3584.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3584.2 448)">turn 162</text>
+</g>
+<g><title>turn 163: total=3, relaxed mismatches=0, relaxed mismatch rate=0.0%</title>
+<rect x="3597.1" y="427.1" width="17.9" height="2.9" fill="#d9e2ec"/>
+<rect x="3597.1" y="430.0" width="17.9" height="0.0" fill="#c94f4f"/>
+<text x="3606.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3606.1 448)">turn 163</text>
+</g>
+<g><title>turn 164: total=6, relaxed mismatches=4, relaxed mismatch rate=66.7%</title>
+<rect x="3619.0" y="424.2" width="17.9" height="5.8" fill="#d9e2ec"/>
+<rect x="3619.0" y="426.1" width="17.9" height="3.9" fill="#c94f4f"/>
+<text x="3628.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3628.0 448)">turn 164</text>
+</g>
+<g><title>turn 165: total=3, relaxed mismatches=1, relaxed mismatch rate=33.3%</title>
+<rect x="3640.9" y="427.1" width="17.9" height="2.9" fill="#d9e2ec"/>
+<rect x="3640.9" y="429.0" width="17.9" height="1.0" fill="#c94f4f"/>
+<text x="3649.9" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3649.9 448)">turn 165</text>
+</g>
+<g><title>turn 166: total=3, relaxed mismatches=1, relaxed mismatch rate=33.3%</title>
+<rect x="3662.8" y="427.1" width="17.9" height="2.9" fill="#d9e2ec"/>
+<rect x="3662.8" y="429.0" width="17.9" height="1.0" fill="#c94f4f"/>
+<text x="3671.8" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3671.8 448)">turn 166</text>
+</g>
+<g><title>turn 167: total=3, relaxed mismatches=2, relaxed mismatch rate=66.7%</title>
+<rect x="3684.7" y="427.1" width="17.9" height="2.9" fill="#d9e2ec"/>
+<rect x="3684.7" y="428.1" width="17.9" height="1.9" fill="#c94f4f"/>
+<text x="3693.7" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3693.7 448)">turn 167</text>
+</g>
+<g><title>turn 168: total=3, relaxed mismatches=2, relaxed mismatch rate=66.7%</title>
+<rect x="3706.6" y="427.1" width="17.9" height="2.9" fill="#d9e2ec"/>
+<rect x="3706.6" y="428.1" width="17.9" height="1.9" fill="#c94f4f"/>
+<text x="3715.6" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3715.6 448)">turn 168</text>
+</g>
+<g><title>turn 169: total=1, relaxed mismatches=1, relaxed mismatch rate=100.0%</title>
+<rect x="3728.6" y="429.0" width="17.9" height="1.0" fill="#d9e2ec"/>
+<rect x="3728.6" y="429.0" width="17.9" height="1.0" fill="#c94f4f"/>
+<text x="3737.5" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3737.5 448)">turn 169</text>
+</g>
+<g><title>turn 170: total=5, relaxed mismatches=4, relaxed mismatch rate=80.0%</title>
+<rect x="3750.5" y="425.2" width="17.9" height="4.8" fill="#d9e2ec"/>
+<rect x="3750.5" y="426.1" width="17.9" height="3.9" fill="#c94f4f"/>
+<text x="3759.4" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3759.4 448)">turn 170</text>
+</g>
+<g><title>turn 171: total=3, relaxed mismatches=1, relaxed mismatch rate=33.3%</title>
+<rect x="3772.4" y="427.1" width="17.9" height="2.9" fill="#d9e2ec"/>
+<rect x="3772.4" y="429.0" width="17.9" height="1.0" fill="#c94f4f"/>
+<text x="3781.3" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3781.3 448)">turn 171</text>
+</g>
+<g><title>turn 172: total=4, relaxed mismatches=3, relaxed mismatch rate=75.0%</title>
+<rect x="3794.3" y="426.1" width="17.9" height="3.9" fill="#d9e2ec"/>
+<rect x="3794.3" y="427.1" width="17.9" height="2.9" fill="#c94f4f"/>
+<text x="3803.2" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3803.2 448)">turn 172</text>
+</g>
+<g><title>turn 173: total=1, relaxed mismatches=0, relaxed mismatch rate=0.0%</title>
+<rect x="3816.2" y="429.0" width="17.9" height="1.0" fill="#d9e2ec"/>
+<rect x="3816.2" y="430.0" width="17.9" height="0.0" fill="#c94f4f"/>
+<text x="3825.1" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3825.1 448)">turn 173</text>
+</g>
+<g><title>turn 174: total=1, relaxed mismatches=1, relaxed mismatch rate=100.0%</title>
+<rect x="3838.1" y="429.0" width="17.9" height="1.0" fill="#d9e2ec"/>
+<rect x="3838.1" y="429.0" width="17.9" height="1.0" fill="#c94f4f"/>
+<text x="3847.0" y="448" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" transform="rotate(65 3847.0 448)">turn 174</text>
+</g>
+<rect x="70" y="470" width="14" height="14" fill="#d9e2ec"/><text x="90" y="482" font-family="Arial, sans-serif" font-size="12">reviewed model decisions</text>
+<rect x="280" y="470" width="14" height="14" fill="#c94f4f"/><text x="300" y="482" font-family="Arial, sans-serif" font-size="12">relaxed mismatches vs CHAGA</text>
+</svg>

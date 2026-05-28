@@ -1084,9 +1084,29 @@ Review:
   - Medium snapshot at epoch 1 batch 2000: 256,000 streamed train examples, validation original relaxed `0.522811`, top-1 `0.445115`, top-3 `0.581243`, PLAY relaxed `0.538741`. Improving, but still below target and not deployable.
   - Copied the medium metrics JSON locally. The checkpoint copy was incomplete and failed `torch.load`, so the corrupt local partial was deleted; the PVC checkpoint remains authoritative.
   - Throughput diagnosis: single-worker streaming replay conversion was starving the L40. Added sharded multi-worker streaming support and `--train-num-workers 4` to the next L40 relaunch.
+  - Multi-worker `20260527c` medium snapshot at epoch 1 batch 1000: 128,000 streamed train examples, validation original relaxed `0.454112`, PLAY relaxed `0.473432`. This confirms the worker relaunch is functional but remains far below target.
+  - Multi-worker `20260527c` medium snapshot at epoch 1 batch 2000: 256,000 streamed train examples, validation original relaxed `0.515825`, top-1 `0.435376`, top-3 `0.576585`, PLAY relaxed `0.531718`. Still below target; continue training.
+  - Replaced `20260527c` with `20260527d` because the `c` stream order still showed zero teacher loss in early batches; `d` repeats CHAGA-reviewed train rows first and then streams the full all-player `>2300` corpus.
+  - `20260527d` medium snapshot at epoch 1 batch 1000: train teacher loss `1.370871`, validation original relaxed `0.509474`, PLAY relaxed `0.508661`.
+  - `20260527d` medium snapshot at epoch 1 batch 6000: 768,000 streamed train examples, validation original relaxed `0.583254`, top-1 `0.501217`, top-3 `0.647295`, PLAY relaxed `0.608380`. This is improving and better than the deterministic baseline, but still below the deployment target.
 - [ ] After training, visualize model-vs-CHAGA results before deployment.
   - Include turn-level mismatch/match graphs and action-type slices for PLAY, Chi, Peng/Pong, Gang/Kang, Hu, and Pass.
   - Use the corrected metric: model prediction vs original CHAGA candidates, first-six PLAY top-3 relaxed, otherwise top-1.
 - [ ] After a checkpoint is selected, integrate it into the Chrome plugin/local model path.
   - Verify the plugin correctly identifies live chi, pong/peng, kang/gang, and hu option windows.
   - Keep Hu blocked unless the fan calculator proves base fan >=8 with flowers excluded.
+
+### Mahjong-algorithm side baseline and mismatch graph
+
+- [x] Benchmark a deterministic `summerinsects/mahjong-algorithm`-style baseline against CHAGA review candidates.
+  - Use the local PyMahjongGB/mahjong-algorithm fan and shanten machinery through the existing Lawlorentz effective-tile scorer.
+  - Compare the baseline's predicted action against original CHAGA candidate strings; first-six `PLAY` rows accept top-3, all other rows require top-1.
+  - Stratify by decision/action family so chi, peng/pong, gang/kang, hu, pass, and play failures are visible.
+- [x] Generate turn-level mismatch graph artifacts for the basic baseline.
+  - Save CSV, SVG, and JSON summary under `docs/figures`.
+  - Use held-out CHAGA validation/test rows, not training rows, as the main diagnostic.
+- [x] Use the baseline result to decide whether Mortal-style value learning or Transformer-with-rule-features is the better next side experiment.
+  - Mortal-relevant idea: keep exact legal masks and rule features, but add a dueling Q/value head and offline CQL-style regularization.
+  - LuckyJ-relevant idea: keep this as a later research branch because regret/search-assisted online adaptation is much heavier than the current supervised/RL pipeline.
+  - Result: the deterministic mahjong-algorithm baseline is strong on `HU`, `PENG`, and `CHI`, but weak on `PLAY` and `GANG`; use it as explicit rule/context features and tactical reranking, not as the main policy.
+  - Held-out CHAGA val+test result: 19,645 reviewed states, top-1 `0.459252`, top-3 `0.618783`, relaxed `0.546500`; `PLAY` relaxed `0.505250`, `CHI` relaxed `0.908108`, `PENG` relaxed `0.951662`, `HU` relaxed `1.0`, `GANG` relaxed `0.096774`.
