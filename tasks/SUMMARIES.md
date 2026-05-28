@@ -265,6 +265,13 @@ Added live result recording to the read-only Tziakcha advisor service. `AdvisorS
 # 2026-05-27 - Mortal Rule-Q Side Experiment Design
 
 - User approved starting from the mahjong-algorithm baseline and adding Mortal/LuckyJ-style training ideas on the collected `>2300` tziakcha corpus.
+
+# 2026-05-28 Tightened CHAGA Finetune Target
+
+- Stopped the `mcr-transformer-l40-finetune-medhard-20260528a` job because it still used the rejected top-5 / first-six relaxed target assumptions.
+- Changed CHAGA review targets so training/evaluation uses top-1 everywhere except a player's first four `PLAY` decisions, where top-3 is accepted; hard-example mining no longer treats top-5 as a softer mismatch bucket.
+- Built the stricter CHAGA02-08 `>2400` reviewed corpus from the cached-review `>2300` corpus: 3,576 records, 7,612 train-player slots, zero below-threshold seats, and a session split with 67,776 train, 7,701 validation, and 8,253 test reviewed examples after corpus-gate loading.
+- Launched corrected Kubernetes-only single-L40 job `mcr-transformer-l40-finetune-medhard-20260528b` on `rci-tide-gpu-14.sdsu.edu`; it passed the in-pod corpus gate and is evaluating the frozen medium checkpoint as the measured `>2400` baseline before finetuning.
 - Wrote `docs/superpowers/specs/2026-05-27-mortal-rule-q-design.md`.
 - Selected design: create a separate `mortal_rule_q` side trainer with a Transformer-dueling-Q candidate scorer, CQL-style offline regularization, CHAGA soft/accepted-set supervision, and mahjong-algorithm effective-tile prior features.
 - Deferred full LuckyJ-style regret/search because it is too large for this phase; only the practical LuckyJ idea of using rule/search returns as model features is included.

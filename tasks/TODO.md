@@ -1163,8 +1163,9 @@ Review:
     - Filtered corpus: 3,576 records, 7,612 train-player slots, zero below-threshold seats.
     - Session split: train 67,776 reviewed examples / 195 sessions, validation 7,701 / 24 sessions, test 8,253 / 24 sessions.
     - Corpus gate: zero unattached audit targets, zero missing teacher distributions, zero candidate truncation, and zero accepted Hu outside the legal Hu gate.
-  - [ ] Launch a Kubernetes-only `NVIDIA-L40` finetune job from `models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527d_plateau_e2b1000.pt`, with low LR, accepted-set loss, small soft-teacher loss, hard-example weights, and frequent validation.
-    - Next job: `mcr-transformer-l40-finetune-medhard-20260528b`, using the `>2400` split and measured medium-checkpoint baseline on that split.
+  - [x] Launch a Kubernetes-only `NVIDIA-L40` finetune job from `models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527d_plateau_e2b1000.pt`, with low LR, accepted-set loss, small soft-teacher loss, hard-example weights, and frequent validation.
+    - Job: `mcr-transformer-l40-finetune-medhard-20260528b`, using the `>2400` split and measured medium-checkpoint baseline on that split.
+    - Pod scheduled on `rci-tide-gpu-14.sdsu.edu`; in-pod corpus gate passed through train/val/test with zero unattached audit targets, zero missing teacher distributions, zero candidate truncation, and zero accepted Hu outside the legal Hu gate.
   - [ ] Gate promotion on beating the measured `>2400` medium-checkpoint relaxed baseline by `0.003` without degrading PLAY relaxed by more than `0.003`, with candidate truncation count zero and Hu safety unchanged.
   - Follow-up targets: two-stage claim plus forced-discard ranking, BUGANG candidate support, and recommendation telemetry.
 - [x] Deploy the extracted checkpoint for Chrome play testing.
