@@ -38,18 +38,15 @@ def classify_prediction_row(row: dict) -> str:
     predicted = normalize_teacher_action(row.get("predicted_normalized") or row.get("predicted_action"))
     top1 = normalize_teacher_action(row.get("chaga_top1_action"))
     top3 = split_actions(row.get("chaga_top3_actions"))
-    top5 = split_actions(row.get("chaga_top5_actions")) or top3
     if not predicted or not top1:
         return "unmapped"
     if action_family(predicted) != action_family(top1):
         return "wrong_family"
     if action_family(top1) in {"CHI", "PENG", "GANG", "BUGANG", "HU", "PASS"}:
         return "claim_or_hu_error"
-    if predicted in top5:
-        return "same_family_top5_rank_2_5"
     if predicted in top3 and not bool(row.get("teacher_accept_top3")):
         return "top3_but_not_relaxed"
-    return "same_family_not_top5"
+    return "same_family_not_top3"
 
 
 def hard_example_weight(row: dict) -> float:
@@ -57,11 +54,10 @@ def hard_example_weight(row: dict) -> float:
     weights = {
         "accepted": 1.0,
         "unmapped": 2.0,
-        "same_family_top5_rank_2_5": 3.0,
         "top3_but_not_relaxed": 3.0,
         "wrong_family": 4.0,
         "claim_or_hu_error": 4.0,
-        "same_family_not_top5": 6.0,
+        "same_family_not_top3": 6.0,
     }
     return weights.get(error_type, 2.0)
 

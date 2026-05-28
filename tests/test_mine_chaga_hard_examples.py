@@ -22,7 +22,7 @@ def test_classify_prediction_row_accepts_relaxed_match():
     assert classify_prediction_row(row) == "accepted"
 
 
-def test_classify_prediction_row_separates_wrong_family_and_same_family_not_top5():
+def test_classify_prediction_row_separates_wrong_family_and_same_family_not_top3():
     wrong_family = {
         "predicted_normalized": "PENG",
         "chaga_top1_action": "PLAY W1",
@@ -30,12 +30,13 @@ def test_classify_prediction_row_separates_wrong_family_and_same_family_not_top5
         "relaxed_match": False,
     }
     same_family = {
-        "predicted_normalized": "PLAY B9",
+        "predicted_normalized": "PLAY W9",
         "chaga_top1_action": "PLAY W1",
         "chaga_top3_actions": "PLAY W1|PLAY W2|PLAY W3",
+        "chaga_top5_actions": "PLAY W1|PLAY W2|PLAY W3|PLAY W9|PLAY W5",
         "relaxed_match": False,
     }
 
     assert classify_prediction_row(wrong_family) == "wrong_family"
-    assert classify_prediction_row(same_family) == "same_family_not_top5"
+    assert classify_prediction_row(same_family) == "same_family_not_top3"
     assert hard_example_weight(same_family) > hard_example_weight(wrong_family)

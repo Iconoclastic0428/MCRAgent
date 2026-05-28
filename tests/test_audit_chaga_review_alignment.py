@@ -29,7 +29,7 @@ def test_actual_action_from_review_row_uses_tile_type_for_play_and_pass_for_zero
     assert actual_action_from_review_row({"r": 6, "v": 135}) == "Hu"
 
 
-def test_relaxed_candidate_match_counts_top3_only_for_first_six_discards():
+def test_relaxed_candidate_match_counts_top3_only_for_first_four_discards():
     candidates = [
         [9.0, "Play W1"],
         [8.0, "Play W2"],
@@ -37,8 +37,8 @@ def test_relaxed_candidate_match_counts_top3_only_for_first_six_discards():
         [6.0, "Play W4"],
     ]
 
-    assert relaxed_candidate_match("Play W3", candidates, play_ordinal=6)
-    assert not relaxed_candidate_match("Play W3", candidates, play_ordinal=7)
+    assert relaxed_candidate_match("Play W3", candidates, play_ordinal=4)
+    assert not relaxed_candidate_match("Play W3", candidates, play_ordinal=5)
     assert not relaxed_candidate_match("Play W4", candidates, play_ordinal=3)
     assert relaxed_candidate_match("Peng", [[1.0, "Peng"]], play_ordinal=None)
 

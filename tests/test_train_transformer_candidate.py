@@ -607,7 +607,7 @@ def test_collate_teacher_accept_mask_top1_only_for_non_relaxed_rows():
     assert batch["has_teacher_accept_set"].tolist() == [True]
 
 
-def test_collate_teacher_accept_mask_top3_for_first_six_play_rows():
+def test_collate_teacher_accept_mask_top3_for_first_four_play_rows():
     example = minimal_transformer_example(
         ["Play W1", "Play W2", "Play W3", "Play W4"],
         target_response="Play W1",
@@ -813,8 +813,8 @@ def test_load_review_target_lookup_keys_by_record_seat_request_and_normalized_re
         "seat": 2,
         "human_action": "Play W2",
         "state_actual_response": "PLAY W2",
-        "chaga_top5_candidates": [[3.0, "Play W2"]],
-        "play_ordinal": 6,
+        "chaga_top5_candidates": [[5.0, "Play W2"], [4.0, "Play W3"], [3.0, "Play W4"], [2.0, "Play W5"]],
+        "play_ordinal": 4,
         "checks": {
             "offered_tile_matches": True,
             "drawn_tile_matches": True,
@@ -836,9 +836,39 @@ def test_load_review_target_lookup_keys_by_record_seat_request_and_normalized_re
     lookup = load_review_target_lookup(audit_path)
 
     target = lookup(record_id="r1", player=2, request="2 W9", response="PLAY W2")
-    assert target == ReviewTarget([[3.0, "Play W2"]], accept_top3=True)
+    assert target == ReviewTarget(
+        [[5.0, "Play W2"], [4.0, "Play W3"], [3.0, "Play W4"]],
+        accept_top3=True,
+    )
     assert lookup(record_id="r1", player=2, request="2 W9", response="PLAY W2") is None
     assert lookup(record_id="r2", player=2, request="2 W9", response="PLAY W2") is None
+
+
+def test_load_review_target_lookup_uses_top1_after_first_four_play_rows(tmp_path):
+    audit_path = tmp_path / "audit.jsonl"
+    entry = {
+        "record_id": "r1",
+        "seat": 2,
+        "human_action": "Play W2",
+        "state_actual_response": "PLAY W2",
+        "chaga_top5_candidates": [[5.0, "Play W2"], [4.0, "Play W3"], [3.0, "Play W4"]],
+        "play_ordinal": 5,
+        "checks": {
+            "offered_tile_matches": True,
+            "drawn_tile_matches": True,
+            "current_actor_matches": True,
+            "window_matches": True,
+            "hand_size_mod_ok": True,
+            "top1_in_legal_mask": True,
+        },
+        "state_context": {"request": "2 W9"},
+    }
+    audit_path.write_text(json.dumps(entry, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    lookup = load_review_target_lookup(audit_path)
+
+    target = lookup(record_id="r1", player=2, request="2 W9", response="PLAY W2")
+    assert target == ReviewTarget([[5.0, "Play W2"]], accept_top3=False)
 
 
 def test_load_review_target_lookup_deduplicates_same_state_key(tmp_path):

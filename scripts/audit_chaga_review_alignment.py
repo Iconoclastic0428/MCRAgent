@@ -125,7 +125,7 @@ def relaxed_candidate_match(
     play_ordinal: int | None,
 ) -> bool:
     normalized = normalized_action(actual)
-    top_n = 3 if normalized.startswith("PLAY ") and play_ordinal is not None and play_ordinal <= 6 else 1
+    top_n = 3 if normalized.startswith("PLAY ") and play_ordinal is not None and play_ordinal <= 4 else 1
     return normalized in normalized_candidates(candidates, limit=top_n)
 
 
@@ -519,7 +519,7 @@ def build_audit_entry(
         "match_top1": actual_norm in normalized_candidates(candidates, limit=1),
         "match_top3": actual_norm in normalized_candidates(candidates, limit=3),
         "match_top5": actual_norm in normalized_candidates(candidates, limit=5),
-        "match_relaxed_first6_top3": relaxed_candidate_match(actual, candidates, play_ordinal=play_ordinal),
+        "match_relaxed_first4_top3": relaxed_candidate_match(actual, candidates, play_ordinal=play_ordinal),
         "checks": checks,
         "expected_context": expected,
         "state_context": {
@@ -546,8 +546,8 @@ def update_summary(summary: Counter[str], entry: dict) -> None:
         summary["match_top3"] += 1
     if entry["match_top5"]:
         summary["match_top5"] += 1
-    if entry["match_relaxed_first6_top3"]:
-        summary["match_relaxed_first6_top3"] += 1
+    if entry["match_relaxed_first4_top3"]:
+        summary["match_relaxed_first4_top3"] += 1
     for key, value in entry["checks"].items():
         if value:
             summary[f"check_pass:{key}"] += 1
@@ -587,7 +587,7 @@ def _rates_from_counts(counts: Counter[str]) -> dict:
         "top1": _rate(counts["match_top1"], total),
         "top3": _rate(counts["match_top3"], total),
         "top5": _rate(counts["match_top5"], total),
-        "relaxed_first6_top3_else_top1": _rate(counts["match_relaxed_first6_top3"], total),
+        "relaxed_first4_top3_else_top1": _rate(counts["match_relaxed_first4_top3"], total),
         "offered_tile_match": _rate(counts["check_pass:offered_tile_matches"], total),
         "drawn_tile_match": _rate(counts["check_pass:drawn_tile_matches"], total),
         "current_actor_match": _rate(counts["check_pass:current_actor_matches"], total),

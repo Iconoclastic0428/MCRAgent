@@ -1116,7 +1116,7 @@ Review:
 
 - [x] Benchmark a deterministic `summerinsects/mahjong-algorithm`-style baseline against CHAGA review candidates.
   - Use the local PyMahjongGB/mahjong-algorithm fan and shanten machinery through the existing Lawlorentz effective-tile scorer.
-  - Compare the baseline's predicted action against original CHAGA candidate strings; first-six `PLAY` rows accept top-3, all other rows require top-1.
+  - Compare the baseline's predicted action against original CHAGA candidate strings; first-four `PLAY` rows accept top-3, all other rows require top-1.
   - Stratify by decision/action family so chi, peng/pong, gang/kang, hu, pass, and play failures are visible.
 - [x] Generate turn-level mismatch graph artifacts for the basic baseline.
   - Save CSV, SVG, and JSON summary under `docs/figures`.
@@ -1158,9 +1158,14 @@ Review:
     - Coverage smoke on prepared train/val reviewed rows succeeded; the tiny-sample coverage gate failed as expected because it intentionally used only 64/32 examples.
     - Hard-example mining smoke on 3 prepared records produced 48 reviewed rows and 2 hard rows.
     - CLI finetune smoke loaded an initial checkpoint, applied 48 hard-example weights, and wrote the tiny finetune checkpoint/metrics.
-  - [x] Launch a Kubernetes-only `NVIDIA-L40` finetune job from `models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527d_plateau_e2b1000.pt`, with low LR, accepted-set loss, small soft-teacher loss, hard-example weights, and frequent validation.
-    - Job: `mcr-transformer-l40-finetune-medhard-20260528a`; pod scheduled on `rci-tide-gpu-14.sdsu.edu`.
-  - [ ] Gate promotion on beating relaxed `0.850429` without degrading PLAY relaxed below `0.850933`, with candidate truncation count zero and Hu safety unchanged.
+  - [x] Stop the rejected `20260528a` Kubernetes finetune because it used the old top-5 / first-six target assumptions.
+  - [x] Rebuild the reviewed finetune dataset at record-local CHAGA02-08 ELO `>2400`.
+    - Filtered corpus: 3,576 records, 7,612 train-player slots, zero below-threshold seats.
+    - Session split: train 67,776 reviewed examples / 195 sessions, validation 7,701 / 24 sessions, test 8,253 / 24 sessions.
+    - Corpus gate: zero unattached audit targets, zero missing teacher distributions, zero candidate truncation, and zero accepted Hu outside the legal Hu gate.
+  - [ ] Launch a Kubernetes-only `NVIDIA-L40` finetune job from `models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527d_plateau_e2b1000.pt`, with low LR, accepted-set loss, small soft-teacher loss, hard-example weights, and frequent validation.
+    - Next job: `mcr-transformer-l40-finetune-medhard-20260528b`, using the `>2400` split and measured medium-checkpoint baseline on that split.
+  - [ ] Gate promotion on beating the measured `>2400` medium-checkpoint relaxed baseline by `0.003` without degrading PLAY relaxed by more than `0.003`, with candidate truncation count zero and Hu safety unchanged.
   - Follow-up targets: two-stage claim plus forced-discard ranking, BUGANG candidate support, and recommendation telemetry.
 - [x] Deploy the extracted checkpoint for Chrome play testing.
   - Verified the local advisor service is running on `127.0.0.1:8765` with the extracted 768x12 checkpoint.

@@ -55,7 +55,7 @@ def row_from_example(example: TransformerExample) -> dict:
         "candidate_count": candidate_count,
         "turn_bucket": bucket_turn(int(example.turn)),
         "candidate_count_bucket": bucket_candidate_count(candidate_count),
-        "relaxed_region": "first_six_play" if bool(example.teacher_accept_top3) else "other",
+        "relaxed_region": "first_four_play" if bool(example.teacher_accept_top3) else "other",
     }
 
 

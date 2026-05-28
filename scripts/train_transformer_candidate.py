@@ -100,6 +100,9 @@ class ReviewTarget:
     accept_top3: bool = False
 
 
+FIRST_FOUR_PLAY_TOP3_MAX_ORDINAL = 4
+
+
 def action_response(action: int) -> str:
     return ACTION_RESPONSE_AGENT.action2response(int(action))
 
@@ -1209,7 +1212,9 @@ def load_review_target_lookup(path: Path) -> ReviewTargetLookup:
             if not _review_checks_pass(checks):
                 continue
             state_context = entry.get("state_context") or {}
-            candidates = entry.get("chaga_top5_candidates") or []
+            raw_candidates = entry.get("chaga_top5_candidates") or []
+            accept_top3 = _is_first_four_discard_review_entry(entry)
+            candidates = _review_training_candidates(raw_candidates, accept_top3=accept_top3)
             if not candidates:
                 continue
             turn_value = state_context.get("turn", entry.get("state_turn", entry.get("turn", "")))
@@ -1222,7 +1227,6 @@ def load_review_target_lookup(path: Path) -> ReviewTargetLookup:
             )
             if key in entries:
                 continue
-            accept_top3 = _is_first_six_discard_review_entry(entry)
             entries[key] = deque([ReviewTarget(candidates=candidates, accept_top3=accept_top3)])
     return ReviewTargetLookup(entries)
 
@@ -1243,7 +1247,14 @@ def _review_checks_pass(checks: dict) -> bool:
     return all(bool(checks.get(key)) for key in required)
 
 
-def _is_first_six_discard_review_entry(entry: dict) -> bool:
+def _review_training_candidates(candidates: list, *, accept_top3: bool) -> list:
+    """Keep only the CHAGA targets allowed by the current training metric."""
+
+    limit = 3 if accept_top3 else 1
+    return list(candidates[:limit])
+
+
+def _is_first_four_discard_review_entry(entry: dict) -> bool:
     action = normalize_teacher_action(str(entry.get("human_action") or entry.get("state_actual_response") or ""))
     if not action.startswith("PLAY "):
         return False
@@ -1251,7 +1262,7 @@ def _is_first_six_discard_review_entry(entry: dict) -> bool:
         ordinal = int(entry.get("play_ordinal") or 0)
     except (TypeError, ValueError):
         return False
-    return 1 <= ordinal <= 6
+    return 1 <= ordinal <= FIRST_FOUR_PLAY_TOP3_MAX_ORDINAL
 
 
 def split_examples(
