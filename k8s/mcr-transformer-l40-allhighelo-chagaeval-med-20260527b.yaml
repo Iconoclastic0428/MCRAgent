@@ -100,7 +100,7 @@ spec:
                 --dim-feedforward 3072 \
                 --dropout 0.15 \
                 --log-every-batches 1000 \
-                --eval-every-batches 3000 \
+                --eval-every-batches 1000 \
                 --out models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b.pt \
                 --metrics-out runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b_metrics.json
               python scripts/evaluate_transformer_chaga_review.py \
@@ -157,8 +157,8 @@ spec:
               ephemeral-storage: "0"
               nvidia.com/gpu: "1"
             limits:
-              cpu: "500m"
-              memory: 32Gi
+              cpu: "4"
+              memory: 64Gi
               ephemeral-storage: 50Gi
               nvidia.com/gpu: "1"
           volumeMounts:

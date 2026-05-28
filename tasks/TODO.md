@@ -1076,6 +1076,15 @@ Review:
   - Relaunched primary large job `mcr-transformer-l40-allhighelo-chagaeval-20260527b`, 1024x16, batch 96, `--eval-every-batches 5000`; scheduled on `rci-tide-gpu-05.sdsu.edu` (`NVIDIA-L40`).
   - Added a second single-L40 comparison job `mcr-transformer-l40-allhighelo-chagaeval-med-20260527b`, 768x12, batch 128, `--eval-every-batches 3000`; scheduled on `rci-tide-gpu-04.sdsu.edu` (`NVIDIA-L40`).
   - Resource requests had to be reduced to schedule additional L40 jobs through Kubernetes; this keeps the L40-only rule and avoids the NRP form.
+  - Follow-up correction: the first relaunch was CPU-limited (`1` CPU and `500m` CPU hard limits), so relaunch with low CPU requests but higher CPU limits and earlier `--eval-every-batches 1000` snapshots.
 - [ ] Monitor the two L40 jobs until the first validation snapshots appear, then copy metrics/checkpoints locally and compare CHAGA relaxed match.
   - Primary expected artifacts: `runs/transformer_candidate_allhighelo_chagaeval_l40_20260527b_metrics.json`, `models/transformer_candidate_allhighelo_chagaeval_l40_20260527b.pt`.
   - Medium expected artifacts: `runs/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b_metrics.json`, `models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527b.pt`.
+  - First medium snapshot at epoch 1 batch 1000: 128,000 streamed train examples, validation original relaxed `0.448290`, top-1 `0.378109`, top-3 `0.507569`, PLAY relaxed `0.472144`. This is below target and not deployable.
+  - Copied the medium metrics JSON locally. The checkpoint copy was incomplete and failed `torch.load`, so the corrupt local partial was deleted; the PVC checkpoint remains authoritative.
+- [ ] After training, visualize model-vs-CHAGA results before deployment.
+  - Include turn-level mismatch/match graphs and action-type slices for PLAY, Chi, Peng/Pong, Gang/Kang, Hu, and Pass.
+  - Use the corrected metric: model prediction vs original CHAGA candidates, first-six PLAY top-3 relaxed, otherwise top-1.
+- [ ] After a checkpoint is selected, integrate it into the Chrome plugin/local model path.
+  - Verify the plugin correctly identifies live chi, pong/peng, kang/gang, and hu option windows.
+  - Keep Hu blocked unless the fan calculator proves base fan >=8 with flowers excluded.
