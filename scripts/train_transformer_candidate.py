@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import math
 import random
@@ -18,7 +19,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+from torch.utils.data import DataLoader, Dataset, IterableDataset, WeightedRandomSampler
 
 
 LAWLORENTZ_DIR = Path(__file__).resolve().parents[1] / "external" / "Chinese-Standard-Mahjong-DRL"
@@ -65,6 +66,12 @@ BOTZONE_ACTION_TYPES = {
     "DEAL": 9,
 }
 TILE_IDS = {tile: index for index, tile in enumerate(FeatureAgent.TILE_LIST)}
+
+
+def open_text_maybe_gzip(path: Path):
+    if str(path).endswith(".gz"):
+        return gzip.open(path, "rt", encoding="utf-8-sig")
+    return path.open("r", encoding="utf-8-sig")
 
 
 @dataclass
@@ -793,6 +800,7 @@ def load_examples(
     teacher_temperature: float = 1.0,
     reviewed_only: bool = False,
     compute_rule_features: bool = True,
+    exclude_sessions: set[str] | None = None,
 ) -> tuple[list[TransformerExample], dict]:
     examples: list[TransformerExample] = []
     source_summaries: list[dict] = []
@@ -800,13 +808,16 @@ def load_examples(
     for path in paths:
         stats: Counter[str] = Counter()
         records = 0
-        with path.open("r", encoding="utf-8-sig") as src:
+        with open_text_maybe_gzip(path) as src:
             for line in src:
                 if not line.strip():
                     continue
                 if max_records_per_source is not None and records >= max_records_per_source:
                     break
                 record = json.loads(line)
+                if exclude_sessions and str(record.get("belongs") or "") in exclude_sessions:
+                    stats["excluded_session_records"] += 1
+                    continue
                 records += 1
                 try:
                     record_examples, record_stats = build_transformer_examples_from_record(
@@ -834,6 +845,78 @@ def load_examples(
         if max_examples is not None and len(examples) >= max_examples:
             break
     return examples, {"examples": len(examples), "source_summaries": source_summaries, "totals": dict(totals)}
+
+
+class TransformerStreamingDataset(IterableDataset):
+    """Build Transformer examples lazily from record JSONL files.
+
+    The full >2300-Elo tziakcha corpus is too large to materialize as
+    TransformerExample objects before each run. This dataset preserves the same
+    per-record conversion path while letting the training loop stream it.
+    """
+
+    def __init__(
+        self,
+        paths: list[Path],
+        *,
+        history_len: int,
+        max_records_per_source: int | None = None,
+        max_examples: int | None = None,
+        review_audit_jsonl: Path | None = None,
+        teacher_temperature: float = 1.0,
+        reviewed_only: bool = False,
+        require_teacher_distribution: bool = False,
+        compute_rule_features: bool = True,
+        exclude_sessions: set[str] | None = None,
+    ) -> None:
+        self.paths = [Path(path) for path in paths]
+        self.history_len = int(history_len)
+        self.max_records_per_source = max_records_per_source
+        self.max_examples = max_examples
+        self.review_audit_jsonl = Path(review_audit_jsonl) if review_audit_jsonl else None
+        self.teacher_temperature = float(teacher_temperature)
+        self.reviewed_only = bool(reviewed_only)
+        self.require_teacher_distribution = bool(require_teacher_distribution)
+        self.compute_rule_features = bool(compute_rule_features)
+        self.exclude_sessions = set(exclude_sessions or set())
+
+    def __iter__(self):
+        teacher_lookup = make_review_lookup(str(self.review_audit_jsonl)) if self.review_audit_jsonl else None
+        yielded = 0
+        for path in self.paths:
+            records = 0
+            with open_text_maybe_gzip(path) as src:
+                for line in src:
+                    if not line.strip():
+                        continue
+                    record = json.loads(line)
+                    if self.exclude_sessions and str(record.get("belongs") or "") in self.exclude_sessions:
+                        continue
+                    if self.max_records_per_source is not None and records >= self.max_records_per_source:
+                        break
+                    records += 1
+                    try:
+                        record_examples, _record_stats = build_transformer_examples_from_record(
+                            record,
+                            history_len=self.history_len,
+                            teacher_lookup=teacher_lookup,
+                            teacher_temperature=self.teacher_temperature,
+                            reviewed_only=self.reviewed_only,
+                            compute_rule_features=self.compute_rule_features,
+                        )
+                    except Exception:
+                        continue
+                    for example in record_examples:
+                        if (
+                            self.reviewed_only
+                            and self.require_teacher_distribution
+                            and not has_mapped_teacher_distribution(example)
+                        ):
+                            continue
+                        yield example
+                        yielded += 1
+                        if self.max_examples is not None and yielded >= self.max_examples:
+                            return
 
 
 def is_reviewed_example(example: TransformerExample) -> bool:
@@ -892,6 +975,8 @@ def validate_reviewed_training_args(args: argparse.Namespace) -> None:
         raise ValueError(f"reviewed-only CHAGA training requires --max-candidates {FeatureAgent.ACT_SIZE}")
     if getattr(args, "review_audit_jsonl", None) and args.max_candidates < FeatureAgent.ACT_SIZE:
         raise ValueError(f"CHAGA-reviewed training/evaluation requires --max-candidates {FeatureAgent.ACT_SIZE}")
+    if getattr(args, "stream_train", False) and getattr(args, "reviewed_batch_fraction", None) is not None:
+        raise ValueError("--reviewed-batch-fraction is not supported with --stream-train")
     if args.reviewed_batch_fraction is not None and not 0.0 <= args.reviewed_batch_fraction < 1.0:
         raise ValueError("--reviewed-batch-fraction must be in [0, 1)")
     reviewed_accept_set_loss_weight = getattr(args, "reviewed_accept_set_loss_weight", None)
@@ -1231,23 +1316,52 @@ def _metric_value(value: float | int | None, *, default: float) -> float:
     return numeric
 
 
+def load_session_id_file(path: str | None) -> set[str]:
+    if not path:
+        return set()
+    session_path = Path(path)
+    sessions: set[str] = set()
+    with session_path.open("r", encoding="utf-8-sig") as src:
+        for line in src:
+            value = line.strip()
+            if value and not value.startswith("#"):
+                sessions.add(value)
+    return sessions
+
+
 def train(args: argparse.Namespace) -> dict:
     validate_reviewed_training_args(args)
     seed = int(args.seed)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    exclude_sessions = load_session_id_file(args.exclude_sessions_file)
+    compute_rule_features = not bool(args.no_rule_features)
     train_teacher_lookup = make_review_lookup(args.review_audit_jsonl)
-
-    train_examples, train_load_summary = load_examples(
-        [Path(path) for path in args.raw],
-        history_len=args.history_len,
-        max_records_per_source=args.max_records_per_source,
-        max_examples=args.max_train_examples,
-        teacher_lookup=train_teacher_lookup,
-        teacher_temperature=args.teacher_temperature,
-        reviewed_only=bool(args.train_reviewed_only and train_teacher_lookup is not None),
-    )
+    train_paths = [Path(path) for path in args.raw]
+    train_examples: list[TransformerExample] | None
+    if args.stream_train:
+        train_examples = None
+        train_load_summary = {
+            "streaming": True,
+            "paths": [str(path) for path in train_paths],
+            "exclude_sessions": len(exclude_sessions),
+            "max_records_per_source": args.max_records_per_source,
+            "max_examples": args.max_train_examples,
+            "compute_rule_features": compute_rule_features,
+        }
+    else:
+        train_examples, train_load_summary = load_examples(
+            train_paths,
+            history_len=args.history_len,
+            max_records_per_source=args.max_records_per_source,
+            max_examples=args.max_train_examples,
+            teacher_lookup=train_teacher_lookup,
+            teacher_temperature=args.teacher_temperature,
+            reviewed_only=bool(args.train_reviewed_only and train_teacher_lookup is not None),
+            compute_rule_features=compute_rule_features,
+            exclude_sessions=exclude_sessions,
+        )
     if args.eval_raw:
         val_teacher_lookup = make_review_lookup(args.review_audit_jsonl)
         val_examples, val_load_summary = load_examples(
@@ -1258,13 +1372,19 @@ def train(args: argparse.Namespace) -> dict:
             teacher_lookup=val_teacher_lookup,
             teacher_temperature=args.teacher_temperature,
             reviewed_only=bool(args.val_reviewed_only and val_teacher_lookup is not None),
+            compute_rule_features=compute_rule_features,
         )
     else:
+        if args.stream_train:
+            raise ValueError("--stream-train requires --eval-raw")
+        assert train_examples is not None
         train_examples, val_examples = split_examples(train_examples, val_ratio=args.val_ratio, seed=seed)
         val_load_summary = {"examples": len(val_examples), "source_summaries": [], "totals": {}}
     train_review_filter_summary: dict[str, int] | None = None
     val_review_filter_summary: dict[str, int] | None = None
     if args.train_reviewed_only:
+        if train_examples is None:
+            raise ValueError("--train-reviewed-only is not supported with --stream-train in post-load filtering mode")
         train_examples, train_review_filter_summary = filter_reviewed_examples(
             train_examples,
             require_distribution=args.require_teacher_distribution,
@@ -1274,29 +1394,53 @@ def train(args: argparse.Namespace) -> dict:
             val_examples,
             require_distribution=args.require_teacher_distribution,
         )
-    if not train_examples:
+    if train_examples is not None and not train_examples:
         raise ValueError("no training examples built")
     if not val_examples:
         raise ValueError("no validation examples built")
 
     collate = lambda items: collate_transformer_examples(items, max_candidates=args.max_candidates)
-    train_sampling_weights = reviewed_sampling_weights(
-        train_examples,
-        reviewed_batch_fraction=args.reviewed_batch_fraction,
-    )
-    train_sampler = (
-        WeightedRandomSampler(train_sampling_weights, num_samples=len(train_examples), replacement=True)
-        if train_sampling_weights is not None
-        else None
-    )
-    train_loader = DataLoader(
-        TransformerRawDataset(train_examples),
-        batch_size=args.batch_size,
-        shuffle=train_sampler is None,
-        sampler=train_sampler,
-        num_workers=0,
-        collate_fn=collate,
-    )
+    train_sampler = None
+    if train_examples is not None:
+        train_sampling_weights = reviewed_sampling_weights(
+            train_examples,
+            reviewed_batch_fraction=args.reviewed_batch_fraction,
+        )
+        train_sampler = (
+            WeightedRandomSampler(train_sampling_weights, num_samples=len(train_examples), replacement=True)
+            if train_sampling_weights is not None
+            else None
+        )
+
+    def make_train_loader() -> DataLoader:
+        if args.stream_train:
+            return DataLoader(
+                TransformerStreamingDataset(
+                    train_paths,
+                    history_len=args.history_len,
+                    max_records_per_source=args.max_records_per_source,
+                    max_examples=args.max_train_examples,
+                    review_audit_jsonl=Path(args.review_audit_jsonl) if args.review_audit_jsonl else None,
+                    teacher_temperature=args.teacher_temperature,
+                    reviewed_only=bool(args.train_reviewed_only and args.review_audit_jsonl),
+                    require_teacher_distribution=bool(args.require_teacher_distribution),
+                    compute_rule_features=compute_rule_features,
+                    exclude_sessions=exclude_sessions,
+                ),
+                batch_size=args.batch_size,
+                num_workers=0,
+                collate_fn=collate,
+            )
+        assert train_examples is not None
+        return DataLoader(
+            TransformerRawDataset(train_examples),
+            batch_size=args.batch_size,
+            shuffle=train_sampler is None,
+            sampler=train_sampler,
+            num_workers=0,
+            collate_fn=collate,
+        )
+
     val_loader = DataLoader(
         TransformerRawDataset(val_examples),
         batch_size=args.batch_size,
@@ -1324,11 +1468,15 @@ def train(args: argparse.Namespace) -> dict:
         "val_load_summary": val_load_summary,
         "train_review_filter_summary": train_review_filter_summary,
         "val_review_filter_summary": val_review_filter_summary,
-        "train_examples": len(train_examples),
+        "train_examples": None if train_examples is None else len(train_examples),
         "val_examples": len(val_examples),
         "history_len": args.history_len,
         "max_candidates": args.max_candidates,
         "batch_size": args.batch_size,
+        "stream_train": bool(args.stream_train),
+        "exclude_sessions_file": args.exclude_sessions_file,
+        "excluded_train_sessions": len(exclude_sessions),
+        "compute_rule_features": compute_rule_features,
         "epochs": args.epochs,
         "lr": args.lr,
         "weight_decay": args.weight_decay,
@@ -1341,8 +1489,12 @@ def train(args: argparse.Namespace) -> dict:
         "unreviewed_hard_loss_weight": args.unreviewed_hard_loss_weight,
         "train_sampling": {
             "weighted": train_sampler is not None,
-            "reviewed_examples": sum(1 for example in train_examples if is_reviewed_example(example)),
-            "unreviewed_examples": sum(1 for example in train_examples if not is_reviewed_example(example)),
+            "reviewed_examples": (
+                None if train_examples is None else sum(1 for example in train_examples if is_reviewed_example(example))
+            ),
+            "unreviewed_examples": (
+                None if train_examples is None else sum(1 for example in train_examples if not is_reviewed_example(example))
+            ),
         },
         "teacher_temperature": args.teacher_temperature,
         "review_audit_jsonl": args.review_audit_jsonl,
@@ -1360,7 +1512,8 @@ def train(args: argparse.Namespace) -> dict:
         total = correct = 0
         loss_total = policy_loss_total = value_loss_total = 0.0
         policy_part_totals: Counter[str] = Counter()
-        for batch in train_loader:
+        train_loader = make_train_loader()
+        for batch_index, batch in enumerate(train_loader, start=1):
             batch = _to_device(batch, device)
             logits, values = model(batch)
             policy_loss, policy_parts = policy_loss_with_optional_teacher(
@@ -1390,6 +1543,21 @@ def train(args: argparse.Namespace) -> dict:
             value_loss_total += float(value_loss.item()) * batch_size
             for name, value in policy_parts.items():
                 policy_part_totals[name] += float(value.item()) * batch_size
+            if args.log_every_batches and batch_index % args.log_every_batches == 0:
+                print(
+                    json.dumps(
+                        {
+                            "event": "train_progress",
+                            "epoch": epoch + 1,
+                            "batches": batch_index,
+                            "train_samples": total,
+                            "train_loss_so_far": loss_total / total if total else None,
+                            "train_accuracy_so_far": correct / total if total else None,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
         val_metrics = evaluate_model(model, val_loader, device)
         epoch_metrics = {
             "epoch": epoch + 1,
@@ -1408,7 +1576,7 @@ def train(args: argparse.Namespace) -> dict:
                 key: value.detach().cpu().clone()
                 for key, value in model.state_dict().items()
             }
-        print(json.dumps(epoch_metrics, ensure_ascii=False))
+        print(json.dumps(epoch_metrics, ensure_ascii=False), flush=True)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1469,6 +1637,9 @@ def main() -> int:
     parser.add_argument("--unreviewed-hard-loss-weight", type=float, default=None)
     parser.add_argument("--teacher-temperature", type=float, default=1.0)
     parser.add_argument("--review-audit-jsonl", default=None)
+    parser.add_argument("--stream-train", action="store_true")
+    parser.add_argument("--exclude-sessions-file", default=None)
+    parser.add_argument("--no-rule-features", action="store_true")
     parser.add_argument("--train-reviewed-only", action="store_true")
     parser.add_argument("--val-reviewed-only", action="store_true")
     parser.add_argument("--require-teacher-distribution", action="store_true")
@@ -1487,6 +1658,7 @@ def main() -> int:
     parser.add_argument("--dim-feedforward", type=int, default=512)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--grad-clip", type=float, default=5.0)
+    parser.add_argument("--log-every-batches", type=int, default=0)
     parser.add_argument("--seed", type=int, default=20260527)
     parser.add_argument("--device", default=None)
     args = parser.parse_args()

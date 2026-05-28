@@ -158,18 +158,23 @@ def load_checkpoint(path: Path, device: torch.device) -> tuple[TransformerCandid
     return model, config
 
 
-def evaluate_checkpoint(args: argparse.Namespace) -> dict:
-    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    model, config = load_checkpoint(Path(args.checkpoint), device)
+def load_evaluation_examples(args: argparse.Namespace, config: dict) -> tuple[list[TransformerExample], dict]:
     lookup = load_review_target_lookup(Path(args.review_audit_jsonl))
-    examples, load_summary = load_examples(
+    return load_examples(
         [Path(path) for path in args.raw],
         history_len=int(config.get("history_len", args.history_len)),
         max_records_per_source=args.max_records_per_source,
         max_examples=args.max_examples,
         teacher_lookup=lookup,
         teacher_temperature=args.teacher_temperature,
+        compute_rule_features=not bool(getattr(args, "no_rule_features", False)),
     )
+
+
+def evaluate_checkpoint(args: argparse.Namespace) -> dict:
+    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    model, config = load_checkpoint(Path(args.checkpoint), device)
+    examples, load_summary = load_evaluation_examples(args, config)
     reviewed = select_reviewed_examples(examples)
     if not reviewed:
         raise ValueError("no reviewed examples matched the checkpoint evaluation inputs")
@@ -198,6 +203,7 @@ def evaluate_checkpoint(args: argparse.Namespace) -> dict:
         "examples": len(examples),
         "reviewed_examples": len(reviewed),
         "evaluated_candidate_width": max_candidates,
+        "compute_rule_features": not bool(getattr(args, "no_rule_features", False)),
         "candidate_truncation_count": count_candidate_truncations(reviewed, max_candidates=max_candidates),
         "load_summary": load_summary,
         **metrics,
@@ -217,6 +223,7 @@ def main() -> int:
     parser.add_argument("--max-records-per-source", type=int, default=None)
     parser.add_argument("--max-examples", type=int, default=None)
     parser.add_argument("--teacher-temperature", type=float, default=1.0)
+    parser.add_argument("--no-rule-features", action="store_true")
     parser.add_argument("--device", default=None)
     args = parser.parse_args()
 

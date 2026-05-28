@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from evaluate_transformer_chaga_review import select_reviewed_examples  # noqa: E402
 from evaluate_transformer_chaga_review import (  # noqa: E402
     aggregate_original_candidate_metrics,
+    load_evaluation_examples,
     resolve_eval_max_candidates,
     score_original_chaga_match,
 )
@@ -85,3 +86,32 @@ def test_aggregate_original_candidate_metrics_uses_original_rows_not_distributio
     assert metrics["original_top1_accuracy"] == 0.5
     assert metrics["original_play_samples"] == 1
     assert metrics["reviewed_without_teacher_distribution"] == 1
+
+
+def test_load_evaluation_examples_can_disable_rule_feature_materialization(monkeypatch):
+    captured = {}
+
+    def fake_load_examples(paths, **kwargs):
+        captured["paths"] = paths
+        captured.update(kwargs)
+        return [], {"examples": 0}
+
+    monkeypatch.setattr("evaluate_transformer_chaga_review.load_review_target_lookup", lambda path: "lookup")
+    monkeypatch.setattr("evaluate_transformer_chaga_review.load_examples", fake_load_examples)
+    args = SimpleNamespace(
+        raw=["eval.jsonl"],
+        review_audit_jsonl="audit.jsonl",
+        history_len=80,
+        max_records_per_source=None,
+        max_examples=None,
+        teacher_temperature=1.0,
+        no_rule_features=True,
+    )
+
+    examples, summary = load_evaluation_examples(args, {"history_len": 12})
+
+    assert examples == []
+    assert summary == {"examples": 0}
+    assert captured["history_len"] == 12
+    assert captured["teacher_lookup"] == "lookup"
+    assert captured["compute_rule_features"] is False

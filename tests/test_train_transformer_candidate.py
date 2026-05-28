@@ -1,4 +1,5 @@
 import json
+import gzip
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from train_transformer_candidate import (  # noqa: E402
     TILE_IDS,
     TransformerExample,
     TransformerCandidateModel,
+    TransformerStreamingDataset,
     action_response,
     build_transformer_examples_from_record,
     chaga_candidates_to_action_distribution,
@@ -374,6 +376,156 @@ def test_load_examples_can_skip_rule_feature_materialization_for_gate(tmp_path):
 
     assert examples
     assert np.count_nonzero(examples[0].candidate_rule_features) == 0
+
+
+def test_load_examples_reads_gzip_jsonl(tmp_path):
+    record = base_record(
+        [
+            {
+                "output": {
+                    "content": {"0": "2 B2"},
+                    "display": {"action": "DRAW", "player": 0, "tile": "B2"},
+                }
+            },
+            {
+                "0": {"response": "PLAY B2", "raw": "PLAY B2", "verdict": "OK"},
+            },
+        ]
+    )
+    data_path = tmp_path / "data.jsonl.gz"
+    with gzip.open(data_path, "wt", encoding="utf-8") as dst:
+        dst.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    examples, _ = load_examples([data_path], history_len=6, compute_rule_features=False)
+
+    assert examples
+
+
+def test_streaming_dataset_excludes_holdout_sessions_and_keeps_train_players(tmp_path):
+    kept = base_record(
+        [
+            {
+                "output": {
+                    "content": {"0": "2 B2", "1": "2 B4"},
+                    "display": {"action": "DRAW", "player": 0, "tile": "B2"},
+                }
+            },
+            {
+                "0": {"response": "PLAY B2", "raw": "PLAY B2", "verdict": "OK"},
+                "1": {"response": "PLAY B4", "raw": "PLAY B4", "verdict": "OK"},
+            },
+        ]
+    )
+    kept["source_record_id"] = "kept"
+    kept["belongs"] = "train-session"
+    kept["train_players"] = ["1"]
+    dropped = dict(kept, source_record_id="dropped", belongs="holdout-session", train_players=["0"])
+    data_path = tmp_path / "data.jsonl"
+    data_path.write_text(
+        json.dumps(kept, ensure_ascii=False) + "\n" + json.dumps(dropped, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    dataset = TransformerStreamingDataset(
+        [data_path],
+        history_len=6,
+        compute_rule_features=False,
+        exclude_sessions={"holdout-session"},
+    )
+
+    examples = list(dataset)
+
+    assert examples
+    assert {example.player for example in examples} == {1}
+    assert all(np.count_nonzero(example.candidate_rule_features) == 0 for example in examples)
+
+
+def test_streaming_dataset_reloads_review_lookup_for_each_iteration(tmp_path):
+    record = base_record(
+        [
+            {
+                "output": {
+                    "content": {"0": "2 B2"},
+                    "display": {"action": "DRAW", "player": 0, "tile": "B2"},
+                }
+            },
+            {
+                "0": {"response": "PLAY B2", "raw": "PLAY B2", "verdict": "OK"},
+            },
+        ]
+    )
+    record["source_record_id"] = "unit"
+    data_path = tmp_path / "data.jsonl"
+    data_path.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+    audit_path = tmp_path / "audit.jsonl"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "record_id": "unit",
+                "seat": 0,
+                "state_turn": 2,
+                "state_context": {"turn": 2, "request": "2 B2", "state_actual_response": "PLAY B2"},
+                "chaga_top5_candidates": [[10.0, "Play B2"]],
+                "checks": {
+                    "offered_tile_matches": True,
+                    "drawn_tile_matches": True,
+                    "current_actor_matches": True,
+                    "window_matches": True,
+                    "hand_size_mod_ok": True,
+                    "top1_in_legal_mask": True,
+                },
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    dataset = TransformerStreamingDataset(
+        [data_path],
+        history_len=6,
+        review_audit_jsonl=audit_path,
+        reviewed_only=True,
+        compute_rule_features=False,
+    )
+
+    first_pass = list(dataset)
+    second_pass = list(dataset)
+
+    assert len(first_pass) == 1
+    assert len(second_pass) == 1
+    assert first_pass[0].teacher_candidate_norms == ("PLAY B2",)
+    assert second_pass[0].teacher_candidate_norms == ("PLAY B2",)
+
+
+def test_streaming_dataset_keeps_unreviewed_examples_in_mixed_training_when_distribution_required(tmp_path):
+    record = base_record(
+        [
+            {
+                "output": {
+                    "content": {"0": "2 B2"},
+                    "display": {"action": "DRAW", "player": 0, "tile": "B2"},
+                }
+            },
+            {
+                "0": {"response": "PLAY B2", "raw": "PLAY B2", "verdict": "OK"},
+            },
+        ]
+    )
+    data_path = tmp_path / "data.jsonl"
+    data_path.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    dataset = TransformerStreamingDataset(
+        [data_path],
+        history_len=6,
+        reviewed_only=False,
+        require_teacher_distribution=True,
+        compute_rule_features=False,
+    )
+
+    examples = list(dataset)
+
+    assert examples
+    assert examples[0].teacher_candidate_norms == ()
 
 
 def test_reviewed_example_can_use_teacher_action_when_human_action_is_unmapped():
@@ -786,6 +938,21 @@ def test_chaga_review_training_requires_full_candidate_width_for_mixed_review_lo
     )
 
     with pytest.raises(ValueError, match="235"):
+        validate_reviewed_training_args(args)
+
+
+def test_streaming_train_rejects_weighted_sampler_fraction():
+    args = SimpleNamespace(
+        review_audit_jsonl=None,
+        reviewed_batch_fraction=0.5,
+        reviewed_accept_set_loss_weight=None,
+        train_reviewed_only=False,
+        val_reviewed_only=False,
+        max_candidates=235,
+        stream_train=True,
+    )
+
+    with pytest.raises(ValueError, match="reviewed-batch-fraction"):
         validate_reviewed_training_args(args)
 
 

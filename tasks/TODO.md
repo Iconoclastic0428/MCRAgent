@@ -1061,4 +1061,13 @@ Review:
   - Verification: `python -m pytest tests -q --basetemp tmp\pytest_full_high_elo_gate` passed with 258 tests and one existing sklearn convergence warning.
   - Kubernetes cleanup check: no Succeeded/Failed pods in `nourish-sdsc`; no completed jobs to delete. Only the unrelated running `idl-download` job remains.
 - [ ] Push the high-ELO corpus/gate code before launching the next L40 training job.
-- [ ] Launch the next Transformer training job on Kubernetes `NVIDIA-L40` only, using the expanded prepared session split and `--monitor-metric val_original_relaxed_accuracy`.
+- [x] Correct the training/eval split after user clarification.
+  - Stopped the misaligned CHAGA-only reviewed-row L40 job before it reached GPU training.
+  - New rule: train on the combined all-player record-local `>2300` corpus; hold out CHAGA validation/test sessions for CHAGA candidate-match evaluation.
+  - Created `data/processed/tziakcha_all_plus_live_elo2300_session/chaga_eval_split_seed20260527/chaga_val_test_holdout_sessions.txt` with 50 held-out CHAGA val/test sessions.
+  - Streaming training set after holdout: 762,614 prepared records and 1,453,580 `>2300` train-player slots; CHAGA val/test holdout excludes 744 records.
+  - Added streaming JSONL/JSONL.GZ training support so the 29.8 GB all-player prepared corpus can be consumed without materializing all examples in memory.
+  - Compressed `tziakcha_all_plus_live_elo2300_session_all.prepared.jsonl` to `tziakcha_all_plus_live_elo2300_session_all.prepared.jsonl.gz` (2.45 GB) and copied it to the shared PVC.
+  - Smoke training from the gzipped stream produced nonzero training samples and CHAGA validation metrics.
+  - Verification: `python -m pytest tests -q --basetemp tmp\pytest_allhighelo_stream_full` passed with 264 tests and one existing sklearn convergence warning.
+- [ ] Launch the corrected Transformer training job on Kubernetes `NVIDIA-L40` only, streaming all high-ELO players and using CHAGA val/test metrics.

@@ -230,3 +230,12 @@ Added live result recording to the read-only Tziakcha advisor service. `AdvisorS
 - Fixed the expanded corpus gate root causes before L40 training: session splits now write prepared/log-bearing JSONL files, the gate rejects raw tziakcha rows without `logs`, reviewed-only loading avoids unreviewed feature materialization, duplicate review rows are deduplicated by state key, teacher targets can substitute for unrepresentable human actions, and reviewed claim/HU windows can bypass only the Lawlorentz shanten one-hot check while keeping shape/mask/HU legality checks.
 - The default corpus gate now passes on the prepared split: train 75,997 reviewed examples across 197 sessions, validation 9,447 across 25 sessions, and test 10,198 across 25 sessions. All splits have zero unattached audit targets, zero missing teacher distributions, zero candidate truncation at 235 actions, zero malformed top-3 relaxation rows, and zero accepted `HU` outside the gated legal mask.
 - Verification: `python -m pytest tests -q --basetemp tmp\pytest_full_high_elo_gate` passed with 258 tests and one existing sklearn convergence warning. Kubernetes cleanup found no Succeeded/Failed pods in `nourish-sdsc`; only the unrelated running `idl-download` job remains.
+# 2026-05-27 - Correct all-player high-ELO training split for CHAGA evaluation
+
+- User clarified that training must use all players with record-local Elo >2300, while CHAGA should be the test/evaluation target.
+- Stopped the previous CHAGA-only reviewed-row L40 job because it did not satisfy that split.
+- Added streaming JSONL/JSONL.GZ training support, holdout session exclusion, and evaluation feature-mode consistency flags.
+- Generated a CHAGA val/test holdout session file: 50 sessions, excluding 744 records from the all-player corpus.
+- Corrected streaming train source: 762,614 prepared records and 1,453,580 high-ELO train-player slots after CHAGA holdout.
+- Compressed the 29.8 GB all-player prepared JSONL to a 2.45 GB gzip file and copied it to the shared PVC.
+- Verification: targeted streaming/eval tests and full suite passed (`264 passed`, one existing sklearn convergence warning). Kubernetes dry-run for the corrected L40 manifest passed.
