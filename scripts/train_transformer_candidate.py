@@ -779,6 +779,57 @@ def count_model_parameters(model: nn.Module) -> dict[str, int]:
     }
 
 
+def build_checkpoint_payload(
+    args: argparse.Namespace,
+    best_state: dict[str, torch.Tensor],
+    best_epoch_metrics: dict[str, float | int | None] | None,
+) -> dict:
+    return {
+        "model_state": best_state,
+        "config": {
+            "history_vocab_size": args.history_vocab_size,
+            "d_model": args.d_model,
+            "nhead": args.nhead,
+            "num_layers": args.num_layers,
+            "dim_feedforward": args.dim_feedforward,
+            "dropout": args.dropout,
+            "history_len": args.history_len,
+            "max_candidates": args.max_candidates,
+        },
+        "selection": {
+            "monitor_metric": args.monitor_metric,
+            "best_epoch": best_epoch_metrics,
+        },
+    }
+
+
+def write_checkpoint(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    torch.save(payload, tmp_path)
+    tmp_path.replace(path)
+
+
+def write_metrics_snapshot(
+    path: Path,
+    metrics: dict,
+    *,
+    checkpoint: Path,
+    best_epoch_metrics: dict[str, float | int | None] | None,
+    finished: bool,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot = dict(metrics)
+    snapshot["checkpoint"] = str(checkpoint)
+    snapshot["best_epoch"] = best_epoch_metrics
+    snapshot["checkpoint_epoch"] = best_epoch_metrics.get("epoch") if best_epoch_metrics else None
+    if finished:
+        snapshot["finished_at"] = int(time.time())
+    else:
+        snapshot["last_snapshot_at"] = int(time.time())
+    path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 class TransformerRawDataset(Dataset):
     def __init__(self, examples: list[TransformerExample]) -> None:
         self.examples = examples
@@ -1505,6 +1556,11 @@ def train(args: argparse.Namespace) -> dict:
         "history": [],
     }
 
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    metrics_path = Path(args.metrics_out)
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+
     best_epoch_metrics: dict[str, float | int | None] | None = None
     best_state: dict[str, torch.Tensor] | None = None
     for epoch in range(args.epochs):
@@ -1576,40 +1632,33 @@ def train(args: argparse.Namespace) -> dict:
                 key: value.detach().cpu().clone()
                 for key, value in model.state_dict().items()
             }
+            write_checkpoint(out_path, build_checkpoint_payload(args, best_state, best_epoch_metrics))
+            write_metrics_snapshot(
+                metrics_path,
+                metrics,
+                checkpoint=out_path,
+                best_epoch_metrics=best_epoch_metrics,
+                finished=False,
+            )
         print(json.dumps(epoch_metrics, ensure_ascii=False), flush=True)
 
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     if best_state is None:
         best_state = {
             key: value.detach().cpu().clone()
             for key, value in model.state_dict().items()
         }
-    checkpoint = {
-        "model_state": best_state,
-        "config": {
-            "history_vocab_size": args.history_vocab_size,
-            "d_model": args.d_model,
-            "nhead": args.nhead,
-            "num_layers": args.num_layers,
-            "dim_feedforward": args.dim_feedforward,
-            "dropout": args.dropout,
-            "history_len": args.history_len,
-            "max_candidates": args.max_candidates,
-        },
-        "selection": {
-            "monitor_metric": args.monitor_metric,
-            "best_epoch": best_epoch_metrics,
-        },
-    }
-    torch.save(checkpoint, out_path)
+    write_checkpoint(out_path, build_checkpoint_payload(args, best_state, best_epoch_metrics))
     metrics["checkpoint"] = str(out_path)
     metrics["best_epoch"] = best_epoch_metrics
     metrics["checkpoint_epoch"] = best_epoch_metrics.get("epoch") if best_epoch_metrics else None
     metrics["finished_at"] = int(time.time())
-    metrics_path = Path(args.metrics_out)
-    metrics_path.parent.mkdir(parents=True, exist_ok=True)
-    metrics_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_metrics_snapshot(
+        metrics_path,
+        metrics,
+        checkpoint=out_path,
+        best_epoch_metrics=best_epoch_metrics,
+        finished=True,
+    )
     return metrics
 
 
