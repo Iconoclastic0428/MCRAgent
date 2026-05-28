@@ -1158,7 +1158,8 @@ Review:
     - Coverage smoke on prepared train/val reviewed rows succeeded; the tiny-sample coverage gate failed as expected because it intentionally used only 64/32 examples.
     - Hard-example mining smoke on 3 prepared records produced 48 reviewed rows and 2 hard rows.
     - CLI finetune smoke loaded an initial checkpoint, applied 48 hard-example weights, and wrote the tiny finetune checkpoint/metrics.
-  - [ ] Launch a Kubernetes-only `NVIDIA-L40` finetune job from `models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527d_plateau_e2b1000.pt`, with low LR, accepted-set loss, small soft-teacher loss, hard-example weights, and frequent validation.
+  - [x] Launch a Kubernetes-only `NVIDIA-L40` finetune job from `models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527d_plateau_e2b1000.pt`, with low LR, accepted-set loss, small soft-teacher loss, hard-example weights, and frequent validation.
+    - Job: `mcr-transformer-l40-finetune-medhard-20260528a`; pod scheduled on `rci-tide-gpu-14.sdsu.edu`.
   - [ ] Gate promotion on beating relaxed `0.850429` without degrading PLAY relaxed below `0.850933`, with candidate truncation count zero and Hu safety unchanged.
   - Follow-up targets: two-stage claim plus forced-discard ranking, BUGANG candidate support, and recommendation telemetry.
 - [x] Deploy the extracted checkpoint for Chrome play testing.
