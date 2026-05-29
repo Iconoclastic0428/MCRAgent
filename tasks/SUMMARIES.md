@@ -311,6 +311,52 @@ Verification: targeted regression tests passed, then `python -m pytest tests/tes
 
 Live playtest record: `runs/tziakcha_chaga_live_monitor_20260528_133513.jsonl`. Final observed match stats were 16 hands, 3 wins, 13 losses, 5 deal-ins, win rate `18.75%`, deal-in rate `31.25%`. The final table event listed CHAGA08, CHAGA04, Iconoclastic, and CHAGA07 with displayed final scores `183`, `48`, `-90`, and `-141`; per-hand fan/score deltas remain undecoded in `result_history`. The game-specific recorder was stopped after the final table event and `runs/tziakcha_chaga_live_monitor.pid.json` was updated with the stop time.
 
+## 2026-05-28 Finetune Monitor
+
+Added `scripts/monitor_k8s_finetune_progress.ps1` and started it as a hidden PowerShell monitor for `mcr-transformer-l40-finetune-medhard-20260528b` every 15 minutes. The monitor writes JSONL snapshots to `runs/mcr-transformer-l40-finetune-medhard-20260528b-monitor.jsonl` and PID metadata to `runs/mcr-transformer-l40-finetune-medhard-20260528b-monitor.pid.json`.
+
+Verification: one-shot smoke checks now capture pod state, parsed `/proc/162/stat`, GPU utilization/memory, completed batches, latest progress event, and issue classification. The active process PID is `7224`. Immediate Kubernetes diagnosis: the pod is Running with zero restarts, no metrics file and no `train_progress`/`validation_snapshot` events yet; GPU is idle, but Python PID 162 advanced by 1053 CPU ticks over 10 seconds, so the run is still CPU preprocessing before the first optimizer batch rather than an unfixable failure.
+
+## 2026-05-28 Finetune 20260528b Completion Analysis
+
+Stopped the 15-minute monitor for `mcr-transformer-l40-finetune-medhard-20260528b`; `runs/mcr-transformer-l40-finetune-medhard-20260528b-monitor.pid.json` now records `stopped_by_request=true` and `process_running_after_stop=false`. The Kubernetes job completed cleanly with exit code `0`, zero restarts, and completion time `2026-05-29T01:34:33Z`.
+
+Copied final artifacts from the shared PVC to local paths: `runs/transformer_candidate_finetune_medhard_l40_20260528b_summary.json`, `runs/transformer_candidate_finetune_medhard_l40_20260528b_metrics.json`, `runs/transformer_candidate_finetune_medhard_l40_20260528b_val_eval.json`, `runs/transformer_candidate_finetune_medhard_l40_20260528b_test_eval.json`, and `models/transformer_candidate_finetune_medhard_l40_20260528b.pt`. Checkpoint SHA256 is `94DAEDACC932C03A902F5099544151E8A03425BE6C86B8FA577DDE4D05DAA22A`; model size is 92,688,386 parameters.
+
+Result: the run passed its configured finetune gate, but the useful improvement is small. Validation relaxed improved `84.5594% -> 86.6389%` (`+2.0795` pp) and validation PLAY relaxed improved `84.8054% -> 85.9256%` (`+1.1202` pp). On the CHAGA test split, relaxed improved `84.9025% -> 86.6957%` (`+1.7933` pp), but PLAY relaxed improved only `85.3616% -> 85.9147%` (`+0.5532` pp). Candidate truncation stayed zero and reviewed rows without teacher distribution stayed zero.
+
+Cleaned up the completed finetune Kubernetes job/pod after copying artifacts. The two long-running `20260527d` L40 jobs remain running. Interpretation: this finetune is a modest offline distillation gain and may be a deployable replacement if the only criterion is CHAGA match, but it does not materially solve the live-play weakness; the next meaningful improvement should target state-adapter fidelity, two-stage claim/forced-discard modeling, BUGANG support, and richer rule/effective-tile features rather than repeating the same low-LR accepted-set finetune.
+
+## 2026-05-29 Strict Finetune Baseline Deployment
+
+Promoted `models/transformer_candidate_finetune_medhard_l40_20260528b.pt` as the current local Chrome advisor baseline by updating `advisor_service.model_advisor.DEFAULT_TRANSFORMER_MODEL`. The Chrome extension itself remains unchanged because it is model-agnostic and reads recommendations from the local advisor service on `127.0.0.1:8765`.
+
+Recorded the frozen baseline in `docs/baselines/strict_finetune_20260528b.json`. Restarted the advisor service without an explicit old `--model` argument, so it uses the new default. `/health` now reports `model_info.path = D:\MCR_Agent\models\transformer_candidate_finetune_medhard_l40_20260528b.pt`, `model_loaded=true`, and `read_only=true`; the service PID is `42196`. Opened the advisor dashboard in Chrome at `http://127.0.0.1:8765/dashboard`.
+
+Verification: focused advisor/plugin regressions passed with `python -m pytest tests\test_tziakcha_advisor.py tests\test_transformer_predictor.py tests\test_tziakcha_state.py tests\test_official_fan.py -q --basetemp tmp\pytest-new-baseline-plugin` -> 36 passed. HTTP server regressions passed with `python -m pytest tests\test_tziakcha_server.py -q --basetemp tmp\pytest-new-baseline-server` -> 4 passed. The new default-path regression asserts the default model file is `transformer_candidate_finetune_medhard_l40_20260528b.pt`.
+
+Added `docs/superpowers/specs/2026-05-29-q-adversarial-reranker-design.md` for the next lane. The selected next path is frozen strict-finetuned Transformer plus small legal-candidate Q reranker, lambda sweep, CHAGA regression gate, and fixed-league feasibility metrics; full PPO/self-play policy finetuning remains a non-goal for the next step.
+
+## 2026-05-29 Fixed-League Feasibility Evaluator
+
+Implemented the first Q-reranker prerequisite: `scripts/evaluate_fixed_league_feasibility.py`. It can either summarize an existing official-judge JSON or run the official judge directly, then report target-player average point delta, Hu rate and average Hu turn, inferred deal-in rate, inferred end-wait rate from `canHu`, wait-when-deal-in rate, illegal predictions/action-outside-mask count, fan-check diagnostics, and low-fan Hu count.
+
+Added `transformer` as a supported policy kind in `scripts/official_judge_match.py`, so `.pt` Transformer checkpoints can run through `BotzonePolicy` and the official judge. Marked `TransformerCheckpointPredictor.kind = "legal_action_ranker"` so draw and reaction choices use the checkpoint's legal-candidate ranking path instead of falling back to generic response prediction.
+
+Artifacts: `runs/feasibility_lawlorentz_effective_l0_vs_sample_32.json` summarizes the existing Lawlorentz 32-game official run. `runs/strict_finetune_20260528b_feasibility_smoke4.json` and `runs/strict_finetune_20260528b_official_smoke4.json` are a 4-hand official sample-bot smoke for the frozen strict finetune. All 4 smoke hands ended `HUANG`; target Hu rate `0.0`, average point delta `0.0`, illegal predictions `0`, action-outside-mask `0`, and low-fan Hu `0`. This proves the evaluator path and safety diagnostics, not model strength.
+
+Verification: RED tests failed before implementation for the missing evaluator module, missing Transformer `kind`, and unknown `transformer` policy kind. After implementation, focused regression passed with `python -m pytest tests\test_evaluate_fixed_league_feasibility.py tests\test_official_judge_match.py tests\test_transformer_predictor.py tests\test_policy_bot.py tests\test_tziakcha_advisor.py tests\test_official_fan.py tests\test_tziakcha_server.py -q --basetemp tmp\pytest-next-implementation-focused` -> 71 passed.
+
+## 2026-05-29 Q-Adversarial Reranker v0
+
+Implemented GPT Pro's conservative Q-adversarial reranker path without starting PPO or unconstrained self-play. `scripts/mine_chaga_hard_examples.py` now has default `qadv_hard_v1` output with first-four `PLAY` top-3 acceptance, strict top-1 otherwise, full CHAGA top-5 audit candidates when available, candidate digests, accepted action IDs, hard-negative IDs/reasons, base logits/ranks, cached rule features, and Hu filtering before row emission. Legacy hard-example classification remains available with `--output-format legacy`.
+
+Added `scripts/qadv_reranker.py` with the small candidate-local Q model, lambda-combined scoring, Hu/mask safety, accepted-set loss, hard-negative pair loss, conservative-Q loss, soft-CHAGA loss, and Q-L2. Added `scripts/train_qadv_reranker.py` to train from cached `qadv_hard_v1` rows and `scripts/evaluate_qadv_reranker.py` to sweep lambda values and report CHAGA relaxed/top-1/top-3, PLAY slices, changed-from-base rates, action-mask violations, low-fan Hu count, candidate truncation, and lambda-zero reproduction mismatches.
+
+Real smoke: mining against `models/transformer_candidate_finetune_medhard_l40_20260528b.pt` on 10 prepared CHAGA records wrote `tmp/qadv_smoke.jsonl` and `tmp/qadv_smoke_summary.json` with 210 reviewed rows, 13 hard rows, zero empty accepted sets, zero low-fan Hu, zero empty hard-negative mismatch rows, and zero candidate truncations. A tiny CPU train/eval smoke wrote `tmp/qadv_smoke.pt`, `tmp/qadv_smoke_train_metrics.json`, and `tmp/qadv_smoke_eval_metrics.json`; lambda `0.00` had zero reproduction mismatches. A NaN in soft-CHAGA loss from `0 * -inf` was caught by the smoke, fixed, and covered by regression tests.
+
+Verification: `python -m pytest tests\test_qadv_hard_examples.py tests\test_qadv_reranker.py tests\test_train_qadv_reranker.py tests\test_mine_chaga_hard_examples.py -q --basetemp tmp\pytest_qadv_nan_fix` passed with 19 tests, and the full suite passed with `python -m pytest tests -q --basetemp tmp\pytest_qadv_full` -> 310 passed, 1 existing sklearn convergence warning.
+
 ## 2026-05-28 Hu Fan Breakdown Display
 
 Added user-visible Hu fan breakdowns so the player can verify a Hu recommendation without manually recalculating every fan. `scripts/official_fan.py` now attaches `fan_items` and `base_fan_items` using PyMahjongGB's `MahjongFanCalculator` output while still using the existing official helper result for the Hu gate. `advisor_service/model_advisor.py` and `advisor_service/advisor.py` pass those items through the recommendation API and add a compact `fan_text` summary to Hu advice, for example `Hu (10 fan: 花龙 8 + 门前清 2)`.

@@ -213,6 +213,26 @@ def test_make_policy_can_create_lawlorentz_effective_policy():
     assert isinstance(policy, LawlorentzEffectivePolicy)
 
 
+def test_make_policy_can_create_transformer_checkpoint_policy(monkeypatch):
+    constructed = []
+
+    class FakeTransformerCheckpointPredictor:
+        def __init__(self, model_path):
+            constructed.append(model_path)
+            self.kind = "legal_action_ranker"
+
+    monkeypatch.setattr(
+        "official_judge_match.TransformerCheckpointPredictor",
+        FakeTransformerCheckpointPredictor,
+        raising=False,
+    )
+
+    policy = make_policy("transformer", model="models/baseline.pt")
+
+    assert constructed == ["models/baseline.pt"]
+    assert policy.predictor.kind == "legal_action_ranker"
+
+
 def test_botzone_json_process_policy_sends_requests_and_responses_to_runner():
     calls = []
 

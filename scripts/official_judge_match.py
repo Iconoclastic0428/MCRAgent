@@ -15,6 +15,10 @@ from lawlorentz_policy import LawlorentzEffectivePolicy, LawlorentzModelPolicy
 from policy_bot import BotzonePolicy, ShantenHeuristicPredictor, SklearnPredictor
 
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
+if str(WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_ROOT))
+
 DEFAULT_JUDGE = Path("build/official_judge/mcr_judge.exe")
 DEFAULT_ALEO = Path("build/aleo_bot.exe")
 DEFAULT_SAMPLE = Path("build/official_sample_bot.exe")
@@ -283,6 +287,15 @@ def make_policy(
         if model is None:
             raise ValueError("--model is required for model policy")
         return BotzonePolicy(SklearnPredictor(Path(model)))
+    if kind == "transformer":
+        if model is None:
+            raise ValueError("--model is required for transformer policy")
+        predictor_cls = globals().get("TransformerCheckpointPredictor")
+        if predictor_cls is None:
+            from advisor_service.transformer_predictor import (  # noqa: PLC0415
+                TransformerCheckpointPredictor as predictor_cls,
+            )
+        return BotzonePolicy(predictor_cls(model))
     if kind == "aleo":
         return AleoProcessPolicy(aleo_exe)
     if kind == "json":
@@ -380,13 +393,33 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--policy",
-        choices=["lawlorentz_effective", "lawlorentz_model", "fallback", "shanten", "model", "json", "aleo", "sample"],
+        choices=[
+            "lawlorentz_effective",
+            "lawlorentz_model",
+            "fallback",
+            "shanten",
+            "model",
+            "transformer",
+            "json",
+            "aleo",
+            "sample",
+        ],
         default="fallback",
     )
     parser.add_argument("--model", default=None)
     parser.add_argument(
         "--opponent",
-        choices=["lawlorentz_effective", "lawlorentz_model", "fallback", "shanten", "model", "json", "aleo", "sample"],
+        choices=[
+            "lawlorentz_effective",
+            "lawlorentz_model",
+            "fallback",
+            "shanten",
+            "model",
+            "transformer",
+            "json",
+            "aleo",
+            "sample",
+        ],
         default="fallback",
     )
     parser.add_argument("--opponent-model", default=None)

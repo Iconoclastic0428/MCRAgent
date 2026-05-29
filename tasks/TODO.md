@@ -32,6 +32,17 @@ Objective: research available Mahjong Competition Rules (MCR / Chinese Standard 
 
 ## Current Iteration
 
+- [x] Implement GPT Pro's Q-adversarial reranker v0.
+  - Freeze `models/transformer_candidate_finetune_medhard_l40_20260528b.pt` as the base policy.
+  - Mine `qadv_hard_v1` rows from reviewed CHAGA states with first-four `PLAY` top-3 acceptance and strict top-1 elsewhere.
+  - Include accepted sets, hard negatives, candidate digests, base logits, rule features, and Hu-safety gates in the mined rows.
+  - Train a small cached-output Q reranker with accepted-set, hard-negative pair, conservative-Q, soft-CHAGA, and Q-L2 losses.
+  - Sweep lambda values while requiring lambda 0 to reproduce the frozen baseline exactly.
+  - Defer self-play return loss until the CHAGA hard-example and lambda-sweep path is validated.
+  - 2026-05-29 implementation: added `scripts/qadv_reranker.py`, `scripts/train_qadv_reranker.py`, `scripts/evaluate_qadv_reranker.py`, and QADV mining mode in `scripts/mine_chaga_hard_examples.py`.
+  - Smoke mined 210 reviewed rows from 10 prepared records to `tmp/qadv_smoke.jsonl`: 13 hard rows, zero empty accepted sets, zero low-fan Hu, zero action-mask violations, and zero candidate truncations.
+  - Tiny CPU train/eval smoke wrote `tmp/qadv_smoke.pt`, `tmp/qadv_smoke_train_metrics.json`, and `tmp/qadv_smoke_eval_metrics.json`; lambda 0 reproduction mismatches were zero.
+  - Verification: `python -m pytest tests -q --basetemp tmp\pytest_qadv_full` passed with 310 tests and one existing sklearn convergence warning.
 - [ ] Scale the public Botzone replay corpus from 1,000 to 5,000 games.
   - Use the existing scraper, not new scraping logic.
   - Save raw records to `data/raw/botzone_mcr_5000.jsonl`.
@@ -1137,6 +1148,34 @@ Review:
 - [ ] Implement the new trainer with tests before launching an L40 job.
 - [ ] Launch a single-L40 Kubernetes side job and compare against the deterministic baseline and current Transformer snapshots.
 
+### Q-adversarial reranker lane
+
+- [x] Promote strict finetuned Transformer `20260528b` as the new frozen baseline.
+  - Local advisor default: `models/transformer_candidate_finetune_medhard_l40_20260528b.pt`.
+  - SHA256: `94DAEDACC932C03A902F5099544151E8A03425BE6C86B8FA577DDE4D05DAA22A`.
+  - Baseline registry: `docs/baselines/strict_finetune_20260528b.json`.
+  - Chrome-facing service restarted on `127.0.0.1:8765` with the new default checkpoint.
+  - Verified `/health` reports the `20260528b` checkpoint, `model_loaded=true`, and `read_only=true`.
+- [x] Write the conservative Q-adversarial reranker design.
+  - Spec path: `docs/superpowers/specs/2026-05-29-q-adversarial-reranker-design.md`.
+  - Selected approach: freeze the strict finetuned Transformer and add a small legal-candidate Q reranker with lambda sweep, rather than full PPO or unconstrained RL.
+- [x] Add a fixed-league feasibility evaluator for the frozen baseline.
+  - Required metrics: Hu rate, deal-in rate, average Hu turn, end-wait/tenpai rate, wait-when-deal-in rate, average point delta if available, illegal Hu count.
+  - Added `scripts/evaluate_fixed_league_feasibility.py`, which can summarize an existing official-judge JSON or run a policy directly through `scripts/official_judge_match.py`.
+  - Added `--policy transformer` support to `scripts/official_judge_match.py` so `.pt` Transformer checkpoints can be evaluated through the official judge harness.
+  - The feasibility summary reports target-player average point delta, Hu rate/turns, inferred deal-in rate, inferred end-wait rate from `canHu`, wait-when-deal-in, illegal predictions/action-outside-mask, fan-check diagnostics, and low-fan Hu count.
+  - Existing-result smoke: `runs/feasibility_lawlorentz_effective_l0_vs_sample_32.json` summarized `runs/official_judge_lawlorentz_effective_l0_vs_sample_32_hu_metrics.json`.
+  - Frozen-baseline smoke: `runs/strict_finetune_20260528b_feasibility_smoke4.json` and `runs/strict_finetune_20260528b_official_smoke4.json` ran 4 official sample-bot hands. All 4 ended `HUANG`; target Hu rate `0.0`, average point delta `0.0`, illegal predictions `0`, action-outside-mask `0`, and low-fan Hu `0`.
+  - Verification: `python -m pytest tests\test_evaluate_fixed_league_feasibility.py tests\test_official_judge_match.py tests\test_transformer_predictor.py tests\test_policy_bot.py tests\test_tziakcha_advisor.py tests\test_official_fan.py tests\test_tziakcha_server.py -q --basetemp tmp\pytest-next-implementation-focused` passed with 71 tests.
+- [ ] Mine strict hard examples from the frozen baseline.
+  - Use first-four `PLAY` top-3 accepted semantics; all other reviewed states use top-1.
+  - Required slices: same-family not top-5, top-3 but not accepted, wrong family, late-turn PLAY, high-margin mismatch, claim/Hu/pass error.
+- [ ] Generate small legal self-play rollouts with the frozen baseline and fixed league.
+  - Require zero illegal Hu, zero action outside legal mask, all hands terminate, stable metrics across seeds before training from rollouts.
+- [ ] Implement and test the Q reranker trainer.
+  - Frozen Transformer, 5M to 20M Q head/reranker, accepted-set anchor dominant, self-play return secondary, conservative penalty small.
+- [ ] Sweep lambda values `0.00`, `0.05`, `0.10`, `0.20`, `0.35`, `0.50` and promote only if fixed-league utility improves without CHAGA/Hu safety regression.
+
 ### Current user-directed sequence
 
 - [ ] Keep monitoring the active `20260527d` L40 training jobs every 15 minutes; do not start a new training job yet.
@@ -1166,7 +1205,16 @@ Review:
   - [x] Launch a Kubernetes-only `NVIDIA-L40` finetune job from `models/transformer_candidate_allhighelo_chagaeval_med_l40_20260527d_plateau_e2b1000.pt`, with low LR, accepted-set loss, small soft-teacher loss, hard-example weights, and frequent validation.
     - Job: `mcr-transformer-l40-finetune-medhard-20260528b`, using the `>2400` split and measured medium-checkpoint baseline on that split.
     - Pod scheduled on `rci-tide-gpu-14.sdsu.edu`; in-pod corpus gate passed through train/val/test with zero unattached audit targets, zero missing teacher distributions, zero candidate truncation, and zero accepted Hu outside the legal Hu gate.
-  - [ ] Gate promotion on beating the measured `>2400` medium-checkpoint relaxed baseline by `0.003` without degrading PLAY relaxed by more than `0.003`, with candidate truncation count zero and Hu safety unchanged.
+  - [x] Add a 15-minute Kubernetes monitor for `mcr-transformer-l40-finetune-medhard-20260528b`.
+    - Monitor script: `scripts/monitor_k8s_finetune_progress.ps1`.
+    - Active monitor PID metadata: `runs/mcr-transformer-l40-finetune-medhard-20260528b-monitor.pid.json`.
+    - Active monitor JSONL: `runs/mcr-transformer-l40-finetune-medhard-20260528b-monitor.jsonl`.
+    - Current diagnosis at startup: pod is Running with zero restarts, no metrics file and no training batches yet; GPU is idle, but Python PID 162 is actively advancing CPU ticks, so this is still preprocessing before the first optimizer batch rather than an unfixable failure.
+  - [x] Gate promotion on beating the measured `>2400` medium-checkpoint relaxed baseline by `0.003` without degrading PLAY relaxed by more than `0.003`, with candidate truncation count zero and Hu safety unchanged.
+    - Completed job result: the mechanical gate passed, but the lift is modest. Validation relaxed improved `84.5594% -> 86.6389%` (`+2.0795` pp) and validation PLAY relaxed improved `84.8054% -> 85.9256%` (`+1.1202` pp).
+    - Same-split CHAGA test check: relaxed improved `84.9025% -> 86.6957%` (`+1.7933` pp), but PLAY relaxed improved only `85.3616% -> 85.9147%` (`+0.5532` pp). Treat this as a small offline distillation gain, not a strategic breakthrough.
+    - Final checkpoint copied locally: `models/transformer_candidate_finetune_medhard_l40_20260528b.pt`, SHA256 `94DAEDACC932C03A902F5099544151E8A03425BE6C86B8FA577DDE4D05DAA22A`.
+    - Monitor stopped and completed finetune job/pod deleted after artifacts were copied; the two long-running `20260527d` jobs were left untouched.
   - Follow-up targets: two-stage claim plus forced-discard ranking, BUGANG candidate support, and recommendation telemetry.
 - [x] Deploy the extracted checkpoint for Chrome play testing.
   - Verified the local advisor service is running on `127.0.0.1:8765` with the extracted 768x12 checkpoint.

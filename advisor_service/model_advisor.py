@@ -18,7 +18,7 @@ from legal_actions import generate_chi_responses  # noqa: E402
 from lawlorentz_policy import LawlorentzEffectiveScorer  # noqa: E402
 
 DEFAULT_TRANSFORMER_MODEL = (
-    WORKSPACE_ROOT / "models" / "transformer_candidate_allhighelo_chagaeval_med_l40_20260527d_plateau_e2b1000.pt"
+    WORKSPACE_ROOT / "models" / "transformer_candidate_finetune_medhard_l40_20260528b.pt"
 )
 DEFAULT_MODEL = DEFAULT_TRANSFORMER_MODEL if DEFAULT_TRANSFORMER_MODEL.exists() else None
 

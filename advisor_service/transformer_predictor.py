@@ -28,6 +28,8 @@ class TransformerCheckpointPredictor:
     for legality and Hu fan checks.
     """
 
+    kind = "legal_action_ranker"
+
     def __init__(
         self,
         model_path: Path | str | None = None,

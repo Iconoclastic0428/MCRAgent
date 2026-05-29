@@ -3,7 +3,7 @@ from pathlib import Path
 
 import torch
 
-from advisor_service.model_advisor import TziakchaModelAdvisor
+from advisor_service.model_advisor import DEFAULT_TRANSFORMER_MODEL, TziakchaModelAdvisor
 from advisor_service.transformer_predictor import TransformerCheckpointPredictor
 
 
@@ -22,6 +22,14 @@ class FixedActionModel(torch.nn.Module):
 class RejectingFanChecker:
     def evaluate(self, **kwargs):
         return {"fan": 4, "can_hu": False}
+
+
+def test_default_transformer_model_is_strict_finetune_baseline():
+    assert DEFAULT_TRANSFORMER_MODEL.name == "transformer_candidate_finetune_medhard_l40_20260528b.pt"
+
+
+def test_transformer_predictor_is_legal_action_ranker_for_policy_bot():
+    assert TransformerCheckpointPredictor.kind == "legal_action_ranker"
 
 
 def test_transformer_predictor_ranks_mapped_discard_candidate():
