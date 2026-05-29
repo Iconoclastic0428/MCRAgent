@@ -357,6 +357,16 @@ Real smoke: mining against `models/transformer_candidate_finetune_medhard_l40_20
 
 Verification: `python -m pytest tests\test_qadv_hard_examples.py tests\test_qadv_reranker.py tests\test_train_qadv_reranker.py tests\test_mine_chaga_hard_examples.py -q --basetemp tmp\pytest_qadv_nan_fix` passed with 19 tests, and the full suite passed with `python -m pytest tests -q --basetemp tmp\pytest_qadv_full` -> 310 passed, 1 existing sklearn convergence warning.
 
+## 2026-05-29 GPT Pro QADV Follow-Up
+
+Committed and pushed the QADV v0 implementation to GitHub as `832babcf73f101203f89c0631100e726302c4401`, then used the Codex Chrome Extension on the existing ChatGPT Pro conversation to request the next exact step. GPT Pro's answer was saved at `runs/gpt_pro_qadv_next_step_20260529.md`.
+
+Implemented the recommended pre-training patch: `scripts/train_qadv_reranker.py` now accepts `--eval-hard-jsonl`, `--best-model-out`, `--monitor-metric`, and `--min-delta`. When external eval rows are supplied, the trainer uses all `--hard-jsonl` rows for training and the external file for validation instead of random splitting. Best-checkpoint selection monitors `val_accepted_accuracy` and uses `changed_to_accepted_rate - changed_from_accepted_to_wrong_rate` as the tie-breaker.
+
+Added `k8s/mcr-qadv-l40-v0-20260529a.yaml`, a single-`NVIDIA-L40` job that uses the corrected `.prepared.jsonl` split paths, mines full train/val `qadv_hard_v1` rows, gates mining summaries, trains `models/qadv_reranker_v0_best.pt`, and writes the validation lambda sweep to `runs/qadv/qadv_reranker_v0_val_lambda_sweep.json`. Self-play returns remain deliberately deferred until the full CHAGA hard-negative reranker proves it can improve or safely perturb the frozen baseline.
+
+Verification so far: RED tests for external eval and best-checkpoint behavior failed before implementation. After the patch, `python -m pytest tests\test_train_qadv_reranker.py tests\test_qadv_reranker.py -q --basetemp tmp\pytest_qadv_external_green` passed with 13 tests. CLI smoke with `--eval-hard-jsonl tmp\qadv_smoke.jsonl` wrote `tmp\qadv_external_best.pt`, `tmp\qadv_external_train_metrics.json`, and `tmp\qadv_external_eval_metrics.json`; best epoch was `1`, validation rows were `210`, low-fan Hu count was `0`, and lambda-zero reproduction mismatches remained `0`.
+
 ## 2026-05-28 Hu Fan Breakdown Display
 
 Added user-visible Hu fan breakdowns so the player can verify a Hu recommendation without manually recalculating every fan. `scripts/official_fan.py` now attaches `fan_items` and `base_fan_items` using PyMahjongGB's `MahjongFanCalculator` output while still using the existing official helper result for the Hu gate. `advisor_service/model_advisor.py` and `advisor_service/advisor.py` pass those items through the recommendation API and add a compact `fan_text` summary to Hu advice, for example `Hu (10 fan: 花龙 8 + 门前清 2)`.

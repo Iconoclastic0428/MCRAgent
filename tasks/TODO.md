@@ -1167,14 +1167,26 @@ Review:
   - Existing-result smoke: `runs/feasibility_lawlorentz_effective_l0_vs_sample_32.json` summarized `runs/official_judge_lawlorentz_effective_l0_vs_sample_32_hu_metrics.json`.
   - Frozen-baseline smoke: `runs/strict_finetune_20260528b_feasibility_smoke4.json` and `runs/strict_finetune_20260528b_official_smoke4.json` ran 4 official sample-bot hands. All 4 ended `HUANG`; target Hu rate `0.0`, average point delta `0.0`, illegal predictions `0`, action-outside-mask `0`, and low-fan Hu `0`.
   - Verification: `python -m pytest tests\test_evaluate_fixed_league_feasibility.py tests\test_official_judge_match.py tests\test_transformer_predictor.py tests\test_policy_bot.py tests\test_tziakcha_advisor.py tests\test_official_fan.py tests\test_tziakcha_server.py -q --basetemp tmp\pytest-next-implementation-focused` passed with 71 tests.
+- [x] Patch QADV trainer for external validation and best-checkpoint saving.
+  - GPT Pro follow-up path saved at `runs/gpt_pro_qadv_next_step_20260529.md`.
+  - Added `--eval-hard-jsonl`, `--best-model-out`, `--monitor-metric`, and `--min-delta` to `scripts/train_qadv_reranker.py`.
+  - Real training can now monitor the session-disjoint mined validation split instead of randomly splitting the training hard-example rows.
+  - Best checkpoint selection uses `val_accepted_accuracy`, with `changed_to_accepted_rate - changed_from_accepted_to_wrong_rate` as tie-breaker.
+  - CLI smoke: `tmp\qadv_external_best.pt` was written from `--eval-hard-jsonl tmp\qadv_smoke.jsonl`; lambda-zero eval still had zero reproduction mismatches.
 - [ ] Mine strict hard examples from the frozen baseline.
   - Use first-four `PLAY` top-3 accepted semantics; all other reviewed states use top-1.
   - Required slices: same-family not top-5, top-3 but not accepted, wrong family, late-turn PLAY, high-margin mismatch, claim/Hu/pass error.
-- [ ] Generate small legal self-play rollouts with the frozen baseline and fixed league.
-  - Require zero illegal Hu, zero action outside legal mask, all hands terminate, stable metrics across seeds before training from rollouts.
-- [ ] Implement and test the Q reranker trainer.
-  - Frozen Transformer, 5M to 20M Q head/reranker, accepted-set anchor dominant, self-play return secondary, conservative penalty small.
+- [x] Implement and test the Q reranker trainer.
+  - Frozen Transformer cached-output Q head/reranker, accepted-set anchor dominant, conservative penalty small.
+  - Self-play return loss is intentionally deferred until full train/val hard-example mining and lambda sweep prove the reranker path.
+- [ ] Launch full single-L40 QADV v0 job.
+  - Job spec: `k8s/mcr-qadv-l40-v0-20260529a.yaml`.
+  - It mines full train/val QADV hard-example JSONL from the `>2400` prepared split, gates the summaries, trains `models/qadv_reranker_v0_best.pt`, and writes `runs/qadv/qadv_reranker_v0_val_lambda_sweep.json`.
+  - Use only one `NVIDIA-L40`; do not request multi-GPU for QADV v0.
 - [ ] Sweep lambda values `0.00`, `0.05`, `0.10`, `0.20`, `0.35`, `0.50` and promote only if fixed-league utility improves without CHAGA/Hu safety regression.
+- [ ] Generate small legal self-play rollouts with the frozen baseline and fixed league.
+  - Deferred until the full QADV hard-example train/val path passes gates.
+  - Require zero illegal Hu, zero action outside legal mask, all hands terminate, stable metrics across seeds before training from rollouts.
 
 ### Current user-directed sequence
 

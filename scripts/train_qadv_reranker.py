@@ -134,6 +134,60 @@ def split_rows(rows: list[dict], *, val_ratio: float, seed: int) -> tuple[list[d
     return shuffled[val_count:], shuffled[:val_count]
 
 
+def _metric_value(value, *, default: float = float("-inf")) -> float:
+    if value is None:
+        return float(default)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return value if torch.isfinite(torch.tensor(value)).item() else float(default)
+
+
+def qadv_tiebreak(metrics: dict) -> float:
+    return _metric_value(metrics.get("val_changed_to_accepted_rate"), default=0.0) - _metric_value(
+        metrics.get("val_changed_from_accepted_to_wrong_rate"),
+        default=0.0,
+    )
+
+
+def is_better_qadv_epoch(
+    candidate: dict,
+    incumbent: dict | None,
+    *,
+    monitor_metric: str,
+    min_delta: float,
+) -> bool:
+    if incumbent is None:
+        return monitor_metric in candidate and candidate.get(monitor_metric) is not None
+    candidate_primary = _metric_value(candidate.get(monitor_metric))
+    incumbent_primary = _metric_value(incumbent.get(monitor_metric))
+    if candidate_primary > incumbent_primary + float(min_delta):
+        return True
+    if abs(candidate_primary - incumbent_primary) <= float(min_delta):
+        return qadv_tiebreak(candidate) > qadv_tiebreak(incumbent)
+    return False
+
+
+def model_state_cpu(model: QAdvReranker) -> dict[str, torch.Tensor]:
+    return {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+
+
+def qadv_checkpoint_payload(
+    *,
+    state_dict: dict[str, torch.Tensor],
+    model_config: dict,
+    metrics: dict,
+) -> dict:
+    return {
+        "kind": "qadv_reranker",
+        "schema": "mcr_qadv_reranker_v1",
+        "model_state": state_dict,
+        "config": model_config,
+        "metrics": metrics,
+    }
+
+
 def accepted_accuracy(model: QAdvReranker, loader: DataLoader, device: torch.device, *, lambda_q: float) -> dict:
     model.eval()
     total = correct = changed = changed_to_accepted = changed_from_accepted = low_fan_hu = 0
@@ -185,14 +239,29 @@ def accepted_accuracy(model: QAdvReranker, loader: DataLoader, device: torch.dev
 def train(args: argparse.Namespace) -> dict:
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     rows = load_qadv_rows([Path(path) for path in args.hard_jsonl], max_rows=args.max_rows)
-    train_rows, val_rows = split_rows(rows, val_ratio=args.val_ratio, seed=args.seed)
+    eval_paths = list(getattr(args, "eval_hard_jsonl", []) or [])
+    if eval_paths:
+        train_rows = rows
+        val_rows = load_qadv_rows([Path(path) for path in eval_paths])
+    else:
+        train_rows, val_rows = split_rows(rows, val_ratio=args.val_ratio, seed=args.seed)
     if not train_rows:
         raise ValueError("no QADV training rows")
+    if eval_paths and not val_rows:
+        raise ValueError("no QADV external validation rows")
+    model_config = {
+        "action_vocab_size": FeatureAgent.ACT_SIZE,
+        "rule_feature_size": CANDIDATE_RULE_FEATURES,
+        "scalar_feature_size": 3,
+        "hidden_size": args.hidden_size,
+        "num_layers": args.num_layers,
+        "dropout": args.dropout,
+    }
     model = QAdvReranker(
-        action_vocab_size=FeatureAgent.ACT_SIZE,
-        hidden_size=args.hidden_size,
-        num_layers=args.num_layers,
-        dropout=args.dropout,
+        action_vocab_size=int(model_config["action_vocab_size"]),
+        hidden_size=int(args.hidden_size),
+        num_layers=int(args.num_layers),
+        dropout=float(args.dropout),
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
@@ -223,6 +292,8 @@ def train(args: argparse.Namespace) -> dict:
     )
 
     history: list[dict] = []
+    best_epoch_metrics: dict | None = None
+    best_state: dict[str, torch.Tensor] | None = None
     for epoch in range(1, int(args.epochs) + 1):
         model.train()
         loss_total = 0.0
@@ -261,6 +332,14 @@ def train(args: argparse.Namespace) -> dict:
         }
         if val_loader is not None:
             epoch_metrics.update({f"val_{key}": value for key, value in accepted_accuracy(model, val_loader, device, lambda_q=args.eval_lambda).items()})
+        if is_better_qadv_epoch(
+            epoch_metrics,
+            best_epoch_metrics,
+            monitor_metric=args.monitor_metric,
+            min_delta=args.min_delta,
+        ):
+            best_epoch_metrics = dict(epoch_metrics)
+            best_state = model_state_cpu(model)
         history.append(epoch_metrics)
 
     train_eval_loader = DataLoader(
@@ -273,36 +352,37 @@ def train(args: argparse.Namespace) -> dict:
     metrics = {
         "format": "mcr_qadv_reranker_train_v1",
         "hard_jsonl": args.hard_jsonl,
+        "eval_hard_jsonl": eval_paths,
         "rows": len(rows),
         "train_rows": len(train_rows),
         "val_rows": len(val_rows),
         "epochs": args.epochs,
         "history": history,
         "train_eval": accepted_accuracy(model, train_eval_loader, device, lambda_q=args.eval_lambda),
-        "model_config": {
-            "action_vocab_size": FeatureAgent.ACT_SIZE,
-            "rule_feature_size": CANDIDATE_RULE_FEATURES,
-            "scalar_feature_size": 3,
-            "hidden_size": args.hidden_size,
-            "num_layers": args.num_layers,
-            "dropout": args.dropout,
-        },
+        "model_config": model_config,
+        "monitor_metric": args.monitor_metric,
+        "min_delta": args.min_delta,
+        "best_epoch": int(best_epoch_metrics["epoch"]) if best_epoch_metrics else None,
+        "best_metric": (
+            _metric_value(best_epoch_metrics.get(args.monitor_metric))
+            if best_epoch_metrics
+            else None
+        ),
+        "best_tiebreak": qadv_tiebreak(best_epoch_metrics) if best_epoch_metrics else None,
+        "best_model_out": args.best_model_out,
     }
     if val_loader is not None:
         metrics["val_eval"] = accepted_accuracy(model, val_loader, device, lambda_q=args.eval_lambda)
 
     model_path = Path(args.model_out)
     model_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "kind": "qadv_reranker",
-            "schema": "mcr_qadv_reranker_v1",
-            "model_state": model.state_dict(),
-            "config": metrics["model_config"],
-            "metrics": metrics,
-        },
-        model_path,
-    )
+    torch.save(qadv_checkpoint_payload(state_dict=model.state_dict(), model_config=model_config, metrics=metrics), model_path)
+    if args.best_model_out:
+        best_path = Path(args.best_model_out)
+        best_path.parent.mkdir(parents=True, exist_ok=True)
+        if best_state is None:
+            best_state = model_state_cpu(model)
+        torch.save(qadv_checkpoint_payload(state_dict=best_state, model_config=model_config, metrics=metrics), best_path)
     if args.metrics_out:
         metrics_path = Path(args.metrics_out)
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
@@ -313,8 +393,12 @@ def train(args: argparse.Namespace) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--hard-jsonl", action="append", required=True)
+    parser.add_argument("--eval-hard-jsonl", action="append", default=[])
     parser.add_argument("--model-out", required=True)
+    parser.add_argument("--best-model-out", default=None)
     parser.add_argument("--metrics-out", default=None)
+    parser.add_argument("--monitor-metric", default="val_accepted_accuracy")
+    parser.add_argument("--min-delta", type=float, default=0.0)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--hidden-size", type=int, default=256)
