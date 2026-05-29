@@ -19,6 +19,18 @@ class FixedActionModel(torch.nn.Module):
         return logits.masked_fill(~batch["candidate_mask"], float("-inf")), torch.zeros(actions.shape[0])
 
 
+class FixedQAdvModel(torch.nn.Module):
+    def __init__(self, preferred_action: int, q_value: float = 100.0):
+        super().__init__()
+        self.preferred_action = preferred_action
+        self.q_value = float(q_value)
+
+    def forward(self, batch):
+        scores = torch.zeros(batch["candidate_actions"].shape, dtype=torch.float32, device=batch["candidate_actions"].device)
+        scores = scores.masked_fill(batch["candidate_actions"].eq(self.preferred_action), self.q_value)
+        return scores.masked_fill(~batch["candidate_mask"], float("-inf"))
+
+
 class RejectingFanChecker:
     def evaluate(self, **kwargs):
         return {"fan": 4, "can_hu": False}
@@ -48,6 +60,46 @@ def test_transformer_predictor_ranks_mapped_discard_candidate():
     )
 
     assert response == "PLAY T2"
+
+
+def test_transformer_predictor_qadv_lambda_zero_reproduces_base_choice():
+    predictor = TransformerCheckpointPredictor(
+        model=FixedActionModel(12),
+        qadv_model=FixedQAdvModel(2),
+        qadv_lambda=0.0,
+        config={"history_len": 4, "max_candidates": 8},
+        device="cpu",
+    )
+
+    response = predictor.predict_legal_response(
+        "REQ 2 T2",
+        Counter({"W1": 1, "T2": 1}),
+        0,
+        "2 T2",
+        ["PLAY W1", "PLAY T2"],
+    )
+
+    assert response == "PLAY T2"
+
+
+def test_transformer_predictor_qadv_positive_lambda_reranks_base_choice():
+    predictor = TransformerCheckpointPredictor(
+        model=FixedActionModel(12),
+        qadv_model=FixedQAdvModel(2),
+        qadv_lambda=1.0,
+        config={"history_len": 4, "max_candidates": 8},
+        device="cpu",
+    )
+
+    response = predictor.predict_legal_response(
+        "REQ 2 T2",
+        Counter({"W1": 1, "T2": 1}),
+        0,
+        "2 T2",
+        ["PLAY W1", "PLAY T2"],
+    )
+
+    assert response == "PLAY W1"
 
 
 def test_transformer_predictor_maps_reaction_claims_from_offered_tile():
@@ -85,7 +137,12 @@ def test_model_advisor_autoloads_pt_checkpoint(monkeypatch, tmp_path):
             return {"type": "fake-transformer"}
 
     monkeypatch.setattr("advisor_service.model_advisor._build_transformer_predictor", FakePredictor)
-    advisor = TziakchaModelAdvisor(model_path=checkpoint, fan_checker=RejectingFanChecker())
+    advisor = TziakchaModelAdvisor(
+        model_path=checkpoint,
+        qadv_path=None,
+        qadv_lambda=0.0,
+        fan_checker=RejectingFanChecker(),
+    )
 
     rec = advisor.recommend(
         {
@@ -100,6 +157,35 @@ def test_model_advisor_autoloads_pt_checkpoint(monkeypatch, tmp_path):
     assert loaded_paths == [checkpoint]
     assert rec["action"] == "discard"
     assert rec["tile_symbol"] == "T2"
+
+
+def test_model_advisor_passes_qadv_checkpoint_to_transformer_predictor(monkeypatch, tmp_path):
+    checkpoint = tmp_path / "model.pt"
+    qadv = tmp_path / "qadv.pt"
+    checkpoint.write_bytes(b"fake checkpoint")
+    qadv.write_bytes(b"fake qadv")
+    loaded: list[tuple[Path, Path | None, float]] = []
+
+    class FakePredictor:
+        def __init__(self, path, *, qadv_path=None, qadv_lambda=0.0):
+            loaded.append((Path(path), Path(qadv_path) if qadv_path else None, float(qadv_lambda)))
+
+        def predict_legal_response(self, input_text, hand, player_id, request, candidates):
+            return "PLAY T2"
+
+        def info(self):
+            return {"type": "fake-transformer"}
+
+    monkeypatch.setattr("advisor_service.model_advisor._build_transformer_predictor", FakePredictor)
+    advisor = TziakchaModelAdvisor(
+        model_path=checkpoint,
+        qadv_path=qadv,
+        qadv_lambda=0.5,
+        fan_checker=RejectingFanChecker(),
+    )
+
+    assert advisor.model_info()["type"] == "fake-transformer"
+    assert loaded == [(checkpoint, qadv, 0.5)]
 
 
 def test_model_advisor_exposes_chi_peng_gang_candidates_without_low_fan_hu():

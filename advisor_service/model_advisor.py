@@ -20,7 +20,9 @@ from lawlorentz_policy import LawlorentzEffectiveScorer  # noqa: E402
 DEFAULT_TRANSFORMER_MODEL = (
     WORKSPACE_ROOT / "models" / "transformer_candidate_finetune_medhard_l40_20260528b.pt"
 )
+DEFAULT_QADV_RERANKER = WORKSPACE_ROOT / "models" / "qadv_reranker_v0_best.pt"
 DEFAULT_MODEL = DEFAULT_TRANSFORMER_MODEL if DEFAULT_TRANSFORMER_MODEL.exists() else None
+DEFAULT_QADV_MODEL = DEFAULT_QADV_RERANKER if DEFAULT_QADV_RERANKER.exists() else None
 
 
 class TziakchaModelAdvisor:
@@ -33,10 +35,14 @@ class TziakchaModelAdvisor:
     def __init__(
         self,
         model_path: Path | str | None = DEFAULT_MODEL,
+        qadv_path: Path | str | None = DEFAULT_QADV_MODEL,
+        qadv_lambda: float = 0.05,
         predictor: Any | None = None,
         fan_checker: Any | None = None,
     ) -> None:
         self.model_path = Path(model_path) if model_path else None
+        self.qadv_path = Path(qadv_path) if qadv_path else None
+        self.qadv_lambda = float(qadv_lambda)
         self.predictor = predictor if predictor is not None else self._load_predictor(self.model_path)
         self.fan_checker = fan_checker if fan_checker is not None else self._default_fan_checker()
 
@@ -44,6 +50,12 @@ class TziakchaModelAdvisor:
         if model_path is None:
             return None
         if model_path.suffix.lower() in {".pt", ".pth"}:
+            if self.qadv_path is not None or self.qadv_lambda != 0.0:
+                return _build_transformer_predictor(
+                    model_path,
+                    qadv_path=self.qadv_path,
+                    qadv_lambda=self.qadv_lambda,
+                )
             return _build_transformer_predictor(model_path)
         return None
 
@@ -580,7 +592,12 @@ def _optional_int(value: Any, default: int | None) -> int | None:
         return default
 
 
-def _build_transformer_predictor(model_path: Path):
+def _build_transformer_predictor(
+    model_path: Path,
+    *,
+    qadv_path: Path | None = None,
+    qadv_lambda: float = 0.0,
+):
     from .transformer_predictor import TransformerCheckpointPredictor
 
-    return TransformerCheckpointPredictor(model_path)
+    return TransformerCheckpointPredictor(model_path, qadv_path=qadv_path, qadv_lambda=qadv_lambda)

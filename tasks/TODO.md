@@ -1185,7 +1185,18 @@ Review:
   - Use only one `NVIDIA-L40`; do not request multi-GPU for QADV v0.
   - Launched in Kubernetes as `job/mcr-qadv-l40-v0-20260529a`, pod `mcr-qadv-l40-v0-20260529a-vfh97`, scheduled on `rci-tide-gpu-16.sdsu.edu`.
   - Startup verification: `PyMahjongGB` built and imported, `torch.cuda.is_available()` returned true with one CUDA device, and the job entered train hard-example mining.
-- [ ] Sweep lambda values `0.00`, `0.05`, `0.10`, `0.20`, `0.35`, `0.50` and promote only if fixed-league utility improves without CHAGA/Hu safety regression.
+- [x] Sweep lambda values `0.00`, `0.05`, `0.10`, `0.20`, `0.35`, `0.50` and promote only if fixed-league utility improves without CHAGA/Hu safety regression.
+  - Completed remotely in `job/mcr-qadv-l40-v0-20260529a`.
+  - Validation baseline at `lambda=0.00`: relaxed `0.866389`, top-1 `0.818950`, PLAY relaxed `0.859256`, low-fan Hu `0`, action outside mask `0`, lambda-zero reproduction mismatches `0`.
+  - Best CHAGA relaxed value was `lambda=0.50`: relaxed `0.870159`, top-1 `0.822069`, PLAY relaxed `0.860261`, low-fan Hu `0`, action outside mask `0`.
+  - Conservatively deployed `lambda=0.05` first because it is the smallest safe/promising lambda and the fixed-league utility gate has not yet justified a larger reranker weight.
+- [x] Promote completed QADV v0 artifact into the local advisor/plugin path.
+  - Pull `models/qadv_reranker_v0_best.pt` and QADV metrics from the Kubernetes PVC.
+  - Add live predictor support for `base Transformer + lambda * QADV`.
+  - Keep `lambda=0` behavior identical to the frozen Transformer.
+  - Default to conservative deployment lambda unless fixed-league evaluation justifies a larger value.
+  - Verify no low-fan Hu or illegal-mask regression in predictor tests.
+  - Local advisor server restarted on `127.0.0.1:8765` with `models\qadv_reranker_v0_best.pt` and `--qadv-lambda 0.05`; `/health` reports `qadv_loaded: true`.
 - [ ] Generate small legal self-play rollouts with the frozen baseline and fixed league.
   - Deferred until the full QADV hard-example train/val path passes gates.
   - Require zero illegal Hu, zero action outside legal mask, all hands terminate, stable metrics across seeds before training from rollouts.

@@ -36,16 +36,22 @@ class TransformerCheckpointPredictor:
         *,
         model: Any | None = None,
         config: dict[str, Any] | None = None,
+        qadv_path: Path | str | None = None,
+        qadv_model: Any | None = None,
+        qadv_lambda: float = 0.0,
         device: str | None = None,
     ) -> None:
         self.model_path = Path(model_path) if model_path else None
+        self.qadv_path = Path(qadv_path) if qadv_path else None
         (
             self.torch,
             self.FeatureAgent,
             self.TransformerCandidateModel,
             self.CANDIDATE_RULE_FEATURES,
         ) = _training_symbols()
+        self.qadv_symbols = _qadv_symbols()
         self.device = self.torch.device(device or ("cuda" if self.torch.cuda.is_available() else "cpu"))
+        self.act_size = int(self.FeatureAgent.ACT_SIZE)
         if model is None:
             if self.model_path is None:
                 raise ValueError("model_path is required when model is not supplied")
@@ -56,9 +62,14 @@ class TransformerCheckpointPredictor:
         self.model = model.to(self.device) if hasattr(model, "to") else model
         if hasattr(self.model, "eval"):
             self.model.eval()
+        if qadv_model is None and self.qadv_path is not None:
+            qadv_model = self._load_qadv_checkpoint(self.qadv_path)
+        self.qadv_model = qadv_model.to(self.device) if hasattr(qadv_model, "to") else qadv_model
+        if hasattr(self.qadv_model, "eval"):
+            self.qadv_model.eval()
+        self.qadv_lambda = float(qadv_lambda)
         self.history_len = int(self.config.get("history_len", 80))
         self.max_candidates = int(self.config.get("max_candidates", 96))
-        self.act_size = int(self.FeatureAgent.ACT_SIZE)
         self.obs_shape = (int(self.FeatureAgent.OBS_SIZE), 4, 9)
 
     def _load_checkpoint(self, path: Path) -> tuple[Any, dict[str, Any]]:
@@ -75,12 +86,32 @@ class TransformerCheckpointPredictor:
         model.load_state_dict(checkpoint["model_state"])
         return model, config
 
+    def _load_qadv_checkpoint(self, path: Path) -> Any:
+        QAdvReranker, _, _ = self.qadv_symbols
+        checkpoint = self.torch.load(path, map_location=self.device)
+        if checkpoint.get("kind") != "qadv_reranker":
+            raise ValueError(f"not a qadv_reranker checkpoint: {path}")
+        config = dict(checkpoint.get("config") or {})
+        model = QAdvReranker(
+            action_vocab_size=config.get("action_vocab_size", self.act_size),
+            rule_feature_size=config.get("rule_feature_size", self.CANDIDATE_RULE_FEATURES),
+            scalar_feature_size=config.get("scalar_feature_size", 3),
+            hidden_size=config.get("hidden_size", 256),
+            num_layers=config.get("num_layers", 3),
+            dropout=config.get("dropout", 0.05),
+        )
+        model.load_state_dict(checkpoint["model_state"])
+        return model
+
     def info(self) -> dict[str, Any]:
         return {
             "type": "transformer-checkpoint",
             "path": str(self.model_path) if self.model_path else None,
             "device": str(self.device),
             "config": dict(self.config),
+            "qadv_path": str(self.qadv_path) if self.qadv_path else None,
+            "qadv_lambda": self.qadv_lambda,
+            "qadv_loaded": self.qadv_model is not None,
         }
 
     def predict_legal_response(
@@ -110,7 +141,26 @@ class TransformerCheckpointPredictor:
         batch = self._batch_for_live_state(hand, player_id, ordered_actions)
         with self.torch.no_grad():
             logits, _ = self.model(batch)
-        pred_slot = int(self.torch.argmax(logits[0]).item())
+            if self.qadv_model is not None:
+                qadv_batch = self._qadv_batch_for_live_state(
+                    batch,
+                    logits,
+                    ordered_actions,
+                    responses_by_action,
+                )
+                q_scores = self.qadv_model(qadv_batch)
+                _, _, qadv_final_scores = self.qadv_symbols
+                final_scores = qadv_final_scores(
+                    logits,
+                    q_scores,
+                    qadv_batch["candidate_mask"],
+                    lambda_q=self.qadv_lambda,
+                    candidate_is_hu=qadv_batch["candidate_is_hu"],
+                    allow_hu=qadv_batch["allow_hu"],
+                )
+            else:
+                final_scores = logits
+        pred_slot = int(self.torch.argmax(final_scores[0]).item())
         selected_action = int(ordered_actions[pred_slot])
         selected_responses = responses_by_action.get(selected_action) or [candidates[0]]
         return self._choose_response_for_action(selected_responses, hand, request)
@@ -143,6 +193,39 @@ class TransformerCheckpointPredictor:
             "candidate_mask": torch.from_numpy(candidate_mask).to(self.device),
             "candidate_rule_features": torch.from_numpy(rule_features).to(self.device),
             "scalar_features": torch.from_numpy(scalar_features).to(self.device),
+        }
+
+    def _qadv_batch_for_live_state(
+        self,
+        base_batch: dict[str, Any],
+        base_logits: Any,
+        candidate_actions: list[int],
+        responses_by_action: dict[int, list[str]],
+    ) -> dict[str, Any]:
+        torch = self.torch
+        qadv_family_id = self.qadv_symbols[1]
+        width = int(base_batch["candidate_actions"].shape[1])
+        count = min(len(candidate_actions), width)
+        candidate_family_ids = torch.zeros((1, width), dtype=torch.long, device=self.device)
+        candidate_is_hu = torch.zeros((1, width), dtype=torch.bool, device=self.device)
+        base_ranks = torch.full((1, width), float(width), dtype=torch.float32, device=self.device)
+        for slot, action in enumerate(candidate_actions[:count]):
+            norm = _action_family_norm(responses_by_action.get(int(action), [""])[0])
+            candidate_family_ids[0, slot] = int(qadv_family_id(norm))
+            candidate_is_hu[0, slot] = norm == "HU"
+        if count:
+            ordered = torch.argsort(base_logits[0, :count], descending=True)
+            base_ranks[0, ordered] = torch.arange(count, dtype=torch.float32, device=self.device)
+        return {
+            "candidate_actions": base_batch["candidate_actions"],
+            "candidate_family_ids": candidate_family_ids,
+            "candidate_rule_features": base_batch["candidate_rule_features"],
+            "base_logits": base_logits,
+            "base_ranks": base_ranks,
+            "candidate_mask": base_batch["candidate_mask"],
+            "candidate_is_hu": candidate_is_hu,
+            "allow_hu": torch.tensor([bool(candidate_is_hu[0, :count].any().item())], dtype=torch.bool, device=self.device),
+            "scalar_features": base_batch["scalar_features"],
         }
 
     def _hand_observation(self, hand: Counter[str], player_id: int) -> np.ndarray:
@@ -257,6 +340,17 @@ def _training_symbols():
     from train_transformer_candidate import CANDIDATE_RULE_FEATURES, TransformerCandidateModel
 
     return torch, FeatureAgent, TransformerCandidateModel, CANDIDATE_RULE_FEATURES
+
+
+def _qadv_symbols():
+    from qadv_reranker import QAdvReranker, qadv_family_id, qadv_final_scores
+
+    return QAdvReranker, qadv_family_id, qadv_final_scores
+
+
+def _action_family_norm(response: str) -> str:
+    parts = response.strip().split()
+    return parts[0].upper() if parts else ""
 
 
 def _event_tile(request: str) -> str | None:

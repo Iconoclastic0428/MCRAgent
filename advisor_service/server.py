@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from .advisor import recommend
 from .messages import decode_observed_payload
-from .model_advisor import DEFAULT_MODEL, TziakchaModelAdvisor
+from .model_advisor import DEFAULT_MODEL, DEFAULT_QADV_MODEL, TziakchaModelAdvisor
 from .state import AdvisorState
 
 
@@ -22,10 +22,16 @@ class AdvisorRuntime:
         use_aleo: bool = False,
         use_model: bool = True,
         model_path: Path | str | None = DEFAULT_MODEL,
+        qadv_path: Path | str | None = DEFAULT_QADV_MODEL,
+        qadv_lambda: float = 0.05,
         result_log_path: Path | str | None = Path("runs/tziakcha_live_results.jsonl"),
     ) -> None:
         self.use_aleo = use_aleo
-        self.model_advisor = TziakchaModelAdvisor(model_path=model_path) if use_model else None
+        self.model_advisor = (
+            TziakchaModelAdvisor(model_path=model_path, qadv_path=qadv_path, qadv_lambda=qadv_lambda)
+            if use_model
+            else None
+        )
         self.state = AdvisorState()
         self.result_log_path = Path(result_log_path) if result_log_path else None
         self._persisted_result_count = 0
@@ -166,12 +172,16 @@ def run_server_in_thread(
     use_aleo: bool = False,
     use_model: bool = True,
     model_path: Path | str | None = DEFAULT_MODEL,
+    qadv_path: Path | str | None = DEFAULT_QADV_MODEL,
+    qadv_lambda: float = 0.05,
     result_log_path: Path | str | None = None,
 ):
     runtime = AdvisorRuntime(
         use_aleo=use_aleo,
         use_model=use_model,
         model_path=model_path,
+        qadv_path=qadv_path,
+        qadv_lambda=qadv_lambda,
         result_log_path=result_log_path,
     )
     server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(runtime))
@@ -190,6 +200,17 @@ def main() -> None:
         default=str(DEFAULT_MODEL) if DEFAULT_MODEL else None,
         help="Optional local policy or Transformer checkpoint path.",
     )
+    parser.add_argument(
+        "--qadv",
+        default=str(DEFAULT_QADV_MODEL) if DEFAULT_QADV_MODEL else None,
+        help="Optional Q-adversarial reranker checkpoint layered on top of --model.",
+    )
+    parser.add_argument(
+        "--qadv-lambda",
+        type=float,
+        default=0.05,
+        help="Weight for the Q-adversarial reranker. Use 0 to reproduce the base Transformer.",
+    )
     parser.add_argument("--no-model", action="store_true", help="Use only the simple local fallback advisor.")
     parser.add_argument("--local-only", action="store_true", help="Disable the optional Aleo fallback bridge.")
     parser.add_argument(
@@ -202,6 +223,8 @@ def main() -> None:
         use_aleo=not args.local_only,
         use_model=not args.no_model,
         model_path=args.model,
+        qadv_path=args.qadv,
+        qadv_lambda=args.qadv_lambda,
         result_log_path=args.results_log or None,
     )
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(runtime))
