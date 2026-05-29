@@ -367,6 +367,8 @@ Added `k8s/mcr-qadv-l40-v0-20260529a.yaml`, a single-`NVIDIA-L40` job that uses 
 
 Verification so far: RED tests for external eval and best-checkpoint behavior failed before implementation. After the patch, `python -m pytest tests\test_train_qadv_reranker.py tests\test_qadv_reranker.py -q --basetemp tmp\pytest_qadv_external_green` passed with 13 tests. CLI smoke with `--eval-hard-jsonl tmp\qadv_smoke.jsonl` wrote `tmp\qadv_external_best.pt`, `tmp\qadv_external_train_metrics.json`, and `tmp\qadv_external_eval_metrics.json`; best epoch was `1`, validation rows were `210`, low-fan Hu count was `0`, and lambda-zero reproduction mismatches remained `0`.
 
+Post-commit launch: pushed `b04c963b70a77587c06ff01ddd0639a962a599bb`, synced that committed tree into `/data/idl/mcr_agent_qadv_20260529/repo`, and launched `job/mcr-qadv-l40-v0-20260529a` in namespace `nourish-sdsc`. The pod `mcr-qadv-l40-v0-20260529a-vfh97` scheduled on `rci-tide-gpu-16.sdsu.edu` with one L40. Startup logs showed `PyMahjongGB` built successfully, `torch 2.9.0+cu128`, CUDA available with one device, and `MahjongGB import ok`; the job then entered full train hard-example mining.
+
 ## 2026-05-28 Hu Fan Breakdown Display
 
 Added user-visible Hu fan breakdowns so the player can verify a Hu recommendation without manually recalculating every fan. `scripts/official_fan.py` now attaches `fan_items` and `base_fan_items` using PyMahjongGB's `MahjongFanCalculator` output while still using the existing official helper result for the Hu gate. `advisor_service/model_advisor.py` and `advisor_service/advisor.py` pass those items through the recommendation API and add a compact `fan_text` summary to Hu advice, for example `Hu (10 fan: 花龙 8 + 门前清 2)`.

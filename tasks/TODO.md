@@ -1179,10 +1179,12 @@ Review:
 - [x] Implement and test the Q reranker trainer.
   - Frozen Transformer cached-output Q head/reranker, accepted-set anchor dominant, conservative penalty small.
   - Self-play return loss is intentionally deferred until full train/val hard-example mining and lambda sweep prove the reranker path.
-- [ ] Launch full single-L40 QADV v0 job.
+- [x] Launch full single-L40 QADV v0 job.
   - Job spec: `k8s/mcr-qadv-l40-v0-20260529a.yaml`.
   - It mines full train/val QADV hard-example JSONL from the `>2400` prepared split, gates the summaries, trains `models/qadv_reranker_v0_best.pt`, and writes `runs/qadv/qadv_reranker_v0_val_lambda_sweep.json`.
   - Use only one `NVIDIA-L40`; do not request multi-GPU for QADV v0.
+  - Launched in Kubernetes as `job/mcr-qadv-l40-v0-20260529a`, pod `mcr-qadv-l40-v0-20260529a-vfh97`, scheduled on `rci-tide-gpu-16.sdsu.edu`.
+  - Startup verification: `PyMahjongGB` built and imported, `torch.cuda.is_available()` returned true with one CUDA device, and the job entered train hard-example mining.
 - [ ] Sweep lambda values `0.00`, `0.05`, `0.10`, `0.20`, `0.35`, `0.50` and promote only if fixed-league utility improves without CHAGA/Hu safety regression.
 - [ ] Generate small legal self-play rollouts with the frozen baseline and fixed league.
   - Deferred until the full QADV hard-example train/val path passes gates.
