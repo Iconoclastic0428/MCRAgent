@@ -32,6 +32,8 @@ def test_summarize_feasibility_reports_target_metrics_and_hu_safety():
     official_summary = {
         "policy": "transformer",
         "model": "models/baseline.pt",
+        "qadv_model": "models/qadv.pt",
+        "qadv_lambda": 0.05,
         "opponent": "sample",
         "average_scores": [5.0, -2.0, -2.0, -1.0],
         "policy_diagnostics_totals": [
@@ -111,6 +113,8 @@ def test_summarize_feasibility_reports_target_metrics_and_hu_safety():
     summary = summarize_feasibility(official_summary, target_player=0)
 
     assert summary["format"] == "mcr_fixed_league_feasibility_v1"
+    assert summary["source_qadv_model"] == "models/qadv.pt"
+    assert summary["source_qadv_lambda"] == 0.05
     assert summary["games"] == 4
     assert summary["average_point_delta"] == 5.0
     assert summary["hu_rate"] == 3 / 4

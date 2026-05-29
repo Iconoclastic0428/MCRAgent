@@ -181,8 +181,12 @@ def summarize_feasibility(
         "format": "mcr_fixed_league_feasibility_v1",
         "source_policy": official_summary.get("policy"),
         "source_model": official_summary.get("model"),
+        "source_qadv_model": official_summary.get("qadv_model"),
+        "source_qadv_lambda": official_summary.get("qadv_lambda"),
         "opponent": official_summary.get("opponent"),
         "opponent_model": official_summary.get("opponent_model"),
+        "opponent_qadv_model": official_summary.get("opponent_qadv_model"),
+        "opponent_qadv_lambda": official_summary.get("opponent_qadv_lambda"),
         "target_player": target_player,
         "games": games,
         "average_point_delta": (
@@ -240,8 +244,12 @@ def main() -> int:
     parser.add_argument("--target-player", type=int, default=0)
     parser.add_argument("--policy", choices=POLICY_CHOICES, default="fallback")
     parser.add_argument("--model", default=None)
+    parser.add_argument("--qadv-model", default=None)
+    parser.add_argument("--qadv-lambda", type=float, default=0.0)
     parser.add_argument("--opponent", choices=POLICY_CHOICES, default="sample")
     parser.add_argument("--opponent-model", default=None)
+    parser.add_argument("--opponent-qadv-model", default=None)
+    parser.add_argument("--opponent-qadv-lambda", type=float, default=0.0)
     parser.add_argument("--raw", default="data/raw/botzone_mcr_1000.jsonl")
     parser.add_argument("--games", type=int, default=16)
     parser.add_argument("--offset", type=int, default=0)

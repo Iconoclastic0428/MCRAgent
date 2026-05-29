@@ -269,6 +269,8 @@ def summarize_terminals(results: list[dict]) -> dict:
 def make_policy(
     kind: str,
     model: str | None = None,
+    qadv_model: str | None = None,
+    qadv_lambda: float = 0.0,
     aleo_exe: str | Path = DEFAULT_ALEO,
     sample_exe: str | Path = DEFAULT_SAMPLE,
     lawlorentz_levels: int = 1,
@@ -294,6 +296,14 @@ def make_policy(
         if predictor_cls is None:
             from advisor_service.transformer_predictor import (  # noqa: PLC0415
                 TransformerCheckpointPredictor as predictor_cls,
+            )
+        if qadv_model is not None or float(qadv_lambda) != 0.0:
+            return BotzonePolicy(
+                predictor_cls(
+                    model,
+                    qadv_path=qadv_model,
+                    qadv_lambda=float(qadv_lambda),
+                )
             )
         return BotzonePolicy(predictor_cls(model))
     if kind == "aleo":
@@ -331,12 +341,17 @@ def run_match_set(args: argparse.Namespace) -> dict:
     wins = [0, 0, 0, 0]
     initdata_items = load_initdata(Path(args.raw), limit=args.games, offset=args.offset)
     lawlorentz_levels = int(getattr(args, "lawlorentz_levels", 1))
+    qadv_model = getattr(args, "qadv_model", None)
+    qadv_lambda = float(getattr(args, "qadv_lambda", 0.0) or 0.0)
+    opponent_qadv_model = getattr(args, "opponent_qadv_model", None)
+    opponent_qadv_lambda = float(getattr(args, "opponent_qadv_lambda", 0.0) or 0.0)
     for index, initdata in enumerate(initdata_items):
         policies = [
-            make_policy(args.policy, args.model, args.aleo_exe, args.sample_exe, lawlorentz_levels),
             make_policy(
-                args.opponent,
-                args.opponent_model,
+                args.policy,
+                args.model,
+                qadv_model,
+                qadv_lambda,
                 args.aleo_exe,
                 args.sample_exe,
                 lawlorentz_levels,
@@ -344,6 +359,8 @@ def run_match_set(args: argparse.Namespace) -> dict:
             make_policy(
                 args.opponent,
                 args.opponent_model,
+                opponent_qadv_model,
+                opponent_qadv_lambda,
                 args.aleo_exe,
                 args.sample_exe,
                 lawlorentz_levels,
@@ -351,6 +368,17 @@ def run_match_set(args: argparse.Namespace) -> dict:
             make_policy(
                 args.opponent,
                 args.opponent_model,
+                opponent_qadv_model,
+                opponent_qadv_lambda,
+                args.aleo_exe,
+                args.sample_exe,
+                lawlorentz_levels,
+            ),
+            make_policy(
+                args.opponent,
+                args.opponent_model,
+                opponent_qadv_model,
+                opponent_qadv_lambda,
                 args.aleo_exe,
                 args.sample_exe,
                 lawlorentz_levels,
@@ -375,8 +403,12 @@ def run_match_set(args: argparse.Namespace) -> dict:
     return {
         "policy": args.policy,
         "model": args.model,
+        "qadv_model": qadv_model,
+        "qadv_lambda": qadv_lambda,
         "opponent": args.opponent,
         "opponent_model": args.opponent_model,
+        "opponent_qadv_model": opponent_qadv_model,
+        "opponent_qadv_lambda": opponent_qadv_lambda,
         "judge": args.judge,
         "raw": args.raw,
         "games": len(games),
@@ -407,6 +439,8 @@ def main() -> int:
         default="fallback",
     )
     parser.add_argument("--model", default=None)
+    parser.add_argument("--qadv-model", default=None)
+    parser.add_argument("--qadv-lambda", type=float, default=0.0)
     parser.add_argument(
         "--opponent",
         choices=[
@@ -423,6 +457,8 @@ def main() -> int:
         default="fallback",
     )
     parser.add_argument("--opponent-model", default=None)
+    parser.add_argument("--opponent-qadv-model", default=None)
+    parser.add_argument("--opponent-qadv-lambda", type=float, default=0.0)
     parser.add_argument("--raw", default="data/raw/botzone_mcr_1000.jsonl")
     parser.add_argument("--games", type=int, default=16)
     parser.add_argument("--offset", type=int, default=0)

@@ -1197,9 +1197,16 @@ Review:
   - Default to conservative deployment lambda unless fixed-league evaluation justifies a larger value.
   - Verify no low-fan Hu or illegal-mask regression in predictor tests.
   - Local advisor server restarted on `127.0.0.1:8765` with `models\qadv_reranker_v0_best.pt` and `--qadv-lambda 0.05`; `/health` reports `qadv_loaded: true`.
+- [x] Add and run exact fixed-league QADV sweep.
+  - Added `scripts/sweep_qadv_fixed_league.py` to run official-judge lambda sweeps and write per-lambda official/feasibility JSON plus a promotion summary.
+  - Added QADV passthrough args to `scripts/official_judge_match.py` and `scripts/evaluate_fixed_league_feasibility.py`.
+  - Smoke sweep: `runs/qadv/fixed_league_sweep_4g_offset4/summary.json` over lambdas `0.00,0.05,0.10,0.20,0.35,0.50`.
+  - Result: all lambdas were safety-clean, but all 4 games Huang'ed and average point delta stayed `0.0`; `best_promotable_lambda` is `null`.
+  - Keep deployed lambda at `0.05`; do not promote `0.50` from offline CHAGA score alone.
 - [ ] Generate small legal self-play rollouts with the frozen baseline and fixed league.
   - Deferred until the full QADV hard-example train/val path passes gates.
   - Require zero illegal Hu, zero action outside legal mask, all hands terminate, stable metrics across seeds before training from rollouts.
+  - Current blocker: the exact official-judge smoke sweep produced no terminal signal, while `scripts/selfplay_sim.py` is explicitly non-official. Do not train rollout returns from the non-official simulator as if it were exact MCR.
 
 ### Current user-directed sequence
 

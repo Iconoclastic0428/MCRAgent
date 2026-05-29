@@ -233,6 +233,31 @@ def test_make_policy_can_create_transformer_checkpoint_policy(monkeypatch):
     assert policy.predictor.kind == "legal_action_ranker"
 
 
+def test_make_policy_can_create_transformer_checkpoint_policy_with_qadv(monkeypatch):
+    constructed = []
+
+    class FakeTransformerCheckpointPredictor:
+        def __init__(self, model_path, *, qadv_path=None, qadv_lambda=0.0):
+            constructed.append((model_path, qadv_path, float(qadv_lambda)))
+            self.kind = "legal_action_ranker"
+
+    monkeypatch.setattr(
+        "official_judge_match.TransformerCheckpointPredictor",
+        FakeTransformerCheckpointPredictor,
+        raising=False,
+    )
+
+    policy = make_policy(
+        "transformer",
+        model="models/baseline.pt",
+        qadv_model="models/qadv.pt",
+        qadv_lambda=0.2,
+    )
+
+    assert constructed == [("models/baseline.pt", "models/qadv.pt", 0.2)]
+    assert policy.predictor.kind == "legal_action_ranker"
+
+
 def test_botzone_json_process_policy_sends_requests_and_responses_to_runner():
     calls = []
 
