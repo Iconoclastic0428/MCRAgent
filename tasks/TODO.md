@@ -1207,6 +1207,16 @@ Review:
   - Deferred until the full QADV hard-example train/val path passes gates.
   - Require zero illegal Hu, zero action outside legal mask, all hands terminate, stable metrics across seeds before training from rollouts.
   - Current blocker: the exact official-judge smoke sweep produced no terminal signal, while `scripts/selfplay_sim.py` is explicitly non-official. Do not train rollout returns from the non-official simulator as if it were exact MCR.
+- [x] Build exact terminal-slice scanner for QADV return data.
+  - Fix `make_policy` callers to pass QADV/Aleo/sample args by keyword so older trajectory scripts cannot accidentally pass `aleo_exe` as `qadv_model`.
+  - Add exact official-judge scan over offsets that records terminal-rich slices before any rollout-return training.
+  - Run a small scan and report whether any offset produces nonzero Hu/point/end-wait signal.
+  - Keep rollout-return training deferred until the scanner finds exact terminal signal with zero low-fan Hu and zero illegal actions.
+  - 2026-05-29 result: added `scripts/scan_qadv_terminal_slices.py` and QADV args to `scripts/official_trajectories.py`; fixed `scripts/official_judge_match.py` so external policy args are keyword-only after `model`.
+  - Small scan `runs/qadv/terminal_slice_scan_small/summary.json`: offsets 8,12,16,20 with 2 games each, zero terminal slices, zero target Hu/end-wait signal, no promotable lambda.
+  - Broad scan `runs/qadv/terminal_slice_scan_broad/summary.json`: offsets 24 through 84 with 1 game each, zero terminal slices, zero target Hu/end-wait signal, no promotable lambda.
+  - Decision: do not launch self-play/return training yet. GPT Pro's gate still requires exact fixed-league terminal signal with zero unsafe actions before rollout returns are allowed.
+  - Verification: full test suite passed with 322 tests and one existing sklearn warning. The completed `mcr-qadv-l40-v0-20260529a` Kubernetes job/pod was deleted after artifact collection.
 
 ### Current user-directed sequence
 

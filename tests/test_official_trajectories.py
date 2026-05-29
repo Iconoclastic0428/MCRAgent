@@ -86,8 +86,16 @@ def test_run_trajectory_set_can_create_external_policy_kinds(monkeypatch, tmp_pa
     raw.write_text('{"initdata": {"seed": 1}}\n', encoding="utf-8")
     calls = []
 
-    def fake_make_policy(kind, model=None, aleo_exe="default-aleo", sample_exe="default-sample"):
-        calls.append((kind, model, aleo_exe, sample_exe))
+    def fake_make_policy(
+        kind,
+        model=None,
+        *,
+        qadv_model=None,
+        qadv_lambda=0.0,
+        aleo_exe="default-aleo",
+        sample_exe="default-sample",
+    ):
+        calls.append((kind, model, qadv_model, qadv_lambda, aleo_exe, sample_exe))
         return {"kind": kind}
 
     def fake_run_match(policies, initdata, exe_path=None, max_turns=500):
@@ -107,6 +115,10 @@ def test_run_trajectory_set_can_create_external_policy_kinds(monkeypatch, tmp_pa
             model=None,
             opponent="sample",
             opponent_model=None,
+            qadv_model="target-qadv.pt",
+            qadv_lambda=0.05,
+            opponent_qadv_model=None,
+            opponent_qadv_lambda=0.0,
             raw=str(raw),
             games=1,
             offset=0,
@@ -119,8 +131,8 @@ def test_run_trajectory_set_can_create_external_policy_kinds(monkeypatch, tmp_pa
 
     assert summary["games"] == 1
     assert calls == [
-        ("aleo", None, "custom-aleo.exe", "custom-sample.exe"),
-        ("sample", None, "custom-aleo.exe", "custom-sample.exe"),
-        ("sample", None, "custom-aleo.exe", "custom-sample.exe"),
-        ("sample", None, "custom-aleo.exe", "custom-sample.exe"),
+        ("aleo", None, "target-qadv.pt", 0.05, "custom-aleo.exe", "custom-sample.exe"),
+        ("sample", None, None, 0.0, "custom-aleo.exe", "custom-sample.exe"),
+        ("sample", None, None, 0.0, "custom-aleo.exe", "custom-sample.exe"),
+        ("sample", None, None, 0.0, "custom-aleo.exe", "custom-sample.exe"),
     ]

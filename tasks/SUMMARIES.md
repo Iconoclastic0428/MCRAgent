@@ -375,6 +375,16 @@ Integrated the QADV reranker into the live advisor path. `advisor_service.transf
 
 Next-step execution: added QADV passthrough to `scripts/official_judge_match.py` and `scripts/evaluate_fixed_league_feasibility.py`, then added `scripts/sweep_qadv_fixed_league.py` for official-judge lambda sweeps. The smoke sweep at `runs/qadv/fixed_league_sweep_4g_offset4/summary.json` tested lambdas `0.00,0.05,0.10,0.20,0.35,0.50` over 4 exact official-judge games at offset 4. Every lambda stayed safety-clean with zero low-fan Hu and zero illegal predictions, but every hand Huang'ed and average point delta stayed `0.0`, so `best_promotable_lambda` remained `null`. The deployed live lambda stays at conservative `0.05`; `0.50` is not promoted from offline CHAGA gain alone.
 
+## 2026-05-29 QADV Terminal-Slice Gate
+
+Re-read `runs/gpt_pro_qadv_next_step_20260529.md` and verified the project is past GPT Pro's initial QADV steps: external validation support, full train/validation hard-example mining, single-L40 QADV training, validation lambda sweep, local advisor integration, and a first fixed-league smoke sweep are complete. The remaining gate before any rollout-return/self-play training is exact fixed-league terminal signal; the non-official `scripts/selfplay_sim.py` remains disallowed for return training.
+
+Implemented the next exact-evaluation step by adding `scripts/scan_qadv_terminal_slices.py`, which scans official-judge offsets with QADV lambda sweeps and records whether any slice has Hu, end-wait, target terminal, or point-delta signal. Also made `scripts/official_judge_match.py` keyword-only for QADV/Aleo/sample options after `model`, then updated `scripts/official_trajectories.py` to support transformer/QADV policy arguments without accidentally passing `aleo_exe` as `qadv_model`.
+
+Results: `runs/qadv/terminal_slice_scan_small/summary.json` scanned offsets 8, 12, 16, and 20 with 2 games per slice and found zero terminal slices. `runs/qadv/terminal_slice_scan_broad/summary.json` scanned offsets 24 through 84 with 1 game per slice and also found zero terminal slices, zero target Hu/end-wait signal, zero point delta, and no promotable lambda. No remote training was launched because the exact-data gate did not pass.
+
+Verification: `python -m pytest tests -q --basetemp tmp\pytest_qadv_terminal_full` passed with 322 tests and one existing sklearn convergence warning. The local advisor remains live on `127.0.0.1:8765` with `models\transformer_candidate_finetune_medhard_l40_20260528b.pt`, `models\qadv_reranker_v0_best.pt`, and `qadv_lambda=0.05`. Cleaned the completed Kubernetes QADV job/pod; only the two older transformer L40 jobs remain running.
+
 ## 2026-05-28 Hu Fan Breakdown Display
 
 Added user-visible Hu fan breakdowns so the player can verify a Hu recommendation without manually recalculating every fan. `scripts/official_fan.py` now attaches `fan_items` and `base_fan_items` using PyMahjongGB's `MahjongFanCalculator` output while still using the existing official helper result for the Hu gate. `advisor_service/model_advisor.py` and `advisor_service/advisor.py` pass those items through the recommendation API and add a compact `fan_text` summary to Hu advice, for example `Hu (10 fan: 花龙 8 + 门前清 2)`.

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from official_judge_match import load_initdata, make_policy, run_match
 
-POLICY_CHOICES = ["fallback", "shanten", "model", "json", "aleo", "sample"]
+POLICY_CHOICES = ["fallback", "shanten", "model", "transformer", "json", "aleo", "sample"]
 
 
 def rewards_from_scores(scores: list[int | float]) -> list[float]:
@@ -67,12 +67,44 @@ def run_trajectory_set(args: argparse.Namespace) -> dict:
     games = []
     score_totals = [0.0, 0.0, 0.0, 0.0]
     initdata_items = load_initdata(Path(args.raw), limit=args.games, offset=args.offset)
+    qadv_model = getattr(args, "qadv_model", None)
+    qadv_lambda = float(getattr(args, "qadv_lambda", 0.0) or 0.0)
+    opponent_qadv_model = getattr(args, "opponent_qadv_model", None)
+    opponent_qadv_lambda = float(getattr(args, "opponent_qadv_lambda", 0.0) or 0.0)
     for index, initdata in enumerate(initdata_items):
         policies = [
-            make_policy(args.policy, args.model, args.aleo_exe, args.sample_exe),
-            make_policy(args.opponent, args.opponent_model, args.aleo_exe, args.sample_exe),
-            make_policy(args.opponent, args.opponent_model, args.aleo_exe, args.sample_exe),
-            make_policy(args.opponent, args.opponent_model, args.aleo_exe, args.sample_exe),
+            make_policy(
+                args.policy,
+                args.model,
+                qadv_model=qadv_model,
+                qadv_lambda=qadv_lambda,
+                aleo_exe=args.aleo_exe,
+                sample_exe=args.sample_exe,
+            ),
+            make_policy(
+                args.opponent,
+                args.opponent_model,
+                qadv_model=opponent_qadv_model,
+                qadv_lambda=opponent_qadv_lambda,
+                aleo_exe=args.aleo_exe,
+                sample_exe=args.sample_exe,
+            ),
+            make_policy(
+                args.opponent,
+                args.opponent_model,
+                qadv_model=opponent_qadv_model,
+                qadv_lambda=opponent_qadv_lambda,
+                aleo_exe=args.aleo_exe,
+                sample_exe=args.sample_exe,
+            ),
+            make_policy(
+                args.opponent,
+                args.opponent_model,
+                qadv_model=opponent_qadv_model,
+                qadv_lambda=opponent_qadv_lambda,
+                aleo_exe=args.aleo_exe,
+                sample_exe=args.sample_exe,
+            ),
         ]
         result = run_match(
             policies,
@@ -86,8 +118,12 @@ def run_trajectory_set(args: argparse.Namespace) -> dict:
     return {
         "policy": args.policy,
         "model": args.model,
+        "qadv_model": qadv_model,
+        "qadv_lambda": qadv_lambda,
         "opponent": args.opponent,
         "opponent_model": args.opponent_model,
+        "opponent_qadv_model": opponent_qadv_model,
+        "opponent_qadv_lambda": opponent_qadv_lambda,
         "judge": args.judge,
         "raw": args.raw,
         "offset": args.offset,
@@ -102,8 +138,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--policy", choices=POLICY_CHOICES, default="model")
     parser.add_argument("--model", default="models/composite_feature_draw_reaction_nonpass50_1000.pkl")
+    parser.add_argument("--qadv-model", default=None)
+    parser.add_argument("--qadv-lambda", type=float, default=0.0)
     parser.add_argument("--opponent", choices=POLICY_CHOICES, default="shanten")
     parser.add_argument("--opponent-model", default=None)
+    parser.add_argument("--opponent-qadv-model", default=None)
+    parser.add_argument("--opponent-qadv-lambda", type=float, default=0.0)
     parser.add_argument("--raw", default="data/raw/botzone_mcr_1000.jsonl")
     parser.add_argument("--games", type=int, default=64)
     parser.add_argument("--offset", type=int, default=0)
