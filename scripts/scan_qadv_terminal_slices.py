@@ -31,8 +31,10 @@ def summarize_slice(sweep_summary: dict[str, Any]) -> dict[str, Any]:
     lambda_metrics = dict(sweep_summary.get("lambda_metrics") or {})
     terminal_signal_count = 0
     target_terminal_signal_count = 0
+    point_signal_count = 0
     unsafe_lambdas: list[str] = []
     max_average_point_delta = None
+    max_abs_average_point_delta = 0.0
     for key, metrics in lambda_metrics.items():
         terminal_signal_count += _int_metric(metrics, "hu_count")
         terminal_signal_count += _int_metric(metrics, "end_wait_count")
@@ -40,19 +42,36 @@ def summarize_slice(sweep_summary: dict[str, Any]) -> dict[str, Any]:
         target_terminal_signal_count += _int_metric(metrics, "target_end_wait_count")
         point_delta = _float_metric(metrics, "average_point_delta")
         max_average_point_delta = point_delta if max_average_point_delta is None else max(max_average_point_delta, point_delta)
+        if abs(point_delta) > 1e-9:
+            point_signal_count += 1
+        max_abs_average_point_delta = max(max_abs_average_point_delta, abs(point_delta))
         if not bool(metrics.get("safe")):
             unsafe_lambdas.append(str(key))
-    has_point_signal = max_average_point_delta is not None and abs(float(max_average_point_delta)) > 1e-9
     return {
         "offset": sweep_summary.get("offset"),
+        "policy_seat": sweep_summary.get("policy_seat"),
         "games": sweep_summary.get("games"),
         "terminal_signal_count": terminal_signal_count,
         "target_terminal_signal_count": target_terminal_signal_count,
+        "point_signal_count": point_signal_count,
         "max_average_point_delta": float(max_average_point_delta or 0.0),
-        "has_signal": terminal_signal_count > 0 or target_terminal_signal_count > 0 or has_point_signal,
+        "max_abs_average_point_delta": max_abs_average_point_delta,
+        "has_signal": terminal_signal_count > 0 or target_terminal_signal_count > 0 or point_signal_count > 0,
         "unsafe_lambdas": unsafe_lambdas,
         "best_promotable_lambda": sweep_summary.get("best_promotable_lambda"),
     }
+
+
+def parse_policy_seats(args: argparse.Namespace) -> list[int]:
+    raw_seats = getattr(args, "policy_seats", None)
+    if raw_seats:
+        seats = [int(item.strip()) for item in str(raw_seats).split(",") if item.strip()]
+    else:
+        seats = [int(getattr(args, "policy_seat", 0) or 0)]
+    for seat in seats:
+        if not 0 <= seat < 4:
+            raise ValueError("--policy-seat/--policy-seats values must be 0..3")
+    return seats
 
 
 def scan_offsets(args: argparse.Namespace) -> dict[str, Any]:
@@ -67,23 +86,36 @@ def scan_offsets(args: argparse.Namespace) -> dict[str, Any]:
         int(args.offset_start) + index * int(args.offset_step)
         for index in range(int(args.offset_count))
     ]
+    policy_seats = parse_policy_seats(args)
     for offset in offsets:
-        slice_dir = out_dir / f"offset_{offset:05d}"
-        sweep_args = copy.copy(args)
-        sweep_args.offset = offset
-        sweep_args.games = int(args.games_per_slice)
-        sweep_args.out_dir = str(slice_dir)
-        sweep_args.summary_out = str(slice_dir / "summary.json")
-        sweep_summary = run_sweep(sweep_args)
-        sweep_summary["offset"] = offset
-        slice_summary = summarize_slice(sweep_summary)
-        slice_summary["summary_path"] = str(slice_dir / "summary.json")
-        offset_results.append(slice_summary)
-        if slice_summary["has_signal"]:
-            terminal_offsets.append(offset)
-        if slice_summary.get("best_promotable_lambda") is not None:
-            best_promotable_lambda = slice_summary["best_promotable_lambda"]
-            best_promotable_offset = offset
+        for seat in policy_seats:
+            slice_name = f"offset_{offset:05d}" if len(policy_seats) == 1 else f"offset_{offset:05d}_seat_{seat}"
+            slice_dir = out_dir / slice_name
+            sweep_args = copy.copy(args)
+            sweep_args.offset = offset
+            sweep_args.games = int(args.games_per_slice)
+            sweep_args.policy_seat = seat
+            sweep_args.target_player = seat
+            sweep_args.out_dir = str(slice_dir)
+            sweep_args.summary_out = str(slice_dir / "summary.json")
+            sweep_summary = run_sweep(sweep_args)
+            sweep_summary["offset"] = offset
+            sweep_summary["policy_seat"] = seat
+            slice_summary = summarize_slice(sweep_summary)
+            slice_summary["summary_path"] = str(slice_dir / "summary.json")
+            slice_summary["slice_key"] = slice_name
+            offset_results.append(slice_summary)
+            if slice_summary["has_signal"]:
+                terminal_offsets.append(offset)
+            if slice_summary.get("best_promotable_lambda") is not None:
+                best_promotable_lambda = slice_summary["best_promotable_lambda"]
+                best_promotable_offset = offset
+            if (
+                not bool(args.scan_all)
+                and int(args.target_signal_slices) > 0
+                and len(terminal_offsets) >= int(args.target_signal_slices)
+            ):
+                break
         if (
             not bool(args.scan_all)
             and int(args.target_signal_slices) > 0
@@ -100,6 +132,7 @@ def scan_offsets(args: argparse.Namespace) -> dict[str, Any]:
         "games_per_slice": int(args.games_per_slice),
         "offset_start": int(args.offset_start),
         "offset_step": int(args.offset_step),
+        "policy_seats": policy_seats,
         "requested_offset_count": int(args.offset_count),
         "scanned_offset_count": len(offset_results),
         "terminal_slice_count": len(terminal_offsets),
@@ -133,6 +166,8 @@ def main() -> int:
     parser.add_argument("--scan-all", action="store_true")
     parser.add_argument("--max-turns", type=int, default=500)
     parser.add_argument("--target-player", type=int, default=0)
+    parser.add_argument("--policy-seat", type=int, default=0)
+    parser.add_argument("--policy-seats", default=None)
     parser.add_argument("--judge", default=str(DEFAULT_JUDGE))
     parser.add_argument("--aleo-exe", default=str(DEFAULT_ALEO))
     parser.add_argument("--sample-exe", default=str(DEFAULT_SAMPLE))

@@ -52,8 +52,9 @@ def _run_one_lambda(args: argparse.Namespace, lam: float) -> tuple[dict[str, Any
     run_args = copy.copy(args)
     run_args.qadv_lambda = float(lam)
     run_args.qadv_model = None if float(lam) == 0.0 else args.qadv_model
+    target_player = int(args.target_player) if args.target_player is not None else int(getattr(args, "policy_seat", 0) or 0)
     official = run_match_set(run_args)
-    feasibility = summarize_feasibility(official, target_player=int(args.target_player))
+    feasibility = summarize_feasibility(official, target_player=target_player)
     return official, feasibility
 
 
@@ -101,7 +102,8 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
         "raw": args.raw,
         "games": int(args.games),
         "offset": int(args.offset),
-        "target_player": int(args.target_player),
+        "policy_seat": int(getattr(args, "policy_seat", 0) or 0),
+        "target_player": int(args.target_player) if args.target_player is not None else int(getattr(args, "policy_seat", 0) or 0),
         "baseline_lambda": baseline_key,
         "best_promotable_lambda": best_key,
         "lambda_metrics": lambda_metrics,
@@ -126,7 +128,8 @@ def main() -> int:
     parser.add_argument("--games", type=int, default=16)
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--max-turns", type=int, default=500)
-    parser.add_argument("--target-player", type=int, default=0)
+    parser.add_argument("--policy-seat", type=int, default=0)
+    parser.add_argument("--target-player", type=int, default=None)
     parser.add_argument("--judge", default=str(DEFAULT_JUDGE))
     parser.add_argument("--aleo-exe", default=str(DEFAULT_ALEO))
     parser.add_argument("--sample-exe", default=str(DEFAULT_SAMPLE))

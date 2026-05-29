@@ -49,6 +49,23 @@ def test_slice_signal_requires_terminal_or_point_signal():
     assert point["has_signal"] is True
 
 
+def test_summarize_slice_detects_negative_point_signal():
+    sweep = {
+        "offset": 0,
+        "games": 2,
+        "lambda_metrics": {
+            "0.00": {"average_point_delta": 0.0, "safe": True},
+            "0.05": {"average_point_delta": -4.0, "safe": True},
+        },
+    }
+
+    summary = scan.summarize_slice(sweep)
+
+    assert summary["point_signal_count"] == 1
+    assert summary["max_abs_average_point_delta"] == 4.0
+    assert summary["has_signal"] is True
+
+
 def test_scan_offsets_stops_after_target_signal(monkeypatch, tmp_path):
     calls = []
 
@@ -94,3 +111,48 @@ def test_scan_offsets_stops_after_target_signal(monkeypatch, tmp_path):
     assert summary["terminal_offsets"] == [4]
     assert summary["best_promotable_lambda"] == "0.05"
     assert (tmp_path / "scan.json").exists()
+
+
+def test_scan_offsets_expands_policy_seats(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run_sweep(args):
+        calls.append((args.offset, args.policy_seat, args.target_player, Path(args.out_dir).name))
+        return _summary(args.offset)
+
+    monkeypatch.setattr(scan, "run_sweep", fake_run_sweep)
+    summary = scan.scan_offsets(
+        argparse.Namespace(
+            model="models/base.pt",
+            qadv_model="models/qadv.pt",
+            lambdas="0,0.05",
+            offset_start=8,
+            offset_count=1,
+            offset_step=4,
+            games_per_slice=2,
+            target_signal_slices=0,
+            scan_all=True,
+            policy="transformer",
+            opponent="sample",
+            opponent_model=None,
+            opponent_qadv_model=None,
+            opponent_qadv_lambda=0.0,
+            raw="data/raw/example.jsonl",
+            max_turns=500,
+            policy_seat=0,
+            policy_seats="1,3",
+            judge="judge.exe",
+            aleo_exe="aleo.exe",
+            sample_exe="sample.exe",
+            lawlorentz_levels=1,
+            target_player=0,
+            out_dir=str(tmp_path),
+            summary_out=str(tmp_path / "scan.json"),
+            min_point_delta=0.0,
+            max_deal_in_regression=0.02,
+        )
+    )
+
+    assert calls == [(8, 1, 1, "offset_00008_seat_1"), (8, 3, 3, "offset_00008_seat_3")]
+    assert summary["policy_seats"] == [1, 3]
+    assert summary["scanned_offset_count"] == 2

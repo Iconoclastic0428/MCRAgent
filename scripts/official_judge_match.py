@@ -336,55 +336,57 @@ def load_initdata(path: Path, limit: int | None = None, offset: int = 0) -> list
     return initdata
 
 
-def run_match_set(args: argparse.Namespace) -> dict:
-    games = []
-    score_totals = [0.0, 0.0, 0.0, 0.0]
-    wins = [0, 0, 0, 0]
-    initdata_items = load_initdata(Path(args.raw), limit=args.games, offset=args.offset)
+def build_policies(args: argparse.Namespace) -> list[BotzonePolicy | AleoProcessPolicy | BotzoneJsonProcessPolicy | LawlorentzEffectivePolicy | LawlorentzModelPolicy]:
+    policy_seat = int(getattr(args, "policy_seat", 0) or 0)
+    if not 0 <= policy_seat < 4:
+        raise ValueError("--policy-seat must be 0..3")
     lawlorentz_levels = int(getattr(args, "lawlorentz_levels", 1))
     qadv_model = getattr(args, "qadv_model", None)
     qadv_lambda = float(getattr(args, "qadv_lambda", 0.0) or 0.0)
     opponent_qadv_model = getattr(args, "opponent_qadv_model", None)
     opponent_qadv_lambda = float(getattr(args, "opponent_qadv_lambda", 0.0) or 0.0)
+
+    policies = []
+    for seat in range(4):
+        if seat == policy_seat:
+            policies.append(
+                make_policy(
+                    args.policy,
+                    args.model,
+                    qadv_model=qadv_model,
+                    qadv_lambda=qadv_lambda,
+                    aleo_exe=args.aleo_exe,
+                    sample_exe=args.sample_exe,
+                    lawlorentz_levels=lawlorentz_levels,
+                )
+            )
+        else:
+            policies.append(
+                make_policy(
+                    args.opponent,
+                    args.opponent_model,
+                    qadv_model=opponent_qadv_model,
+                    qadv_lambda=opponent_qadv_lambda,
+                    aleo_exe=args.aleo_exe,
+                    sample_exe=args.sample_exe,
+                    lawlorentz_levels=lawlorentz_levels,
+                )
+            )
+    return policies
+
+
+def run_match_set(args: argparse.Namespace) -> dict:
+    games = []
+    score_totals = [0.0, 0.0, 0.0, 0.0]
+    wins = [0, 0, 0, 0]
+    initdata_items = load_initdata(Path(args.raw), limit=args.games, offset=args.offset)
+    policy_seat = int(getattr(args, "policy_seat", 0) or 0)
+    qadv_model = getattr(args, "qadv_model", None)
+    qadv_lambda = float(getattr(args, "qadv_lambda", 0.0) or 0.0)
+    opponent_qadv_model = getattr(args, "opponent_qadv_model", None)
+    opponent_qadv_lambda = float(getattr(args, "opponent_qadv_lambda", 0.0) or 0.0)
     for index, initdata in enumerate(initdata_items):
-        policies = [
-            make_policy(
-                args.policy,
-                args.model,
-                qadv_model=qadv_model,
-                qadv_lambda=qadv_lambda,
-                aleo_exe=args.aleo_exe,
-                sample_exe=args.sample_exe,
-                lawlorentz_levels=lawlorentz_levels,
-            ),
-            make_policy(
-                args.opponent,
-                args.opponent_model,
-                qadv_model=opponent_qadv_model,
-                qadv_lambda=opponent_qadv_lambda,
-                aleo_exe=args.aleo_exe,
-                sample_exe=args.sample_exe,
-                lawlorentz_levels=lawlorentz_levels,
-            ),
-            make_policy(
-                args.opponent,
-                args.opponent_model,
-                qadv_model=opponent_qadv_model,
-                qadv_lambda=opponent_qadv_lambda,
-                aleo_exe=args.aleo_exe,
-                sample_exe=args.sample_exe,
-                lawlorentz_levels=lawlorentz_levels,
-            ),
-            make_policy(
-                args.opponent,
-                args.opponent_model,
-                qadv_model=opponent_qadv_model,
-                qadv_lambda=opponent_qadv_lambda,
-                aleo_exe=args.aleo_exe,
-                sample_exe=args.sample_exe,
-                lawlorentz_levels=lawlorentz_levels,
-            ),
-        ]
+        policies = build_policies(args)
         result = run_match(
             policies,
             initdata,
@@ -406,6 +408,7 @@ def run_match_set(args: argparse.Namespace) -> dict:
         "model": args.model,
         "qadv_model": qadv_model,
         "qadv_lambda": qadv_lambda,
+        "policy_seat": policy_seat,
         "opponent": args.opponent,
         "opponent_model": args.opponent_model,
         "opponent_qadv_model": opponent_qadv_model,
@@ -464,6 +467,7 @@ def main() -> int:
     parser.add_argument("--games", type=int, default=16)
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--max-turns", type=int, default=500)
+    parser.add_argument("--policy-seat", type=int, default=0)
     parser.add_argument("--judge", default=str(DEFAULT_JUDGE))
     parser.add_argument("--aleo-exe", default=str(DEFAULT_ALEO))
     parser.add_argument("--sample-exe", default=str(DEFAULT_SAMPLE))

@@ -7,8 +7,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from official_judge_match import (
     AleoProcessPolicy,
+    BotzonePolicy,
     BotzoneJsonProcessPolicy,
     LawlorentzEffectivePolicy,
+    build_policies,
     aggregate_policy_diagnostics,
     build_response_log,
     load_initdata,
@@ -297,3 +299,26 @@ def test_make_policy_can_create_json_process_policy():
 
     assert isinstance(policy, BotzoneJsonProcessPolicy)
     assert policy.exe_path == "bot.zip"
+
+
+def test_build_policies_places_target_policy_at_requested_seat():
+    class Args:
+        policy = "fallback"
+        model = None
+        qadv_model = None
+        qadv_lambda = 0.0
+        opponent = "sample"
+        opponent_model = None
+        opponent_qadv_model = None
+        opponent_qadv_lambda = 0.0
+        aleo_exe = "aleo.exe"
+        sample_exe = "sample.exe"
+        lawlorentz_levels = 1
+        policy_seat = 2
+
+    policies = build_policies(Args())
+
+    assert isinstance(policies[2], BotzonePolicy)
+    assert isinstance(policies[0], BotzoneJsonProcessPolicy)
+    assert isinstance(policies[1], BotzoneJsonProcessPolicy)
+    assert isinstance(policies[3], BotzoneJsonProcessPolicy)

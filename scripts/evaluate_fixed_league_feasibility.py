@@ -107,10 +107,15 @@ def _mean(values: list[int | float]) -> float | None:
 def summarize_feasibility(
     official_summary: dict[str, Any],
     *,
-    target_player: int = 0,
+    target_player: int | None = None,
 ) -> dict[str, Any]:
     results = list(official_summary.get("results") or [])
     games = len(results)
+    if target_player is None:
+        try:
+            target_player = int(official_summary.get("policy_seat", 0))
+        except (TypeError, ValueError):
+            target_player = 0
     hu_turns: list[int | float] = []
     target_hu_turns: list[int | float] = []
     target_hu_fans: list[int] = []
@@ -123,9 +128,44 @@ def summarize_feasibility(
     wait_when_deal_in_count = 0
     end_wait_count = 0
     target_end_wait_count = 0
+    terminal_action_counts: dict[str, int] = {}
+    terminal_reason_counts: dict[str, int] = {}
+    display_key_counts: dict[str, int] = {}
+    can_hu_present_count = 0
+    can_hu_nonempty_count = 0
+    nonzero_score_games = 0
+    score_abs_sum = 0.0
+    finish_count = 0
+    turn_limit_count = 0
 
     for result in results:
-        action = _terminal_action(result)
+        action = _terminal_action(result).upper()
+        terminal_action_counts[action] = terminal_action_counts.get(action, 0) + 1
+        reason = str(result.get("terminal_reason") or "UNKNOWN")
+        terminal_reason_counts[reason] = terminal_reason_counts.get(reason, 0) + 1
+        if reason == "finish":
+            finish_count += 1
+        elif reason == "turn_limit":
+            turn_limit_count += 1
+        display = _display(result)
+        for key in display:
+            display_key_counts[str(key)] = display_key_counts.get(str(key), 0) + 1
+        if "canHu" in display:
+            can_hu_present_count += 1
+            can_hu = display.get("canHu")
+            if isinstance(can_hu, list):
+                for value in can_hu[:4]:
+                    try:
+                        if int(value) >= 0:
+                            can_hu_nonempty_count += 1
+                            break
+                    except (TypeError, ValueError):
+                        continue
+        scores = result.get("scores") or []
+        score_abs = sum(abs(float(score)) for score in scores[:4])
+        score_abs_sum += score_abs
+        if score_abs > 1e-9:
+            nonzero_score_games += 1
         winner = _display_player(result)
         turn = result.get("turns")
         if action == "HU":
@@ -189,6 +229,15 @@ def summarize_feasibility(
         "opponent_qadv_lambda": official_summary.get("opponent_qadv_lambda"),
         "target_player": target_player,
         "games": games,
+        "terminal_action_counts": terminal_action_counts,
+        "terminal_reason_counts": terminal_reason_counts,
+        "display_key_counts": display_key_counts,
+        "can_hu_present_count": can_hu_present_count,
+        "can_hu_nonempty_count": can_hu_nonempty_count,
+        "nonzero_score_games": nonzero_score_games,
+        "score_abs_sum": score_abs_sum,
+        "finish_count": finish_count,
+        "turn_limit_count": turn_limit_count,
         "average_point_delta": (
             float(average_scores[target_player])
             if 0 <= target_player < len(average_scores)
@@ -241,7 +290,7 @@ def _run_or_load_official_summary(args: argparse.Namespace) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--summary-json", default=None)
-    parser.add_argument("--target-player", type=int, default=0)
+    parser.add_argument("--target-player", type=int, default=None)
     parser.add_argument("--policy", choices=POLICY_CHOICES, default="fallback")
     parser.add_argument("--model", default=None)
     parser.add_argument("--qadv-model", default=None)
@@ -254,6 +303,7 @@ def main() -> int:
     parser.add_argument("--games", type=int, default=16)
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--max-turns", type=int, default=500)
+    parser.add_argument("--policy-seat", type=int, default=0)
     parser.add_argument("--judge", default=str(DEFAULT_JUDGE))
     parser.add_argument("--aleo-exe", default=str(DEFAULT_ALEO))
     parser.add_argument("--sample-exe", default=str(DEFAULT_SAMPLE))
@@ -263,7 +313,10 @@ def main() -> int:
     args = parser.parse_args()
 
     official_summary = _run_or_load_official_summary(args)
-    feasibility = summarize_feasibility(official_summary, target_player=args.target_player)
+    target_player = args.target_player
+    if target_player is None:
+        target_player = int(official_summary.get("policy_seat", args.policy_seat))
+    feasibility = summarize_feasibility(official_summary, target_player=target_player)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1217,6 +1217,18 @@ Review:
   - Broad scan `runs/qadv/terminal_slice_scan_broad/summary.json`: offsets 24 through 84 with 1 game each, zero terminal slices, zero target Hu/end-wait signal, no promotable lambda.
   - Decision: do not launch self-play/return training yet. GPT Pro's gate still requires exact fixed-league terminal signal with zero unsafe actions before rollout returns are allowed.
   - Verification: full test suite passed with 322 tests and one existing sklearn warning. The completed `mcr-qadv-l40-v0-20260529a` Kubernetes job/pod was deleted after artifact collection.
+- [x] Implement GPT Pro's QADV terminal-gate diagnosis patch.
+  - Save GPT Pro's terminal-gate answer for audit.
+  - Add official fixed-league observability counters: terminal action/reason histograms, display key histogram, `canHu` presence/nonempty counts, score-signal counts, finish/turn-limit counts.
+  - Fix scan signal detection so negative point deltas count as point signal.
+  - Add policy-seat rotation to official-judge runs and pass it through QADV sweep/scan commands.
+  - Run diagnostic 64-game probes before any Q-return training; do not train if the exact official harness still produces no Hu/score/wait signal.
+  - 2026-05-29 implementation: saved GPT Pro review to `docs/reviews/gpt-pro-qadv-terminal-gate-2026-05-29.md`, added observability fields to `scripts/evaluate_fixed_league_feasibility.py`, added `build_policies()` and `--policy-seat` to `scripts/official_judge_match.py`, added seat/target passthrough to `scripts/sweep_qadv_fixed_league.py`, and added negative point-signal plus `--policy-seats` support to `scripts/scan_qadv_terminal_slices.py`.
+  - TDD evidence: new focused tests first failed for missing observability fields, missing point-signal fields, and missing `build_policies`; after implementation, `python -m pytest tests\test_evaluate_fixed_league_feasibility.py tests\test_scan_qadv_terminal_slices.py tests\test_official_judge_match.py tests\test_sweep_qadv_fixed_league.py -q --basetemp tmp\pytest_qadv_gate_focused2` passed with 29 tests.
+  - Diagnostic probe `runs/qadv/signal_probe_sample_seat0/summary.json`: 64 games against `sample`, lambdas `0.00,0.05,0.50`; all lambdas had 64 `HUANG`, `can_hu_present_count=64`, `can_hu_nonempty_count=0`, `nonzero_score_games=0`, zero low-fan Hu, and zero illegal predictions.
+  - Diagnostic probe `runs/qadv/signal_probe_shanten_seat0/summary.json`: 64 games against `shanten`, lambdas `0.00,0.05,0.50`; all lambdas had 64 `HUANG`, `can_hu_present_count=64`, `can_hu_nonempty_count=0`, `nonzero_score_games=0`, zero low-fan Hu, and zero illegal predictions.
+  - Lawlorentz exact probes were attempted but stopped as impractical for the immediate gate: level 2 produced no first-lambda artifact after more than 40 minutes; level 1 was also too slow for a quick signal probe.
+  - Decision: do not start Q-return training from this official league. The exact harness is safe and observable now, but current sample/shanten leagues remain terminal-flat for this transformer target.
 
 ### Current user-directed sequence
 

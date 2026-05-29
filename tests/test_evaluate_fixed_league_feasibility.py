@@ -133,3 +133,69 @@ def test_summarize_feasibility_reports_target_metrics_and_hu_safety():
     assert summary["low_fan_hu_count"] == 1
     assert summary["min_target_hu_fan"] == 6
     assert "inferred" in " ".join(summary["notes"]).lower()
+
+
+def test_summarize_feasibility_reports_huang_observability():
+    official_summary = {
+        "average_scores": [0, 0, 0, 0],
+        "results": [
+            {
+                "terminal_reason": "finish",
+                "turns": 100,
+                "scores": [0, 0, 0, 0],
+                "policy_diagnostics": [{}, {}, {}, {}],
+                "final_output": {"display": {"action": "HUANG"}},
+            }
+        ],
+    }
+
+    summary = summarize_feasibility(official_summary, target_player=0)
+
+    assert summary["terminal_action_counts"]["HUANG"] == 1
+    assert summary["terminal_reason_counts"]["finish"] == 1
+    assert summary["display_key_counts"]["action"] == 1
+    assert summary["finish_count"] == 1
+    assert summary["turn_limit_count"] == 0
+    assert summary["nonzero_score_games"] == 0
+    assert summary["score_abs_sum"] == 0.0
+
+
+def test_summarize_feasibility_reports_can_hu_presence():
+    official_summary = {
+        "average_scores": [0, 0, 0, 0],
+        "results": [
+            {
+                "terminal_reason": "finish",
+                "turns": 100,
+                "scores": [0, 0, 0, 0],
+                "policy_diagnostics": [{}, {}, {}, {}],
+                "final_output": {"display": {"action": "HUANG", "canHu": [-1, 3, -1, -1]}},
+            }
+        ],
+    }
+
+    summary = summarize_feasibility(official_summary, target_player=1)
+
+    assert summary["can_hu_present_count"] == 1
+    assert summary["can_hu_nonempty_count"] == 1
+    assert summary["target_end_wait_count"] == 1
+
+
+def test_summarize_feasibility_reports_nonzero_score_signal():
+    official_summary = {
+        "average_scores": [8, -8, 0, 0],
+        "results": [
+            {
+                "terminal_reason": "finish",
+                "turns": 80,
+                "scores": [8, -8, 0, 0],
+                "policy_diagnostics": [{}, {}, {}, {}],
+                "final_output": {"display": {"action": "HU", "player": 0, "fanCnt": 8}},
+            }
+        ],
+    }
+
+    summary = summarize_feasibility(official_summary, target_player=0)
+
+    assert summary["nonzero_score_games"] == 1
+    assert summary["score_abs_sum"] == 16.0
