@@ -10,8 +10,10 @@ import random
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
+from build_qadv_terminal_trajectories import QADV_TERMINAL_SCHEMA, validate_qadv_terminal_row
 from mine_chaga_hard_examples import assert_qadv_candidate_digest, validate_qadv_hard_example
 from qadv_reranker import QAdvReranker, qadv_family_id, qadv_total_loss, select_qadv_action
 from train_transformer_candidate import CANDIDATE_RULE_FEATURES, FeatureAgent
@@ -33,7 +35,10 @@ def load_qadv_rows(paths: list[Path], *, strict: bool = True, max_rows: int | No
                 row = json.loads(line)
                 assert_qadv_candidate_digest(row)
                 if strict:
-                    validate_qadv_hard_example(row)
+                    if row.get("schema_version") == QADV_TERMINAL_SCHEMA or row.get("schema") == QADV_TERMINAL_SCHEMA:
+                        validate_qadv_terminal_row(row)
+                    else:
+                        validate_qadv_hard_example(row)
                 rows.append(row)
                 if max_rows is not None and len(rows) >= int(max_rows):
                     return rows
@@ -53,7 +58,22 @@ class QAdvDataset(Dataset):
         return self.rows[index]
 
 
-def collate_qadv_rows(rows: list[dict]) -> dict[str, torch.Tensor | list[dict]]:
+def return_target_from_row(row: dict, value_target_key: str) -> float | None:
+    target = row.get(value_target_key)
+    if target is None and isinstance(row.get("return"), dict):
+        target = row["return"].get(value_target_key)
+    if target is None and isinstance(row.get("return_fields"), dict):
+        target = row["return_fields"].get(value_target_key)
+    if target is None:
+        return None
+    return float(target)
+
+
+def collate_qadv_rows(
+    rows: list[dict],
+    *,
+    value_target_key: str = "discounted_return",
+) -> dict[str, torch.Tensor | list[dict]]:
     if not rows:
         raise ValueError("empty QADV batch")
     width = max(len(row.get("candidate_actions") or []) for row in rows)
@@ -71,6 +91,9 @@ def collate_qadv_rows(rows: list[dict]) -> dict[str, torch.Tensor | list[dict]]:
     allow_hu = torch.zeros((batch_size,), dtype=torch.bool)
     scalar_features = torch.zeros((batch_size, 3), dtype=torch.float32)
     sample_weight = torch.ones((batch_size,), dtype=torch.float32)
+    chosen_action_index = torch.full((batch_size,), -1, dtype=torch.long)
+    has_return = torch.zeros((batch_size,), dtype=torch.bool)
+    return_target = torch.zeros((batch_size,), dtype=torch.float32)
 
     for row_index, row in enumerate(rows):
         actions = [int(action) for action in row.get("candidate_actions") or []]
@@ -81,6 +104,9 @@ def collate_qadv_rows(rows: list[dict]) -> dict[str, torch.Tensor | list[dict]]:
         logits = [float(value) for value in row.get("base_logits") or []]
         ranks = [float(value) for value in row.get("base_ranks") or []]
         dist = [float(value) for value in row.get("teacher_target_dist") or []]
+        chosen_action = row.get("chosen_action_id")
+        if chosen_action is None and isinstance(row.get("chosen"), dict):
+            chosen_action = row["chosen"].get("action_id")
         for slot, action in enumerate(actions):
             candidate_actions[row_index, slot] = action
             candidate_family_ids[row_index, slot] = qadv_family_id(norms[slot] if slot < len(norms) else "")
@@ -97,6 +123,8 @@ def collate_qadv_rows(rows: list[dict]) -> dict[str, torch.Tensor | list[dict]]:
                 base_ranks[row_index, slot] = ranks[slot]
             if slot < len(dist):
                 teacher_dist[row_index, slot] = max(0.0, dist[slot])
+            if chosen_action is not None and int(action) == int(chosen_action):
+                chosen_action_index[row_index] = int(slot)
         dist_total = float(teacher_dist[row_index].sum().item())
         if dist_total > 0.0:
             teacher_dist[row_index] /= dist_total
@@ -104,6 +132,10 @@ def collate_qadv_rows(rows: list[dict]) -> dict[str, torch.Tensor | list[dict]]:
         scalar_features[row_index, : len(scalar)] = torch.tensor([float(value) for value in scalar])
         allow_hu[row_index] = bool(row.get("allow_hu", False))
         sample_weight[row_index] = float(row.get("sample_weight", 1.0))
+        target = return_target_from_row(row, value_target_key)
+        if target is not None and chosen_action_index[row_index].item() >= 0:
+            has_return[row_index] = True
+            return_target[row_index] = float(target)
 
     return {
         "candidate_actions": candidate_actions,
@@ -119,6 +151,9 @@ def collate_qadv_rows(rows: list[dict]) -> dict[str, torch.Tensor | list[dict]]:
         "allow_hu": allow_hu,
         "scalar_features": scalar_features,
         "sample_weight": sample_weight,
+        "chosen_action_index": chosen_action_index,
+        "has_return": has_return,
+        "return_target": return_target,
         "rows": rows,
     }
 
@@ -212,6 +247,8 @@ def accepted_accuracy(model: QAdvReranker, loader: DataLoader, device: torch.dev
                 allow_hu=batch["allow_hu"],
             )
             for row_index, slot in enumerate(pred.detach().cpu().tolist()):
+                if not bool(raw_batch["accepted_mask"][row_index].any().item()):
+                    continue
                 base_slot = int(base_pred[row_index].detach().cpu().item())
                 total += 1
                 accepted = bool(raw_batch["accepted_mask"][row_index, slot].item())
@@ -236,13 +273,39 @@ def accepted_accuracy(model: QAdvReranker, loader: DataLoader, device: torch.dev
     }
 
 
+def terminal_return_loss(q_scores: torch.Tensor, batch: dict) -> torch.Tensor:
+    has_return = batch["has_return"].bool()
+    chosen_index = batch["chosen_action_index"].long()
+    valid = has_return & (chosen_index >= 0)
+    if not bool(valid.any().item()):
+        return q_scores.new_tensor(0.0)
+    chosen_q = q_scores.gather(1, chosen_index.clamp_min(0).unsqueeze(1)).squeeze(1)
+    return F.smooth_l1_loss(chosen_q[valid], batch["return_target"].float()[valid])
+
+
 def train(args: argparse.Namespace) -> dict:
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    rows = load_qadv_rows([Path(path) for path in args.hard_jsonl], max_rows=args.max_rows)
+    value_target_key = str(getattr(args, "value_target_key", "discounted_return") or "discounted_return")
+    hard_rows = load_qadv_rows([Path(path) for path in args.hard_jsonl], max_rows=args.max_rows)
+    hard_sample_weight = float(getattr(args, "hard_sample_weight", 1.0))
+    if hard_sample_weight != 1.0:
+        hard_rows = [{**row, "sample_weight": float(row.get("sample_weight", 1.0)) * hard_sample_weight} for row in hard_rows]
+    terminal_paths = list(getattr(args, "terminal_jsonl", []) or [])
+    terminal_rows = load_qadv_rows([Path(path) for path in terminal_paths], max_rows=None) if terminal_paths else []
+    terminal_sample_weight = float(getattr(args, "terminal_sample_weight", 1.0))
+    if terminal_sample_weight != 1.0:
+        terminal_rows = [
+            {**row, "sample_weight": float(row.get("sample_weight", 1.0)) * terminal_sample_weight}
+            for row in terminal_rows
+        ]
+    rows = hard_rows + terminal_rows
     eval_paths = list(getattr(args, "eval_hard_jsonl", []) or [])
-    if eval_paths:
+    eval_terminal_paths = list(getattr(args, "eval_terminal_jsonl", []) or [])
+    if eval_paths or eval_terminal_paths:
         train_rows = rows
-        val_rows = load_qadv_rows([Path(path) for path in eval_paths])
+        val_rows = load_qadv_rows([Path(path) for path in eval_paths]) if eval_paths else []
+        if eval_terminal_paths:
+            val_rows.extend(load_qadv_rows([Path(path) for path in eval_terminal_paths]))
     else:
         train_rows, val_rows = split_rows(rows, val_ratio=args.val_ratio, seed=args.seed)
     if not train_rows:
@@ -277,7 +340,7 @@ def train(args: argparse.Namespace) -> dict:
         shuffle=shuffle,
         sampler=sampler,
         num_workers=0,
-        collate_fn=collate_qadv_rows,
+        collate_fn=lambda rows: collate_qadv_rows(rows, value_target_key=value_target_key),
     )
     val_loader = (
         DataLoader(
@@ -285,7 +348,7 @@ def train(args: argparse.Namespace) -> dict:
             batch_size=args.batch_size,
             shuffle=False,
             num_workers=0,
-            collate_fn=collate_qadv_rows,
+            collate_fn=lambda rows: collate_qadv_rows(rows, value_target_key=value_target_key),
         )
         if val_rows
         else None
@@ -317,6 +380,10 @@ def train(args: argparse.Namespace) -> dict:
                 soft_weight=args.soft_weight,
                 q_l2_weight=args.q_l2_weight,
             )
+            return_loss = terminal_return_loss(q_scores, batch)
+            if float(getattr(args, "return_loss_weight", 0.0)) != 0.0:
+                loss = loss + float(args.return_loss_weight) * return_loss
+            components["return_loss"] = float(return_loss.detach().cpu().item())
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -347,13 +414,19 @@ def train(args: argparse.Namespace) -> dict:
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=0,
-        collate_fn=collate_qadv_rows,
+        collate_fn=lambda rows: collate_qadv_rows(rows, value_target_key=value_target_key),
     )
     metrics = {
         "format": "mcr_qadv_reranker_train_v1",
         "hard_jsonl": args.hard_jsonl,
         "eval_hard_jsonl": eval_paths,
+        "terminal_jsonl": terminal_paths,
+        "eval_terminal_jsonl": eval_terminal_paths,
+        "value_target_key": value_target_key,
         "rows": len(rows),
+        "hard_rows": len(hard_rows),
+        "terminal_rows": len(terminal_rows),
+        "eval_terminal_rows": len(eval_terminal_paths and [row for row in val_rows if row.get("schema") == QADV_TERMINAL_SCHEMA] or []),
         "train_rows": len(train_rows),
         "val_rows": len(val_rows),
         "epochs": args.epochs,
@@ -394,6 +467,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--hard-jsonl", action="append", required=True)
     parser.add_argument("--eval-hard-jsonl", action="append", default=[])
+    parser.add_argument("--terminal-jsonl", action="append", default=[])
+    parser.add_argument("--eval-terminal-jsonl", action="append", default=[])
     parser.add_argument("--model-out", required=True)
     parser.add_argument("--best-model-out", default=None)
     parser.add_argument("--metrics-out", default=None)
@@ -411,6 +486,9 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=20260529)
     parser.add_argument("--max-rows", type=int, default=None)
     parser.add_argument("--weighted-sampler", action="store_true")
+    parser.add_argument("--hard-sample-weight", type=float, default=1.0)
+    parser.add_argument("--terminal-sample-weight", type=float, default=1.0)
+    parser.add_argument("--value-target-key", default="discounted_return")
     parser.add_argument("--train-lambda", type=float, default=1.0)
     parser.add_argument("--eval-lambda", type=float, default=0.1)
     parser.add_argument("--margin", type=float, default=0.5)
@@ -418,6 +496,7 @@ def main() -> int:
     parser.add_argument("--pair-weight", type=float, default=0.5)
     parser.add_argument("--cql-weight", type=float, default=0.03)
     parser.add_argument("--soft-weight", type=float, default=0.05)
+    parser.add_argument("--return-loss-weight", type=float, default=0.0)
     parser.add_argument("--q-l2-weight", type=float, default=0.0001)
     parser.add_argument("--device", default=None)
     args = parser.parse_args()

@@ -108,6 +108,8 @@ def evaluate_lambda_values(
                 )
                 stats = accum[lam]
                 for row_index, slot in enumerate(pred.detach().cpu().tolist()):
+                    if not bool(raw_batch["accepted_mask"][row_index].any().item()):
+                        continue
                     slot = int(slot)
                     base_slot = int(base_pred[row_index].detach().cpu().item())
                     stats["samples"] += 1
@@ -170,26 +172,80 @@ def evaluate_lambda_values(
     return metrics
 
 
+def evaluate_terminal_q(model: QAdvReranker, loader: DataLoader, device: torch.device) -> dict:
+    values: list[tuple[float, float]] = []
+    with torch.no_grad():
+        for raw_batch in loader:
+            batch = _to_device(raw_batch, device)
+            q_scores = model(batch)
+            has_return = raw_batch["has_return"].bool()
+            chosen_index = raw_batch["chosen_action_index"].long()
+            valid = has_return & (chosen_index >= 0)
+            if not bool(valid.any().item()):
+                continue
+            chosen_q = q_scores.detach().cpu().gather(1, chosen_index.clamp_min(0).unsqueeze(1)).squeeze(1)
+            targets = raw_batch["return_target"].float()
+            for q_value, target, keep in zip(chosen_q.tolist(), targets.tolist(), valid.tolist()):
+                if keep:
+                    values.append((float(q_value), float(target)))
+    positives = [q for q, target in values if target > 0.0]
+    negatives = [q for q, target in values if target < 0.0]
+
+    def mean(items: list[float]) -> float | None:
+        return float(sum(items) / len(items)) if items else None
+
+    pos_mean = mean(positives)
+    neg_mean = mean(negatives)
+    return {
+        "return_rows": len(values),
+        "positive_return_rows": len(positives),
+        "negative_return_rows": len(negatives),
+        "mean_q_positive_return": pos_mean,
+        "mean_q_negative_return": neg_mean,
+        "positive_negative_q_gap": (
+            float(pos_mean - neg_mean) if pos_mean is not None and neg_mean is not None else None
+        ),
+    }
+
+
 def evaluate(args: argparse.Namespace) -> dict:
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    rows = load_qadv_rows([Path(path) for path in args.hard_jsonl], strict=True, max_rows=args.max_rows)
+    value_target_key = str(getattr(args, "value_target_key", "discounted_return") or "discounted_return")
+    hard_rows = load_qadv_rows([Path(path) for path in args.hard_jsonl], strict=True, max_rows=args.max_rows)
+    terminal_paths = list(getattr(args, "terminal_jsonl", []) or [])
+    terminal_rows = load_qadv_rows([Path(path) for path in terminal_paths], strict=True) if terminal_paths else []
+    rows = hard_rows + terminal_rows
     model = load_qadv_checkpoint(Path(args.q_checkpoint), device)
     loader = DataLoader(
         QAdvDataset(rows),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=0,
-        collate_fn=collate_qadv_rows,
+        collate_fn=lambda batch: collate_qadv_rows(batch, value_target_key=value_target_key),
     )
     lambdas = [float(value) for value in args.lambdas.split(",") if value.strip()]
     lambda_metrics = evaluate_lambda_values(model, loader, device, lambdas=lambdas)
+    terminal_q = evaluate_terminal_q(model, loader, device)
     summary = {
         "format": "mcr_qadv_reranker_eval_v1",
         "hard_jsonl": args.hard_jsonl,
+        "terminal_jsonl": terminal_paths,
+        "value_target_key": value_target_key,
         "q_checkpoint": args.q_checkpoint,
         "rows": len(rows),
-        "candidate_truncation_count": sum(1 for row in rows if row.get("candidate_truncated")),
-        "reviewed_without_teacher_distribution": sum(1 for row in rows if not row.get("has_teacher_distribution")),
+        "hard_rows": len(hard_rows),
+        "terminal_rows": len(terminal_rows),
+        "candidate_truncation_count": sum(
+            1
+            for row in rows
+            if row.get("candidate_truncated") or int((row.get("legal") or {}).get("candidate_truncation_count") or 0) > 0
+        ),
+        "reviewed_without_teacher_distribution": sum(
+            1
+            for row in hard_rows
+            if not row.get("has_teacher_distribution")
+        ),
+        "terminal_q": terminal_q,
         "lambda_metrics": lambda_metrics,
     }
     if args.metrics_out:
@@ -202,6 +258,8 @@ def evaluate(args: argparse.Namespace) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--hard-jsonl", action="append", required=True)
+    parser.add_argument("--terminal-jsonl", action="append", default=[])
+    parser.add_argument("--value-target-key", default="discounted_return")
     parser.add_argument("--q-checkpoint", required=True)
     parser.add_argument("--metrics-out", default=None)
     parser.add_argument("--batch-size", type=int, default=256)
