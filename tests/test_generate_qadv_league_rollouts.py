@@ -44,7 +44,12 @@ def test_run_rollout_set_writes_rows_with_policy_pool_and_terminal_result(monkey
             "turns": 2,
             "scores": [16, -8, -4, -4],
             "final_output": {"display": {"action": "HU", "player": 0, "fanCnt": 8, "baseFanCnt": 8}},
-            "policy_diagnostics": [{}, {}, {}, {}],
+            "policy_diagnostics": [
+                {"legal_hu_seen": 2, "fan_check_accepts": 1, "last_fallback_used": False},
+                {"legal_hu_seen": 3, "fan_check_rejects": 2},
+                {"legal_hu_seen": 5, "illegal_predictions": 1},
+                {"draw_turns": 7},
+            ],
             "log": [
                 {"output": {"content": {"0": "2 W1", "2": "3 0 PLAY W1"}}},
                 {"0": {"response": "PLAY W1"}, "2": {"response": "PASS"}},
@@ -95,6 +100,20 @@ def test_run_rollout_set_writes_rows_with_policy_pool_and_terminal_result(monkey
     assert summary["policy_average_final_score_rewards_4_2_1_0"] == {
         "base": 2.75,
         "qadv005": 0.75,
+    }
+    assert summary["policy_diagnostics_totals"]["base"] == {
+        "legal_hu_seen": 7,
+        "fan_check_accepts": 1,
+        "illegal_predictions": 1,
+    }
+    assert summary["policy_diagnostics_totals"]["qadv005"] == {
+        "legal_hu_seen": 3,
+        "fan_check_rejects": 2,
+        "draw_turns": 7,
+    }
+    assert summary["seat_policy_diagnostics_totals"][0] == {
+        "legal_hu_seen": 2,
+        "fan_check_accepts": 1,
     }
     assert rows[0]["schema_version"] == rollouts.QADV_ROLLOUT_SCHEMA
     assert rows[0]["policy_pool"][0]["name"] == "base"

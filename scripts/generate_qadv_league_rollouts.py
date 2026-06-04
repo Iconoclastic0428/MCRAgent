@@ -257,6 +257,38 @@ def _make_policies(
     ]
 
 
+def _merge_numeric_diagnostics(target: dict[str, Any], diagnostics: dict[str, Any]) -> None:
+    for key, value in diagnostics.items():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            target[key] = target.get(key, 0) + value
+
+
+def aggregate_policy_diagnostics_by_name(
+    games: list[dict[str, Any]],
+    policy_specs: list[PolicySpec],
+) -> dict[str, dict[str, Any]]:
+    totals: dict[str, dict[str, Any]] = {spec.name: {} for spec in policy_specs}
+    for game in games:
+        seat_names = list(game.get("seat_policy_names") or [])
+        diagnostics_by_seat = list(game.get("policy_diagnostics") or [])
+        for seat, diagnostics in enumerate(diagnostics_by_seat[:4]):
+            name = seat_names[seat] if seat < len(seat_names) else f"seat{seat}"
+            _merge_numeric_diagnostics(totals.setdefault(name, {}), diagnostics or {})
+    return totals
+
+
+def aggregate_policy_diagnostics_by_seat(games: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    totals: list[dict[str, Any]] = []
+    for game in games:
+        for seat, diagnostics in enumerate(list(game.get("policy_diagnostics") or [])[:4]):
+            while len(totals) <= seat:
+                totals.append({})
+            _merge_numeric_diagnostics(totals[seat], diagnostics or {})
+    return totals
+
+
 def summarize_games(
     games: list[dict[str, Any]],
     *,
@@ -277,6 +309,8 @@ def summarize_games(
     policy_hu_counts = {spec.name: 0 for spec in policy_specs}
     policy_hu_turns: dict[str, list[float]] = {spec.name: [] for spec in policy_specs}
     policy_placement_totals = {spec.name: 0.0 for spec in policy_specs}
+    policy_diagnostics_totals = aggregate_policy_diagnostics_by_name(games, policy_specs)
+    seat_policy_diagnostics_totals = aggregate_policy_diagnostics_by_seat(games)
     seat_coverage = {str(seat): 0 for seat in range(4)}
     returns: list[float] = []
     action_outside_mask_count = 0
@@ -369,6 +403,8 @@ def summarize_games(
             name: policy_placement_totals.get(name, 0.0) / games_seen if games_seen else None
             for name, games_seen in policy_seat_games.items()
         },
+        "policy_diagnostics_totals": policy_diagnostics_totals,
+        "seat_policy_diagnostics_totals": seat_policy_diagnostics_totals,
         "seat_coverage": seat_coverage,
         "gate_passed": not failures,
         "gate_failures": failures,
@@ -411,6 +447,7 @@ def run_rollout_set(args: argparse.Namespace) -> dict[str, Any]:
                     "scores": result.get("scores") or [0, 0, 0, 0],
                     "terminal_result": terminal_result_from_official(result),
                     "seat_policy_names": [spec.name for spec in seat_specs],
+                    "policy_diagnostics": result.get("policy_diagnostics") or [],
                     "rows": rows,
                 }
             )
