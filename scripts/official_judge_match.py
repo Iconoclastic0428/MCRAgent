@@ -22,6 +22,7 @@ if str(WORKSPACE_ROOT) not in sys.path:
 DEFAULT_JUDGE = Path("build/official_judge/mcr_judge.exe")
 DEFAULT_ALEO = Path("build/aleo_bot.exe")
 DEFAULT_SAMPLE = Path("build/official_sample_bot.exe")
+PLACEMENT_REWARDS_4_2_1_0 = (4.0, 2.0, 1.0, 0.0)
 
 
 def judge_env() -> dict[str, str]:
@@ -222,6 +223,43 @@ def aggregate_policy_diagnostics(results: list[dict]) -> list[dict[str, int | fl
     return totals
 
 
+def placement_rewards_from_scores(scores: list[int | float]) -> list[float]:
+    """Convert a four-seat score vector into 4/2/1/0 placement rewards.
+
+    Tied nonzero scores split the tied rank rewards. All-zero games carry no
+    placement signal, so they return zero rewards instead of rewarding a draw.
+    """
+
+    if len(scores) < 4:
+        return [0.0, 0.0, 0.0, 0.0]
+    values = [float(score) for score in scores[:4]]
+    if all(value == values[0] for value in values):
+        return [0.0, 0.0, 0.0, 0.0]
+    rewards = [0.0, 0.0, 0.0, 0.0]
+    ranked = sorted(enumerate(values), key=lambda item: item[1], reverse=True)
+    index = 0
+    while index < len(ranked):
+        score = ranked[index][1]
+        end = index + 1
+        while end < len(ranked) and ranked[end][1] == score:
+            end += 1
+        reward = sum(PLACEMENT_REWARDS_4_2_1_0[index:end]) / (end - index)
+        for seat, _ in ranked[index:end]:
+            rewards[seat] = reward
+        index = end
+    return rewards
+
+
+def average_placement_rewards(results: list[dict]) -> list[float]:
+    if not results:
+        return [0.0, 0.0, 0.0, 0.0]
+    totals = [0.0, 0.0, 0.0, 0.0]
+    for result in results:
+        for seat, reward in enumerate(placement_rewards_from_scores(result.get("scores") or [])):
+            totals[seat] += reward
+    return [reward / len(results) for reward in totals]
+
+
 def summarize_terminals(results: list[dict]) -> dict:
     terminal_actions: dict[str, int] = {}
     player0_hu_fans: list[int] = []
@@ -250,11 +288,15 @@ def summarize_terminals(results: list[dict]) -> dict:
             if fan is not None:
                 player0_hu_fans.append(int(fan))
     total = len(results)
+    placement_averages = average_placement_rewards(results)
     return {
         "terminal_actions": terminal_actions,
         "hu_count": hu_count,
         "hu_rate": hu_count / total if total else None,
         "average_hu_turn": sum(hu_turns) / len(hu_turns) if hu_turns else None,
+        "placement_reward_schema": "score rank reward 4/2/1/0; tied nonzero ranks split rewards; all-zero games score 0",
+        "average_placement_rewards_4_2_1_0": placement_averages,
+        "player0_average_final_score_reward_4_2_1_0": placement_averages[0],
         "player0_hu_count": player0_hu_count,
         "player0_hu_rate": player0_hu_count / total if total else None,
         "player0_average_hu_turn": (

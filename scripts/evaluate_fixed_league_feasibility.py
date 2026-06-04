@@ -8,7 +8,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from official_judge_match import DEFAULT_ALEO, DEFAULT_JUDGE, DEFAULT_SAMPLE, run_match_set
+from official_judge_match import (
+    DEFAULT_ALEO,
+    DEFAULT_JUDGE,
+    DEFAULT_SAMPLE,
+    placement_rewards_from_scores,
+    run_match_set,
+)
 
 
 POLICY_CHOICES = [
@@ -104,6 +110,19 @@ def _mean(values: list[int | float]) -> float | None:
     return float(sum(values) / len(values)) if values else None
 
 
+def _display_base_fan(result: dict[str, Any]) -> int | None:
+    display = _display(result)
+    value = display.get("baseFanCnt")
+    if value is None:
+        value = display.get("baseFan")
+    if value is None:
+        value = display.get("fanCnt")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def summarize_feasibility(
     official_summary: dict[str, Any],
     *,
@@ -135,6 +154,8 @@ def summarize_feasibility(
     can_hu_nonempty_count = 0
     nonzero_score_games = 0
     score_abs_sum = 0.0
+    placement_reward_totals = [0.0, 0.0, 0.0, 0.0]
+    target_final_score_rewards: list[float] = []
     finish_count = 0
     turn_limit_count = 0
 
@@ -166,31 +187,33 @@ def summarize_feasibility(
         score_abs_sum += score_abs
         if score_abs > 1e-9:
             nonzero_score_games += 1
+        placement_rewards = placement_rewards_from_scores(scores)
+        for player, reward in enumerate(placement_rewards):
+            placement_reward_totals[player] += float(reward)
+        if 0 <= target_player < len(placement_rewards):
+            target_final_score_rewards.append(float(placement_rewards[target_player]))
         winner = _display_player(result)
         turn = result.get("turns")
         if action == "HU":
             hu_count += 1
             if isinstance(turn, (int, float)):
                 hu_turns.append(turn)
-            fan = _display(result).get("fanCnt")
-            if fan is not None:
-                try:
-                    if int(fan) < 8:
-                        all_low_fan_hu_count += 1
-                except (TypeError, ValueError):
-                    pass
+            base_fan = _display_base_fan(result)
+            if base_fan is not None and base_fan < 8:
+                all_low_fan_hu_count += 1
             if winner == target_player:
                 target_hu_count += 1
                 if isinstance(turn, (int, float)):
                     target_hu_turns.append(turn)
+                fan = _display(result).get("fanCnt")
                 if fan is not None:
                     try:
                         fan_int = int(fan)
                         target_hu_fans.append(fan_int)
-                        if fan_int < 8:
-                            low_fan_hu_count += 1
                     except (TypeError, ValueError):
                         pass
+                if base_fan is not None and base_fan < 8:
+                    low_fan_hu_count += 1
 
         deal_in_player = infer_deal_in_player(result)
         waiting_players = end_wait_players(result)
@@ -236,6 +259,13 @@ def summarize_feasibility(
         "can_hu_nonempty_count": can_hu_nonempty_count,
         "nonzero_score_games": nonzero_score_games,
         "score_abs_sum": score_abs_sum,
+        "placement_reward_schema": "score rank reward 4/2/1/0; tied nonzero ranks split rewards; all-zero games score 0",
+        "placement_reward_totals_4_2_1_0": placement_reward_totals,
+        "average_placement_rewards_4_2_1_0": [
+            reward / games if games else 0.0 for reward in placement_reward_totals
+        ],
+        "target_final_score_reward": _mean(target_final_score_rewards),
+        "target_average_final_score_reward_4_2_1_0": _mean(target_final_score_rewards),
         "finish_count": finish_count,
         "turn_limit_count": turn_limit_count,
         "average_point_delta": (
@@ -269,6 +299,8 @@ def summarize_feasibility(
         "fan_check_missing_count": fan_check_missing,
         "low_fan_hu_count": low_fan_hu_count,
         "all_players_low_fan_hu_count": all_low_fan_hu_count,
+        "illegal_hu_count": all_low_fan_hu_count,
+        "target_illegal_hu_count": low_fan_hu_count,
         "target_hu_fans": target_hu_fans,
         "min_target_hu_fan": min(target_hu_fans) if target_hu_fans else None,
         "max_target_hu_fan": max(target_hu_fans) if target_hu_fans else None,
@@ -277,6 +309,8 @@ def summarize_feasibility(
             "Deal-in is inferred from a unique strict minimum loser score on HU hands.",
             "End-wait is inferred from judge display canHu entries with values >= 0.",
             "Low-fan Hu counts use display fanCnt when present; the live policy still gates Hu before action selection.",
+            "Final score reward uses per-game score placement rewards 4/2/1/0 with tied nonzero ranks split and all-zero games scored 0.",
+            "Illegal Hu counts use baseFanCnt/baseFan when available, so flower-only fan does not satisfy the Hu gate.",
         ],
     }
 

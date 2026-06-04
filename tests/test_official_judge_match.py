@@ -15,6 +15,7 @@ from official_judge_match import (
     build_response_log,
     load_initdata,
     make_policy,
+    placement_rewards_from_scores,
     run_json_bot_process,
     run_match,
     summarize_terminals,
@@ -193,6 +194,9 @@ def test_summarize_terminals_counts_actions_and_player0_hu_fans():
     summary = summarize_terminals(results)
 
     assert summary["terminal_actions"] == {"HU": 2, "HUANG": 1}
+    assert summary["placement_reward_schema"].startswith("score rank reward 4/2/1/0")
+    assert summary["average_placement_rewards_4_2_1_0"] == [0.0, 0.0, 0.0, 0.0]
+    assert summary["player0_average_final_score_reward_4_2_1_0"] == 0.0
     assert summary["player0_hu_fans"] == [8]
     assert summary["min_player0_hu_fan"] == 8
     assert summary["hu_count"] == 2
@@ -201,6 +205,12 @@ def test_summarize_terminals_counts_actions_and_player0_hu_fans():
     assert summary["player0_hu_count"] == 1
     assert summary["player0_hu_rate"] == 1 / 3
     assert summary["player0_average_hu_turn"] == 10.0
+
+
+def test_placement_rewards_from_scores_handles_ties_and_all_zero_draws():
+    assert placement_rewards_from_scores([48, -16, -16, -16]) == [4.0, 1.0, 1.0, 1.0]
+    assert placement_rewards_from_scores([16, -8, -4, -4]) == [4.0, 0.0, 1.5, 1.5]
+    assert placement_rewards_from_scores([0, 0, 0, 0]) == [0.0, 0.0, 0.0, 0.0]
 
 
 def test_make_policy_can_create_aleo_process_policy():

@@ -103,7 +103,8 @@ def test_summarize_feasibility_reports_target_metrics_and_hu_safety():
                     "display": {
                         "action": "HU",
                         "player": 0,
-                        "fanCnt": 6,
+                        "fanCnt": 8,
+                        "baseFanCnt": 4,
                     }
                 },
             },
@@ -117,6 +118,11 @@ def test_summarize_feasibility_reports_target_metrics_and_hu_safety():
     assert summary["source_qadv_lambda"] == 0.05
     assert summary["games"] == 4
     assert summary["average_point_delta"] == 5.0
+    assert summary["placement_reward_schema"].startswith("score rank reward 4/2/1/0")
+    assert summary["placement_reward_totals_4_2_1_0"] == [8.0, 4.0, 4.5, 4.5]
+    assert summary["average_placement_rewards_4_2_1_0"] == [2.0, 1.0, 1.125, 1.125]
+    assert summary["target_final_score_reward"] == 2.0
+    assert summary["target_average_final_score_reward_4_2_1_0"] == 2.0
     assert summary["hu_rate"] == 3 / 4
     assert summary["target_hu_rate"] == 2 / 4
     assert summary["average_hu_turn"] == (10 + 22 + 18) / 3
@@ -131,7 +137,9 @@ def test_summarize_feasibility_reports_target_metrics_and_hu_safety():
     assert summary["action_outside_legal_mask_count"] == 2
     assert summary["fan_check_reject_count"] == 3
     assert summary["low_fan_hu_count"] == 1
-    assert summary["min_target_hu_fan"] == 6
+    assert summary["illegal_hu_count"] == 1
+    assert summary["target_illegal_hu_count"] == 1
+    assert summary["min_target_hu_fan"] == 8
     assert "inferred" in " ".join(summary["notes"]).lower()
 
 
