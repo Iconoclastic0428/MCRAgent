@@ -1,0 +1,183 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mcr-qadv-terminal-cpu32-e3b1000-20260604a
+  namespace: nourish-sdsc
+  labels:
+    app: mcr-transformer
+    task: qadv-terminal-e3b1000
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 86400
+  template:
+    metadata:
+      labels:
+        app: mcr-transformer
+        task: qadv-terminal-e3b1000
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: qadv-terminal-e3b1000
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_qadv_20260529/repo
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+            - name: OMP_NUM_THREADS
+              value: "32"
+            - name: MKL_NUM_THREADS
+              value: "32"
+            - name: OPENBLAS_NUM_THREADS
+              value: "32"
+          command:
+            - sh
+            - -lc
+            - |
+              set -eux
+              python -m pip install --no-cache-dir PyMahjongGB
+              python - <<'PY'
+              import torch
+              import MahjongGB
+              print("repo_commit", "qadv-terminal-e3b1000-20260604a")
+              print("torch", torch.__version__, "cuda", torch.cuda.is_available(), "device_count", torch.cuda.device_count())
+              print("torch_threads_before", torch.get_num_threads())
+              torch.set_num_threads(32)
+              print("torch_threads_after", torch.get_num_threads())
+              print("MahjongGB import ok")
+              PY
+              SPLIT=data/processed/chaga0208_all_plus_live_elo2400_cached_reviews/session_split_seed20260527
+              BASE=/data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527/models/transformer_candidate_finetune_e3b1000_elo2400_5ep_l40_20260604a.pt
+              BASE_SHA256=759ddb9bd27e29d48567b69e1bf0ef24a9bdb7d8dfe76c1a0c59927a292d3fff
+              OUT=data/processed/qadv_e3b1000_20260604a
+              test -s "${BASE}"
+              test -s "${SPLIT}/train.prepared.jsonl"
+              test -s "${SPLIT}/val.prepared.jsonl"
+              test -s "${SPLIT}/test.prepared.jsonl"
+              test -s "${SPLIT}/train_val.audit.jsonl"
+              test -s "${SPLIT}/val.audit.jsonl"
+              test -s "${SPLIT}/test.audit.jsonl"
+              test -s scripts/build_qadv_terminal_trajectories.py
+              mkdir -p "${OUT}" runs/qadv_e3b1000_20260604a
+              python - <<'PY'
+              import hashlib
+              import json
+              import torch
+              from pathlib import Path
+
+              base = Path("/data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527/models/transformer_candidate_finetune_e3b1000_elo2400_5ep_l40_20260604a.pt")
+              expected_sha = "759ddb9bd27e29d48567b69e1bf0ef24a9bdb7d8dfe76c1a0c59927a292d3fff"
+              actual_sha = hashlib.sha256(base.read_bytes()).hexdigest()
+              checkpoint = torch.load(base, map_location="cpu")
+              best = ((checkpoint.get("selection") or {}).get("best_epoch") or {})
+              gate = {
+                  "base": str(base),
+                  "sha256": actual_sha,
+                  "selection_epoch": best.get("epoch"),
+                  "selection_phase": best.get("phase"),
+                  "selection_batch": best.get("batch"),
+                  "selection_relaxed": best.get("val_original_relaxed_accuracy"),
+                  "selection_play_relaxed": best.get("val_original_play_relaxed_accuracy"),
+                  "selection_top1": best.get("val_original_top1_accuracy"),
+              }
+              print(json.dumps(gate, indent=2))
+              if actual_sha != expected_sha:
+                  raise SystemExit(f"base checkpoint sha mismatch: {actual_sha} != {expected_sha}")
+              if best.get("epoch") != 2 or best.get("phase") != "batch_snapshot" or best.get("batch") != 100:
+                  raise SystemExit(f"base checkpoint is not selected E2 B100: {best}")
+              PY
+              python scripts/build_qadv_terminal_trajectories.py \
+                --checkpoint "${BASE}" \
+                --raw "${SPLIT}/train.prepared.jsonl" \
+                --review-audit-jsonl "${SPLIT}/train_val.audit.jsonl" \
+                --out-jsonl "${OUT}/qadv_terminal_train_v1.jsonl.gz" \
+                --summary-out "${OUT}/qadv_terminal_train_v1_summary.json" \
+                --batch-size 256 \
+                --max-candidates 235 \
+                --min-rows 25000 \
+                --min-games 500 \
+                --min-return-std 0.03 \
+                --progress-every-records 5 \
+                --no-rule-features \
+                --device cpu
+              python scripts/build_qadv_terminal_trajectories.py \
+                --checkpoint "${BASE}" \
+                --raw "${SPLIT}/val.prepared.jsonl" \
+                --review-audit-jsonl "${SPLIT}/train_val.audit.jsonl" \
+                --out-jsonl "${OUT}/qadv_terminal_val_v1.jsonl.gz" \
+                --summary-out "${OUT}/qadv_terminal_val_v1_summary.json" \
+                --batch-size 256 \
+                --max-candidates 235 \
+                --min-rows 25000 \
+                --min-games 500 \
+                --min-return-std 0.03 \
+                --progress-every-records 5 \
+                --no-rule-features \
+                --device cpu
+              python scripts/build_qadv_terminal_trajectories.py \
+                --checkpoint "${BASE}" \
+                --raw "${SPLIT}/test.prepared.jsonl" \
+                --review-audit-jsonl "${SPLIT}/test.audit.jsonl" \
+                --out-jsonl "${OUT}/qadv_terminal_test_v1.jsonl.gz" \
+                --summary-out "${OUT}/qadv_terminal_test_v1_summary.json" \
+                --batch-size 256 \
+                --max-candidates 235 \
+                --min-rows 25000 \
+                --min-games 500 \
+                --min-return-std 0.03 \
+                --progress-every-records 5 \
+                --no-rule-features \
+                --device cpu
+              python - <<'PY'
+              import json
+              from pathlib import Path
+              names = ["train", "val", "test"]
+              summaries = {
+                  name: json.loads(Path(f"data/processed/qadv_e3b1000_20260604a/qadv_terminal_{name}_v1_summary.json").read_text())
+                  for name in names
+              }
+              required_zero = [
+                  "candidate_truncation_count",
+                  "action_outside_mask",
+                  "low_fan_hu",
+                  "accepted_hu_outside_gate",
+                  "empty_legal_candidate_rows",
+                  "missing_terminal_result",
+              ]
+              for name, summary in summaries.items():
+                  failures = {key: summary.get(key) for key in required_zero if int(summary.get(key) or 0) != 0}
+                  if failures:
+                      raise SystemExit(f"{name} terminal row safety failed: {failures}")
+                  if float(summary.get("return_std") or 0.0) <= 0.0:
+                      raise SystemExit(f"{name} terminal returns have zero variance")
+                  if int(summary.get("nonzero_score_games") or 0) <= 0:
+                      raise SystemExit(f"{name} terminal returns have no nonzero score games")
+              combined = {
+                  "format": "mcr_qadv_terminal_v1_k8s_summary",
+                  "base_checkpoint": "/data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527/models/transformer_candidate_finetune_e3b1000_elo2400_5ep_l40_20260604a.pt",
+                  "base_sha256": "759ddb9bd27e29d48567b69e1bf0ef24a9bdb7d8dfe76c1a0c59927a292d3fff",
+                  "compute_rule_features": False,
+                  "summaries": summaries,
+              }
+              Path("runs/qadv_e3b1000_20260604a/qadv_terminal_v1_summary.json").write_text(json.dumps(combined, ensure_ascii=False, indent=2))
+              print(json.dumps(combined, ensure_ascii=False))
+              PY
+          resources:
+            requests:
+              cpu: "32"
+              memory: 32Gi
+              ephemeral-storage: 80Gi
+            limits:
+              cpu: "32"
+              memory: 38Gi
+              ephemeral-storage: 120Gi
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc
+

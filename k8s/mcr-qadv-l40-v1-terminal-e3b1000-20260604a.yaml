@@ -1,0 +1,308 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mcr-qadv-l40-v1-terminal-e3b1000-20260604a
+  namespace: nourish-sdsc
+  labels:
+    app: mcr-transformer
+    task: qadv-v1-terminal-e3b1000
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 86400
+  template:
+    metadata:
+      labels:
+        app: mcr-transformer
+        task: qadv-v1-terminal-e3b1000
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+        - key: nautilus.io/reservation
+          operator: Equal
+          value: csu-tide
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-L40
+      containers:
+        - name: qadv-v1-terminal-e3b1000
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_qadv_20260529/repo
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+          command:
+            - sh
+            - -lc
+            - |
+              set -eux
+              python -m pip install --no-cache-dir PyMahjongGB
+              python - <<'PY'
+              import torch
+              import MahjongGB
+              print("repo_commit", "qadv-v1-terminal-e3b1000-20260604a")
+              print("torch", torch.__version__, "cuda", torch.cuda.is_available(), "device_count", torch.cuda.device_count())
+              print("MahjongGB import ok")
+              PY
+              SPLIT=data/processed/chaga0208_all_plus_live_elo2400_cached_reviews/session_split_seed20260527
+              BASE=/data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527/models/transformer_candidate_finetune_e3b1000_elo2400_5ep_l40_20260604a.pt
+              BASE_SHA256=759ddb9bd27e29d48567b69e1bf0ef24a9bdb7d8dfe76c1a0c59927a292d3fff
+              OUT=data/processed/qadv_e3b1000_20260604a
+              TRAIN_HARD=${OUT}/qadv_hard_train_v0.jsonl
+              VAL_HARD=${OUT}/qadv_hard_val_v0.jsonl
+              TEST_HARD=${OUT}/qadv_hard_test_v1.jsonl
+              TRAIN_TERMINAL=${OUT}/qadv_terminal_train_v1.jsonl.gz
+              VAL_TERMINAL=${OUT}/qadv_terminal_val_v1.jsonl.gz
+              TEST_TERMINAL=${OUT}/qadv_terminal_test_v1.jsonl.gz
+              test -s "${BASE}"
+              test -s "${TRAIN_TERMINAL}"
+              test -s "${VAL_TERMINAL}"
+              test -s "${TEST_TERMINAL}"
+              mkdir -p "${OUT}" runs/qadv_e3b1000_20260604a models
+              python - <<'PY'
+              import hashlib
+              import json
+              import torch
+              from pathlib import Path
+
+              base = Path("/data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527/models/transformer_candidate_finetune_e3b1000_elo2400_5ep_l40_20260604a.pt")
+              expected_sha = "759ddb9bd27e29d48567b69e1bf0ef24a9bdb7d8dfe76c1a0c59927a292d3fff"
+              actual_sha = hashlib.sha256(base.read_bytes()).hexdigest()
+              checkpoint = torch.load(base, map_location="cpu")
+              best = ((checkpoint.get("selection") or {}).get("best_epoch") or {})
+              gate = {
+                  "base": str(base),
+                  "sha256": actual_sha,
+                  "selection_epoch": best.get("epoch"),
+                  "selection_phase": best.get("phase"),
+                  "selection_batch": best.get("batch"),
+                  "selection_relaxed": best.get("val_original_relaxed_accuracy"),
+                  "selection_play_relaxed": best.get("val_original_play_relaxed_accuracy"),
+                  "selection_top1": best.get("val_original_top1_accuracy"),
+              }
+              print(json.dumps(gate, indent=2))
+              if actual_sha != expected_sha:
+                  raise SystemExit(f"base checkpoint sha mismatch: {actual_sha} != {expected_sha}")
+              if best.get("epoch") != 2 or best.get("phase") != "batch_snapshot" or best.get("batch") != 100:
+                  raise SystemExit(f"base checkpoint is not selected E2 B100: {best}")
+              PY
+              python - <<'PY'
+              import json
+              from pathlib import Path
+              names = ["train", "val", "test"]
+              summaries = {
+                  name: json.loads(Path(f"data/processed/qadv_e3b1000_20260604a/qadv_terminal_{name}_v1_summary.json").read_text())
+                  for name in names
+              }
+              for name, summary in summaries.items():
+                  failures = {
+                      key: summary.get(key)
+                      for key in (
+                          "empty_legal_candidate_rows",
+                          "action_outside_mask",
+                          "low_fan_hu",
+                          "accepted_hu_outside_gate",
+                          "candidate_truncation_count",
+                          "missing_terminal_result",
+                      )
+                      if int(summary.get(key) or 0) != 0
+                  }
+                  if failures:
+                      raise SystemExit(f"{name} terminal row safety failed: {failures}")
+                  if int(summary.get("rows") or 0) <= 0:
+                      raise SystemExit(f"{name} terminal rows must be nonzero")
+                  if int(summary.get("nonzero_score_games") or 0) <= 0:
+                      raise SystemExit(f"{name} nonzero-score games must be nonzero")
+                  if float(summary.get("return_std") or 0.0) < 0.03:
+                      raise SystemExit(f"{name} return std below gate: {summary.get('return_std')}")
+              print(json.dumps({"event": "terminal_gate_passed", "summaries": summaries}, ensure_ascii=False))
+              PY
+              if [ ! -s "${TRAIN_HARD}" ]; then
+                python scripts/mine_chaga_hard_examples.py \
+                  --checkpoint ${BASE} \
+                  --raw ${SPLIT}/train.prepared.jsonl \
+                  --review-audit-jsonl ${SPLIT}/train_val.audit.jsonl \
+                  --out-jsonl ${TRAIN_HARD} \
+                  --summary-out ${OUT}/qadv_hard_train_v0_summary.json \
+                  --batch-size 256 \
+                  --max-candidates 235 \
+                  --relaxed-play-top3-count 4 \
+                  --output-format qadv \
+                  --fail-on-gate \
+                  --no-rule-features \
+                  --device cuda
+              fi
+              if [ ! -s "${VAL_HARD}" ]; then
+                python scripts/mine_chaga_hard_examples.py \
+                  --checkpoint ${BASE} \
+                  --raw ${SPLIT}/val.prepared.jsonl \
+                  --review-audit-jsonl ${SPLIT}/train_val.audit.jsonl \
+                  --out-jsonl ${VAL_HARD} \
+                  --summary-out ${OUT}/qadv_hard_val_v0_summary.json \
+                  --batch-size 256 \
+                  --max-candidates 235 \
+                  --relaxed-play-top3-count 4 \
+                  --output-format qadv \
+                  --fail-on-gate \
+                  --no-rule-features \
+                  --device cuda
+              fi
+              python scripts/mine_chaga_hard_examples.py \
+                --checkpoint ${BASE} \
+                --raw ${SPLIT}/test.prepared.jsonl \
+                --review-audit-jsonl ${SPLIT}/test.audit.jsonl \
+                --out-jsonl ${TEST_HARD} \
+                --summary-out ${OUT}/qadv_hard_test_v1_summary.json \
+                --batch-size 256 \
+                --max-candidates 235 \
+                --relaxed-play-top3-count 4 \
+                --output-format qadv \
+                --fail-on-gate \
+                --no-rule-features \
+                --device cuda
+              python scripts/train_qadv_reranker.py \
+                --hard-jsonl ${TRAIN_HARD} \
+                --eval-hard-jsonl ${VAL_HARD} \
+                --terminal-jsonl ${TRAIN_TERMINAL} \
+                --eval-terminal-jsonl ${VAL_TERMINAL} \
+                --model-out models/qadv_reranker_e3b1000_v1_terminal_final.pt \
+                --best-model-out models/qadv_reranker_e3b1000_v1_terminal_best.pt \
+                --metrics-out runs/qadv_e3b1000_20260604a/qadv_reranker_v1_terminal_train_metrics.json \
+                --epochs 3 \
+                --batch-size 1024 \
+                --hidden-size 512 \
+                --num-layers 4 \
+                --dropout 0.05 \
+                --lr 0.0003 \
+                --weight-decay 0.01 \
+                --grad-clip 1.0 \
+                --weighted-sampler \
+                --hard-sample-weight 1.0 \
+                --terminal-sample-weight 1.0 \
+                --train-lambda 0.20 \
+                --eval-lambda 0.10 \
+                --margin 0.5 \
+                --accept-weight 1.0 \
+                --pair-weight 0.5 \
+                --cql-weight 0.03 \
+                --soft-weight 0.05 \
+                --return-loss-weight 0.20 \
+                --value-target-key discounted_return \
+                --q-l2-weight 0.0001 \
+                --device cuda
+              python scripts/evaluate_qadv_reranker.py \
+                --hard-jsonl ${VAL_HARD} \
+                --terminal-jsonl ${VAL_TERMINAL} \
+                --q-checkpoint models/qadv_reranker_e3b1000_v1_terminal_best.pt \
+                --metrics-out runs/qadv_e3b1000_20260604a/qadv_reranker_v1_terminal_val_lambda_sweep.json \
+                --batch-size 1024 \
+                --lambdas 0.00,0.05,0.10,0.20,0.35,0.50 \
+                --value-target-key discounted_return \
+                --device cuda
+              python scripts/evaluate_qadv_reranker.py \
+                --hard-jsonl ${TEST_HARD} \
+                --terminal-jsonl ${TEST_TERMINAL} \
+                --q-checkpoint models/qadv_reranker_e3b1000_v1_terminal_best.pt \
+                --metrics-out runs/qadv_e3b1000_20260604a/qadv_reranker_v1_terminal_test_lambda_sweep.json \
+                --batch-size 1024 \
+                --lambdas 0.00,0.05,0.10,0.20,0.35,0.50 \
+                --value-target-key discounted_return \
+                --device cuda
+              python - <<'PY'
+              import json
+              from pathlib import Path
+              val = json.loads(Path("runs/qadv_e3b1000_20260604a/qadv_reranker_v1_terminal_val_lambda_sweep.json").read_text())
+              test = json.loads(Path("runs/qadv_e3b1000_20260604a/qadv_reranker_v1_terminal_test_lambda_sweep.json").read_text())
+              train = json.loads(Path("runs/qadv_e3b1000_20260604a/qadv_reranker_v1_terminal_train_metrics.json").read_text())
+
+              def safe_candidates(sweep):
+                  zero = sweep["lambda_metrics"]["0.00"]
+                  if int(zero.get("lambda_zero_reproduction_mismatches") or 0) != 0:
+                      raise SystemExit("lambda zero must reproduce frozen baseline exactly")
+                  baseline_relaxed = float(zero.get("original_relaxed_accuracy") or 0.0)
+                  baseline_play = float(zero.get("original_play_relaxed_accuracy") or 0.0)
+                  candidates = []
+                  for lam, metrics in sweep["lambda_metrics"].items():
+                      relaxed = float(metrics.get("original_relaxed_accuracy") or 0.0)
+                      play = float(metrics.get("original_play_relaxed_accuracy") or 0.0)
+                      changed_good = float(metrics.get("changed_to_accepted_rate") or 0.0)
+                      changed_bad = float(metrics.get("changed_from_accepted_to_wrong_rate") or 0.0)
+                      safe = (
+                          int(metrics.get("low_fan_hu_count") or 0) == 0
+                          and int(metrics.get("action_outside_mask") or 0) == 0
+                          and relaxed >= baseline_relaxed - 0.003
+                          and play >= baseline_play - 0.003
+                          and changed_good > changed_bad
+                      )
+                      candidates.append({
+                          "lambda": lam,
+                          "safe": safe,
+                          "relaxed": relaxed,
+                          "play_relaxed": play,
+                          "changed_to_accepted_rate": changed_good,
+                          "changed_from_accepted_to_wrong_rate": changed_bad,
+                      })
+                  return zero, candidates
+
+              val_zero, val_candidates = safe_candidates(val)
+              test_zero, test_candidates = safe_candidates(test)
+              terminal_q = val.get("terminal_q") or {}
+              summary = {
+                  "format": "mcr_qadv_v1_terminal_k8s_summary",
+                  "base_checkpoint": "/data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527/models/transformer_candidate_finetune_e3b1000_elo2400_5ep_l40_20260604a.pt",
+                  "base_sha256": "759ddb9bd27e29d48567b69e1bf0ef24a9bdb7d8dfe76c1a0c59927a292d3fff",
+                  "compute_rule_features": False,
+                  "best_model": "models/qadv_reranker_e3b1000_v1_terminal_best.pt",
+                  "train_metrics": "runs/qadv_e3b1000_20260604a/qadv_reranker_v1_terminal_train_metrics.json",
+                  "val_lambda_sweep": "runs/qadv_e3b1000_20260604a/qadv_reranker_v1_terminal_val_lambda_sweep.json",
+                  "test_lambda_sweep": "runs/qadv_e3b1000_20260604a/qadv_reranker_v1_terminal_test_lambda_sweep.json",
+                  "terminal_q": terminal_q,
+                  "terminal_q_separates_returns": (
+                      terminal_q.get("positive_negative_q_gap") is not None
+                      and float(terminal_q.get("positive_negative_q_gap")) > 0.0
+                  ),
+                  "val_lambda_zero": val_zero,
+                  "test_lambda_zero": test_zero,
+                  "val_candidate_lambdas": val_candidates,
+                  "test_candidate_lambdas": test_candidates,
+                  "safe_val_lambdas": [item for item in val_candidates if item["safe"]],
+                  "safe_test_lambdas": [item for item in test_candidates if item["safe"]],
+                  "best_epoch": train.get("best_epoch"),
+                  "best_metric": train.get("best_metric"),
+                  "best_tiebreak": train.get("best_tiebreak"),
+              }
+              Path("runs/qadv_e3b1000_20260604a/qadv_reranker_v1_terminal_summary.json").write_text(
+                  json.dumps(summary, ensure_ascii=False, indent=2)
+              )
+              print(json.dumps(summary, ensure_ascii=False))
+              PY
+          resources:
+            requests:
+              cpu: "4"
+              memory: 32Gi
+              ephemeral-storage: 80Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "8"
+              memory: 48Gi
+              ephemeral-storage: 120Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc
+
