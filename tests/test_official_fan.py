@@ -7,6 +7,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from official_fan import OfficialFanChecker
 
 
+def test_default_fan_checker_prefers_flat_build_path(tmp_path, monkeypatch):
+    flat = tmp_path / "build" / "official_judge" / "mcr_fan_check.exe"
+    nested = tmp_path / "build" / "official_judge" / "official_judge" / "mcr_fan_check.exe"
+    flat.parent.mkdir(parents=True)
+    flat.write_text("", encoding="utf-8")
+    nested.parent.mkdir(parents=True)
+    nested.write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    checker = OfficialFanChecker.default()
+
+    assert checker is not None
+    assert checker.exe_path == Path("build/official_judge/mcr_fan_check.exe")
+
+
+def test_default_fan_checker_falls_back_to_nested_build_path(tmp_path, monkeypatch):
+    nested = tmp_path / "build" / "official_judge" / "official_judge" / "mcr_fan_check.exe"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    checker = OfficialFanChecker.default()
+
+    assert checker is not None
+    assert checker.exe_path == Path("build/official_judge/official_judge/mcr_fan_check.exe")
+
+
 def test_official_fan_checker_accepts_high_fan_hand():
     checker = OfficialFanChecker(Path("build/official_judge/mcr_fan_check.exe"))
 

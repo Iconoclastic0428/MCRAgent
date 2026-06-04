@@ -12,6 +12,7 @@ from official_judge_match import judge_env
 
 
 DEFAULT_FAN_CHECK = Path("build/official_judge/mcr_fan_check.exe")
+NESTED_FAN_CHECK = Path("build/official_judge/official_judge/mcr_fan_check.exe")
 
 
 class OfficialFanChecker:
@@ -20,8 +21,9 @@ class OfficialFanChecker:
 
     @classmethod
     def default(cls):
-        if DEFAULT_FAN_CHECK.exists():
-            return cls(DEFAULT_FAN_CHECK)
+        for exe_path in _default_fan_check_candidates():
+            if exe_path.exists():
+                return cls(exe_path)
         return None
 
     def can_hu(self, **kwargs) -> bool:
@@ -111,6 +113,24 @@ def _calculate_fan_items(payload: dict) -> list[dict]:
     except Exception:
         return []
     return [_normalize_fan_item(value, name) for value, name in raw_items]
+
+
+def _default_fan_check_candidates() -> list[Path]:
+    repo_root = Path(__file__).resolve().parents[1]
+    candidates = [
+        DEFAULT_FAN_CHECK,
+        NESTED_FAN_CHECK,
+        repo_root / DEFAULT_FAN_CHECK,
+        repo_root / NESTED_FAN_CHECK,
+    ]
+    deduped = []
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            deduped.append(candidate)
+            seen.add(key)
+    return deduped
 
 
 def _pack_to_mahjonggb(pack: dict) -> tuple:
