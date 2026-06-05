@@ -317,6 +317,7 @@ def make_policy(
     aleo_exe: str | Path = DEFAULT_ALEO,
     sample_exe: str | Path = DEFAULT_SAMPLE,
     lawlorentz_levels: int = 1,
+    transformer_predictor=None,
 ) -> BotzonePolicy | AleoProcessPolicy | BotzoneJsonProcessPolicy | LawlorentzEffectivePolicy | LawlorentzModelPolicy:
     if kind == "lawlorentz_effective":
         return LawlorentzEffectivePolicy(levels=lawlorentz_levels)
@@ -332,23 +333,32 @@ def make_policy(
         if model is None:
             raise ValueError("--model is required for model policy")
         return BotzonePolicy(SklearnPredictor(Path(model)))
-    if kind == "transformer":
+    if kind in {"transformer", "transformer_feature"}:
         if model is None:
             raise ValueError("--model is required for transformer policy")
-        predictor_cls = globals().get("TransformerCheckpointPredictor")
-        if predictor_cls is None:
-            from advisor_service.transformer_predictor import (  # noqa: PLC0415
-                TransformerCheckpointPredictor as predictor_cls,
-            )
-        if qadv_model is not None or float(qadv_lambda) != 0.0:
-            return BotzonePolicy(
-                predictor_cls(
+        predictor = transformer_predictor
+        if predictor is None:
+            predictor_cls = globals().get("TransformerCheckpointPredictor")
+            if predictor_cls is None:
+                from advisor_service.transformer_predictor import (  # noqa: PLC0415
+                    TransformerCheckpointPredictor as predictor_cls,
+                )
+            if qadv_model is not None or float(qadv_lambda) != 0.0:
+                predictor = predictor_cls(
                     model,
                     qadv_path=qadv_model,
                     qadv_lambda=float(qadv_lambda),
                 )
-            )
-        return BotzonePolicy(predictor_cls(model))
+            else:
+                predictor = predictor_cls(model)
+        if kind == "transformer_feature":
+            feature_policy_cls = globals().get("FeatureTransformerBotzonePolicy")
+            if feature_policy_cls is None:
+                from feature_transformer_policy import (  # noqa: PLC0415
+                    FeatureTransformerBotzonePolicy as feature_policy_cls,
+                )
+            return feature_policy_cls(predictor)
+        return BotzonePolicy(predictor)
     if kind == "aleo":
         return AleoProcessPolicy(aleo_exe)
     if kind == "json":
@@ -478,6 +488,7 @@ def main() -> int:
             "shanten",
             "model",
             "transformer",
+            "transformer_feature",
             "json",
             "aleo",
             "sample",
@@ -496,6 +507,7 @@ def main() -> int:
             "shanten",
             "model",
             "transformer",
+            "transformer_feature",
             "json",
             "aleo",
             "sample",

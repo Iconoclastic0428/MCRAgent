@@ -1,9 +1,10 @@
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import torch
 
-from advisor_service.model_advisor import DEFAULT_TRANSFORMER_MODEL, TziakchaModelAdvisor
+from advisor_service.model_advisor import DEFAULT_QADV_LAMBDA, DEFAULT_QADV_RERANKER, DEFAULT_TRANSFORMER_MODEL, TziakchaModelAdvisor
 from advisor_service.transformer_predictor import TransformerCheckpointPredictor
 
 
@@ -37,7 +38,9 @@ class RejectingFanChecker:
 
 
 def test_default_transformer_model_is_strict_finetune_baseline():
-    assert DEFAULT_TRANSFORMER_MODEL.name == "transformer_candidate_finetune_medhard_l40_20260528b.pt"
+    assert DEFAULT_TRANSFORMER_MODEL.name == "transformer_candidate_finetune_medbest_l40_20260529a.pt"
+    assert DEFAULT_QADV_RERANKER.name == "qadv_reranker_medbest_v1_terminal_best.pt"
+    assert DEFAULT_QADV_LAMBDA == 0.10
 
 
 def test_transformer_predictor_is_legal_action_ranker_for_policy_bot():
@@ -57,6 +60,28 @@ def test_transformer_predictor_ranks_mapped_discard_candidate():
         0,
         "2 T2",
         ["PLAY W1", "PLAY T2"],
+    )
+
+    assert response == "PLAY T2"
+
+
+def test_transformer_predictor_ranks_full_feature_candidate_state():
+    predictor = TransformerCheckpointPredictor(
+        model=FixedActionModel(12),
+        config={"history_len": 4, "max_candidates": 8},
+        device="cpu",
+    )
+
+    response = predictor.predict_feature_response(
+        observation=np.zeros(predictor.obs_shape, dtype=np.float32),
+        history_tokens=np.asarray([3, 4], dtype=np.int64),
+        player_id=0,
+        candidate_actions=[2, 12],
+        candidate_rule_features=np.zeros(
+            (predictor.act_size, predictor.CANDIDATE_RULE_FEATURES),
+            dtype=np.float32,
+        ),
+        responses_by_action={2: ["PLAY W1"], 12: ["PLAY T2"]},
     )
 
     assert response == "PLAY T2"

@@ -270,6 +270,61 @@ def test_make_policy_can_create_transformer_checkpoint_policy_with_qadv(monkeypa
     assert policy.predictor.kind == "legal_action_ranker"
 
 
+def test_make_policy_can_create_feature_transformer_policy(monkeypatch):
+    constructed = []
+
+    class FakeTransformerCheckpointPredictor:
+        def __init__(self, model_path, *, qadv_path=None, qadv_lambda=0.0):
+            constructed.append((model_path, qadv_path, float(qadv_lambda)))
+
+    class FakeFeatureTransformerPolicy:
+        def __init__(self, predictor):
+            self.predictor = predictor
+
+    monkeypatch.setattr(
+        "official_judge_match.TransformerCheckpointPredictor",
+        FakeTransformerCheckpointPredictor,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "official_judge_match.FeatureTransformerBotzonePolicy",
+        FakeFeatureTransformerPolicy,
+        raising=False,
+    )
+
+    policy = make_policy(
+        "transformer_feature",
+        model="models/baseline.pt",
+        qadv_model="models/qadv.pt",
+        qadv_lambda=0.1,
+    )
+
+    assert isinstance(policy, FakeFeatureTransformerPolicy)
+    assert constructed == [("models/baseline.pt", "models/qadv.pt", 0.1)]
+
+
+def test_make_policy_can_reuse_injected_transformer_predictor(monkeypatch):
+    sentinel = object()
+
+    class FakeFeatureTransformerPolicy:
+        def __init__(self, predictor):
+            self.predictor = predictor
+
+    monkeypatch.setattr(
+        "official_judge_match.FeatureTransformerBotzonePolicy",
+        FakeFeatureTransformerPolicy,
+        raising=False,
+    )
+
+    policy = make_policy(
+        "transformer_feature",
+        model="models/baseline.pt",
+        transformer_predictor=sentinel,
+    )
+
+    assert policy.predictor is sentinel
+
+
 def test_botzone_json_process_policy_sends_requests_and_responses_to_runner():
     calls = []
 

@@ -195,6 +195,104 @@ class TransformerCheckpointPredictor:
             "scalar_features": torch.from_numpy(scalar_features).to(self.device),
         }
 
+    def predict_feature_response(
+        self,
+        *,
+        observation: np.ndarray,
+        history_tokens: np.ndarray,
+        player_id: int,
+        candidate_actions: list[int],
+        candidate_rule_features: np.ndarray,
+        responses_by_action: dict[int, list[str]],
+    ) -> str:
+        """Rank official-judge candidates from a full FeatureAgent state."""
+
+        if not candidate_actions:
+            return "PASS"
+        ordered_actions = [int(action) for action in candidate_actions[: self.max_candidates]]
+        batch = self._batch_for_feature_state(
+            observation=observation,
+            history_tokens=history_tokens,
+            player_id=player_id,
+            candidate_actions=ordered_actions,
+            candidate_rule_features=candidate_rule_features,
+        )
+        with self.torch.no_grad():
+            logits, _ = self.model(batch)
+            if self.qadv_model is not None:
+                qadv_batch = self._qadv_batch_for_live_state(
+                    batch,
+                    logits,
+                    ordered_actions,
+                    responses_by_action,
+                )
+                q_scores = self.qadv_model(qadv_batch)
+                _, _, qadv_final_scores = self.qadv_symbols
+                final_scores = qadv_final_scores(
+                    logits,
+                    q_scores,
+                    qadv_batch["candidate_mask"],
+                    lambda_q=self.qadv_lambda,
+                    candidate_is_hu=qadv_batch["candidate_is_hu"],
+                    allow_hu=qadv_batch["allow_hu"],
+                )
+            else:
+                final_scores = logits
+        pred_slot = int(self.torch.argmax(final_scores[0]).item())
+        selected_action = int(ordered_actions[pred_slot])
+        return (responses_by_action.get(selected_action) or ["PASS"])[0]
+
+    def _batch_for_feature_state(
+        self,
+        *,
+        observation: np.ndarray,
+        history_tokens: np.ndarray,
+        player_id: int,
+        candidate_actions: list[int],
+        candidate_rule_features: np.ndarray,
+    ) -> dict[str, Any]:
+        torch = self.torch
+        padded_actions = np.zeros((1, self.max_candidates), dtype=np.int64)
+        candidate_mask = np.zeros((1, self.max_candidates), dtype=np.bool_)
+        rule_features = np.zeros(
+            (1, self.max_candidates, self.CANDIDATE_RULE_FEATURES),
+            dtype=np.float32,
+        )
+        count = min(len(candidate_actions), self.max_candidates)
+        if count:
+            actions = np.asarray(candidate_actions[:count], dtype=np.int64)
+            padded_actions[0, :count] = actions
+            candidate_mask[0, :count] = True
+            rule_features[0, :count, :] = np.asarray(
+                candidate_rule_features[actions],
+                dtype=np.float32,
+            )
+        history = np.zeros((self.history_len,), dtype=np.int64)
+        incoming_history = np.asarray(history_tokens, dtype=np.int64).reshape(-1)
+        if incoming_history.size:
+            values = incoming_history[-self.history_len :]
+            history[-len(values) :] = values
+        scalar_features = np.asarray(
+            [
+                [
+                    float(player_id) / 3.0,
+                    float(count) / max(1.0, float(self.act_size)),
+                    1.0 if 1 in candidate_actions else 0.0,
+                ]
+            ],
+            dtype=np.float32,
+        )
+        return {
+            "observation": torch.from_numpy(
+                np.asarray(observation, dtype=np.float32)[None, :, :, :]
+            ).to(self.device),
+            "history_tokens": torch.from_numpy(history[None, :]).to(self.device),
+            "candidate_actions": torch.from_numpy(padded_actions).to(self.device),
+            "candidate_mask": torch.from_numpy(candidate_mask).to(self.device),
+            "candidate_rule_features": torch.from_numpy(rule_features).to(self.device),
+            "scalar_features": torch.from_numpy(scalar_features).to(self.device),
+        }
+
     def _qadv_batch_for_live_state(
         self,
         base_batch: dict[str, Any],

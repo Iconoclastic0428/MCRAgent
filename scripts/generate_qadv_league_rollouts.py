@@ -25,6 +25,7 @@ POLICY_CHOICES = {
     "shanten",
     "model",
     "transformer",
+    "transformer_feature",
     "json",
     "aleo",
     "sample",
@@ -129,17 +130,20 @@ def _return_fields(
     player: int,
     decision_turn: int,
     gamma: float,
+    no_hu_terminal_penalty: float = 0.0,
 ) -> dict[str, Any]:
     scores = terminal.get("scores") or [0, 0, 0, 0]
     score_delta = float(scores[player]) if player < len(scores) else 0.0
     final_turn = int(terminal.get("turns") or 0)
     player_won = terminal.get("action") == "HU" and terminal.get("winner") == player
     player_dealt_in = terminal.get("action") == "HU" and terminal.get("discarder") == player
+    no_hu_terminal = terminal.get("action") != "HU"
     hu_turn_norm = (float(final_turn) / max(1.0, float(final_turn))) if player_won and final_turn > 0 else 0.0
     point_delta_norm = _clip(score_delta / 64.0, -1.0, 1.0)
     components = {
         "point_delta_norm": point_delta_norm,
         "player_won": 1.0 if player_won else 0.0,
+        "no_hu_terminal": 1.0 if no_hu_terminal else 0.0,
         "end_wait": 0.0,
         "wait_when_deal_in": 0.0,
         "player_dealt_in": 1.0 if player_dealt_in else 0.0,
@@ -152,6 +156,7 @@ def _return_fields(
         + 0.05 * components["wait_when_deal_in"]
         - 0.15 * components["player_dealt_in"]
         - 0.10 * components["hu_turn_norm_if_win"]
+        + float(no_hu_terminal_penalty) * components["no_hu_terminal"]
     )
     discount_steps = max(0, final_turn - int(decision_turn))
     return {
@@ -160,6 +165,7 @@ def _return_fields(
         "terminal_return": terminal_return,
         "discounted_return": terminal_return * (float(gamma) ** discount_steps),
         "discount_steps": discount_steps,
+        "no_hu_terminal_penalty": float(no_hu_terminal_penalty),
         "components": components,
     }
 
@@ -219,6 +225,7 @@ def _rows_from_result(
     seat_specs: list[PolicySpec],
     policy_pool: list[PolicySpec],
     gamma: float,
+    no_hu_terminal_penalty: float,
 ) -> list[dict[str, Any]]:
     terminal = terminal_result_from_official(result)
     pool_public = [spec.to_public_dict() for spec in policy_pool]
@@ -238,6 +245,7 @@ def _rows_from_result(
                 player=player,
                 decision_turn=turn_index // 2,
                 gamma=gamma,
+                no_hu_terminal_penalty=no_hu_terminal_penalty,
             )
             rows.append(
                 {
@@ -277,19 +285,43 @@ def _make_policies(
     aleo_exe: str,
     sample_exe: str,
     lawlorentz_levels: int,
+    transformer_predictor_cache: dict[tuple[str, str | None, float], Any] | None = None,
 ):
-    return [
-        make_policy(
-            spec.policy,
-            spec.model,
-            qadv_model=spec.qadv_model,
-            qadv_lambda=spec.qadv_lambda,
-            aleo_exe=aleo_exe,
-            sample_exe=sample_exe,
-            lawlorentz_levels=lawlorentz_levels,
+    policies = []
+    for spec in seat_specs:
+        transformer_predictor = None
+        if spec.policy in {"transformer", "transformer_feature"}:
+            if transformer_predictor_cache is None:
+                transformer_predictor_cache = {}
+            key = (str(spec.model), str(spec.qadv_model), float(spec.qadv_lambda))
+            transformer_predictor = transformer_predictor_cache.get(key)
+            if transformer_predictor is None:
+                from advisor_service.transformer_predictor import (  # noqa: PLC0415
+                    TransformerCheckpointPredictor,
+                )
+
+                if spec.qadv_model is not None or float(spec.qadv_lambda) != 0.0:
+                    transformer_predictor = TransformerCheckpointPredictor(
+                        spec.model,
+                        qadv_path=spec.qadv_model,
+                        qadv_lambda=float(spec.qadv_lambda),
+                    )
+                else:
+                    transformer_predictor = TransformerCheckpointPredictor(spec.model)
+                transformer_predictor_cache[key] = transformer_predictor
+        policies.append(
+            make_policy(
+                spec.policy,
+                spec.model,
+                qadv_model=spec.qadv_model,
+                qadv_lambda=spec.qadv_lambda,
+                aleo_exe=aleo_exe,
+                sample_exe=sample_exe,
+                lawlorentz_levels=lawlorentz_levels,
+                transformer_predictor=transformer_predictor,
+            )
         )
-        for spec in seat_specs
-    ]
+    return policies
 
 
 def _merge_numeric_diagnostics(target: dict[str, Any], diagnostics: dict[str, Any]) -> None:
@@ -337,6 +369,10 @@ def summarize_games(
     checked_policy_name: str | None = None,
     baseline_policy_names: list[str] | None = None,
     min_checked_hu_lift: float | None = None,
+    target_policy_hu_rate: float | None = None,
+    min_policy_hu_rate: float | None = None,
+    min_total_hu_rate: float | None = None,
+    no_hu_terminal_penalty: float = 0.0,
 ) -> dict[str, Any]:
     rows = [row for game in games for row in game.get("rows", [])]
     terminal_counts: dict[str, int] = {}
@@ -409,10 +445,19 @@ def summarize_games(
     nonzero_score_rate = nonzero_score_games / len(games) if games else 0.0
     huang_games = terminal_counts.get("HUANG", 0)
     huang_rate = huang_games / len(games) if games else None
+    total_hu_rate = terminal_counts.get("HU", 0) / len(games) if games else None
     policy_hu_rates = {
         name: policy_hu_counts.get(name, 0) / len(games) if games else None
         for name in policy_hu_counts
     }
+    policy_hu_rate_sum = sum(
+        float(rate) for rate in policy_hu_rates.values() if rate is not None
+    )
+    seat_hu_rates = {
+        SEAT_LABELS[seat]: seat_hu_counts[seat] / len(games) if games else None
+        for seat in range(4)
+    }
+    seat_hu_rate_sum = sum(float(rate) for rate in seat_hu_rates.values() if rate is not None)
     baseline_names = list(baseline_policy_names or [])
     baseline_rates = [
         float(policy_hu_rates[name])
@@ -446,6 +491,16 @@ def summarize_games(
         failures["return_std"] = return_std
     if max_huang_rate is not None and huang_rate is not None and huang_rate > float(max_huang_rate):
         failures["huang_rate"] = huang_rate
+    if min_total_hu_rate is not None and total_hu_rate is not None and total_hu_rate < float(min_total_hu_rate):
+        failures["total_hu_rate"] = total_hu_rate
+    if min_policy_hu_rate is not None:
+        policy_floor_failures = {
+            name: rate
+            for name, rate in policy_hu_rates.items()
+            if rate is not None and rate < float(min_policy_hu_rate)
+        }
+        if policy_floor_failures:
+            failures["policy_hu_rate_floor"] = policy_floor_failures
     if checked_policy_name:
         if checked_hu_rate is None:
             failures["checked_policy_missing"] = checked_policy_name
@@ -482,7 +537,7 @@ def summarize_games(
         "policy_pool": [spec.to_public_dict() for spec in policy_specs],
         "terminal_action_counts": terminal_counts,
         "hu_games": terminal_counts.get("HU", 0),
-        "hu_rate": terminal_counts.get("HU", 0) / len(games) if games else None,
+        "hu_rate": total_hu_rate,
         "huang_games": huang_games,
         "huang_rate": huang_rate,
         "nonzero_score_games": nonzero_score_games,
@@ -506,10 +561,8 @@ def summarize_games(
             for seat in range(4)
         },
         "seat_hu_counts": {SEAT_LABELS[seat]: seat_hu_counts[seat] for seat in range(4)},
-        "seat_hu_rates": {
-            SEAT_LABELS[seat]: seat_hu_counts[seat] / len(games) if games else None
-            for seat in range(4)
-        },
+        "seat_hu_rates": seat_hu_rates,
+        "seat_hu_rate_sum": seat_hu_rate_sum,
         "seat_average_hu_turns": {
             SEAT_LABELS[seat]: (sum(seat_hu_turns[seat]) / len(seat_hu_turns[seat]) if seat_hu_turns[seat] else None)
             for seat in range(4)
@@ -518,6 +571,9 @@ def summarize_games(
         "policy_hu_counts": policy_hu_counts,
         "policy_hu_rate_denominator": "total_games",
         "policy_hu_rates": policy_hu_rates,
+        "policy_hu_rate_sum": policy_hu_rate_sum,
+        "policy_hu_rate_target": target_policy_hu_rate,
+        "policy_min_hu_rate_gate": min_policy_hu_rate,
         "policy_hu_rates_per_seat_game": {
             name: policy_hu_counts.get(name, 0) / games_seen if games_seen else None
             for name, games_seen in policy_seat_games.items()
@@ -541,6 +597,13 @@ def summarize_games(
         },
         "self_play_guideline": {
             "max_huang_rate": max_huang_rate,
+            "min_total_hu_rate": min_total_hu_rate,
+            "total_hu_rate": total_hu_rate,
+            "target_individual_policy_hu_rate": target_policy_hu_rate,
+            "min_individual_policy_hu_rate": min_policy_hu_rate,
+            "policy_hu_rate_sum": policy_hu_rate_sum,
+            "seat_hu_rate_sum": seat_hu_rate_sum,
+            "no_hu_terminal_penalty": no_hu_terminal_penalty,
             "checked_policy_name": checked_policy_name,
             "baseline_policy_names": baseline_names,
             "baseline_average_hu_rate": baseline_average_hu_rate,
@@ -549,6 +612,19 @@ def summarize_games(
             "checked_policy_hu_lift_vs_baseline": checked_hu_lift_vs_baseline,
             "huang_rate_passed": (
                 None if max_huang_rate is None or huang_rate is None else huang_rate <= float(max_huang_rate)
+            ),
+            "total_hu_rate_passed": (
+                None
+                if min_total_hu_rate is None or total_hu_rate is None
+                else total_hu_rate >= float(min_total_hu_rate)
+            ),
+            "individual_policy_hu_rate_passed": (
+                None
+                if min_policy_hu_rate is None
+                else all(
+                    rate is not None and rate >= float(min_policy_hu_rate)
+                    for rate in policy_hu_rates.values()
+                )
             ),
             "checked_hu_lift_passed": (
                 None
@@ -573,6 +649,7 @@ def run_rollout_set(args: argparse.Namespace) -> dict[str, Any]:
     games: list[dict[str, Any]] = []
     out_path = Path(args.out_jsonl)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    transformer_predictor_cache: dict[tuple[str, str | None, float], Any] = {}
     with out_path.open("w", encoding="utf-8") as handle:
         for game_index, initdata in enumerate(initdata_items):
             seat_specs = _policy_specs_for_game(policy_specs, game_index)
@@ -581,6 +658,7 @@ def run_rollout_set(args: argparse.Namespace) -> dict[str, Any]:
                 aleo_exe=args.aleo_exe,
                 sample_exe=args.sample_exe,
                 lawlorentz_levels=int(args.lawlorentz_levels),
+                transformer_predictor_cache=transformer_predictor_cache,
             )
             result = run_match(
                 policies,
@@ -595,6 +673,7 @@ def run_rollout_set(args: argparse.Namespace) -> dict[str, Any]:
                 seat_specs=seat_specs,
                 policy_pool=policy_specs,
                 gamma=float(getattr(args, "gamma", 0.995)),
+                no_hu_terminal_penalty=float(getattr(args, "no_hu_terminal_penalty", 0.0)),
             )
             for row in rows:
                 handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
@@ -619,6 +698,10 @@ def run_rollout_set(args: argparse.Namespace) -> dict[str, Any]:
         checked_policy_name=getattr(args, "checked_policy_name", None),
         baseline_policy_names=list(getattr(args, "baseline_policy_name", None) or []),
         min_checked_hu_lift=getattr(args, "min_checked_hu_lift", None),
+        target_policy_hu_rate=getattr(args, "target_policy_hu_rate", None),
+        min_policy_hu_rate=getattr(args, "min_policy_hu_rate", None),
+        min_total_hu_rate=getattr(args, "min_total_hu_rate", None),
+        no_hu_terminal_penalty=float(getattr(args, "no_hu_terminal_penalty", 0.0)),
     )
     summary.update(
         {
@@ -672,9 +755,13 @@ def main() -> int:
     parser.add_argument("--min-return-std", type=float, default=0.03)
     parser.add_argument("--require-policy-pool-size", type=int, default=2)
     parser.add_argument("--max-huang-rate", type=float, default=None)
+    parser.add_argument("--min-total-hu-rate", type=float, default=None)
+    parser.add_argument("--target-policy-hu-rate", type=float, default=None)
+    parser.add_argument("--min-policy-hu-rate", type=float, default=None)
     parser.add_argument("--checked-policy-name", default=None)
     parser.add_argument("--baseline-policy-name", action="append", default=[])
     parser.add_argument("--min-checked-hu-lift", type=float, default=None)
+    parser.add_argument("--no-hu-terminal-penalty", type=float, default=0.0)
     parser.add_argument("--fail-on-gate", action="store_true")
     args = parser.parse_args()
     if not args.policy_spec:

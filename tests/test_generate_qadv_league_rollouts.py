@@ -31,8 +31,60 @@ def test_parse_policy_spec_accepts_transformer_qadv_variant():
     assert spec.qadv_lambda == 0.05
 
 
+def test_parse_policy_spec_accepts_feature_transformer_variant():
+    spec = rollouts.parse_policy_spec(
+        "name=base,policy=transformer_feature,model=models/base.pt"
+    )
+
+    assert spec.policy == "transformer_feature"
+
+
+def test_make_policies_reuses_cached_transformer_predictor(monkeypatch):
+    constructed = []
+    made = []
+
+    class FakeTransformerCheckpointPredictor:
+        def __init__(self, model_path, *, qadv_path=None, qadv_lambda=0.0):
+            constructed.append((model_path, qadv_path, float(qadv_lambda)))
+
+    def fake_make_policy(kind, model=None, **kwargs):
+        made.append(kwargs.get("transformer_predictor"))
+        return _EchoPolicy(kind)
+
+    monkeypatch.setattr(
+        "advisor_service.transformer_predictor.TransformerCheckpointPredictor",
+        FakeTransformerCheckpointPredictor,
+    )
+    monkeypatch.setattr(rollouts, "make_policy", fake_make_policy)
+
+    cache = {}
+    specs = [
+        rollouts.PolicySpec(name="a", policy="transformer_feature", model="models/base.pt"),
+        rollouts.PolicySpec(name="b", policy="transformer_feature", model="models/base.pt"),
+        rollouts.PolicySpec(name="c", policy="transformer_feature", model="models/base.pt"),
+        rollouts.PolicySpec(name="d", policy="transformer_feature", model="models/base.pt"),
+    ]
+
+    rollouts._make_policies(
+        specs,
+        aleo_exe="aleo.exe",
+        sample_exe="sample.exe",
+        lawlorentz_levels=1,
+        transformer_predictor_cache=cache,
+    )
+
+    assert constructed == [("models/base.pt", None, 0.0)]
+    assert len({id(predictor) for predictor in made}) == 1
+
+
 def test_run_rollout_set_writes_rows_with_policy_pool_and_terminal_result(monkeypatch, tmp_path):
     made = []
+
+    class FakeTransformerCheckpointPredictor:
+        def __init__(self, model_path, *, qadv_path=None, qadv_lambda=0.0):
+            self.model_path = model_path
+            self.qadv_path = qadv_path
+            self.qadv_lambda = qadv_lambda
 
     def fake_make_policy(kind, model=None, **kwargs):
         made.append((kind, model, kwargs.get("qadv_model"), kwargs.get("qadv_lambda")))
@@ -59,6 +111,10 @@ def test_run_rollout_set_writes_rows_with_policy_pool_and_terminal_result(monkey
         }
 
     monkeypatch.setattr(rollouts, "load_initdata", lambda raw, limit, offset: [{"seed": 1}])
+    monkeypatch.setattr(
+        "advisor_service.transformer_predictor.TransformerCheckpointPredictor",
+        FakeTransformerCheckpointPredictor,
+    )
     monkeypatch.setattr(rollouts, "make_policy", fake_make_policy)
     monkeypatch.setattr(rollouts, "run_match", fake_run_match)
 
@@ -134,6 +190,21 @@ def test_run_rollout_set_writes_rows_with_policy_pool_and_terminal_result(monkey
     assert rows[0]["terminal_result"]["base_fan_count"] == 8
     assert rows[0]["safety"]["illegal_hu"] is False
     assert made[1] == ("transformer", "models/base.pt", "models/qadv.pt", 0.05)
+
+
+def test_return_fields_penalize_no_hu_terminal_when_configured():
+    fields = rollouts._return_fields(
+        terminal={"action": "HUANG", "scores": [0, 0, 0, 0], "turns": 100},
+        player=0,
+        decision_turn=10,
+        gamma=1.0,
+        no_hu_terminal_penalty=-1.0,
+    )
+
+    assert fields["terminal_return"] == -1.0
+    assert fields["discounted_return"] == -1.0
+    assert fields["components"]["no_hu_terminal"] == 1.0
+    assert fields["no_hu_terminal_penalty"] == -1.0
 
 
 def test_hu_rate_uses_total_games_and_hu_turn_uses_winner_discard_cycle():
@@ -316,6 +387,59 @@ def test_rollout_gate_requires_checked_policy_hu_lift_over_baseline():
     lift_failure = summary_without_huang_gate["gate_failures"]["checked_policy_hu_lift"]
     assert lift_failure["required_lift"] == 1.0
     assert lift_failure["actual_lift"] == pytest.approx(0.5)
+
+
+def test_rollout_gate_requires_individual_policy_hu_rate_floor():
+    games = []
+    for winner in [0, 1, 2, None]:
+        seat_names = ["qadv", "baseA", "baseB", "baseC"]
+        if winner is None:
+            games.append(
+                {
+                    "scores": [0, 0, 0, 0],
+                    "terminal_result": {"action": "HUANG"},
+                    "rows": [],
+                    "seat_policy_names": seat_names,
+                }
+            )
+            continue
+        scores = [0, 0, 0, 0]
+        scores[winner] = 16
+        games.append(
+            {
+                "scores": scores,
+                "terminal_result": {"action": "HU", "winner": winner, "fan_count": 8, "base_fan_count": 8},
+                "rows": [{"player": winner, "response": "HU", "return_fields": {"discounted_return": 0.1}, "safety": {}}],
+                "seat_policy_names": seat_names,
+            }
+        )
+
+    summary = rollouts.summarize_games(
+        games,
+        policy_specs=[
+            rollouts.PolicySpec(name="qadv", policy="transformer"),
+            rollouts.PolicySpec(name="baseA", policy="transformer"),
+            rollouts.PolicySpec(name="baseB", policy="transformer"),
+            rollouts.PolicySpec(name="baseC", policy="transformer"),
+        ],
+        min_games=4,
+        min_rows=0,
+        min_nonzero_score_rate=0.0,
+        min_return_std=0.0,
+        require_policy_pool_size=4,
+        target_policy_hu_rate=0.25,
+        min_policy_hu_rate=0.20,
+        min_total_hu_rate=0.99,
+    )
+
+    assert summary["gate_passed"] is False
+    assert summary["hu_rate"] == 0.75
+    assert summary["policy_hu_rate_sum"] == 0.75
+    assert summary["seat_hu_rate_sum"] == 0.75
+    assert summary["gate_failures"]["policy_hu_rate_floor"] == {"baseC": 0.0}
+    assert summary["gate_failures"]["total_hu_rate"] == 0.75
+    assert summary["self_play_guideline"]["target_individual_policy_hu_rate"] == 0.25
+    assert summary["self_play_guideline"]["individual_policy_hu_rate_passed"] is False
 
 
 def test_rollout_gate_rejects_low_fan_hu():
