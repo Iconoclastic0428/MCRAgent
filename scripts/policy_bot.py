@@ -660,7 +660,6 @@ class BotzonePolicy:
         standing_tiles = list(self.hand.elements())
         if is_self_draw and win_tile in standing_tiles:
             standing_tiles.remove(win_tile)
-        last_wall_index = ((actor if actor is not None else self.player_id) + 1) % 4
         return {
             "packs": list(self.packs),
             "hand": standing_tiles,
@@ -671,7 +670,7 @@ class BotzonePolicy:
             "is_about_kong": self.next_draw_about_kong or bool(
                 tokens and len(tokens) >= 3 and tokens[2] == "BUGANG"
             ),
-            "is_last": self.wall_counts[last_wall_index] <= 0,
+            "is_last": False,
             "seat_wind": self.player_id,
             "prevalent_wind": self.quan,
             "player": self.player_id,

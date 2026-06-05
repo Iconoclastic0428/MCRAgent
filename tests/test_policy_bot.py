@@ -582,6 +582,25 @@ def test_policy_prefer_hu_takes_only_official_fan_checked_hu():
     assert rejecting_policy.respond("3 1 PLAY W3") != "HU"
 
 
+def test_policy_does_not_grant_speculative_last_tile_fan():
+    from official_fan import OfficialFanChecker
+
+    policy = BotzonePolicy(
+        PreferHuPredictor("PASS"),
+        fan_checker=OfficialFanChecker(Path("build/official_judge/mcr_fan_check.exe")),
+    )
+    policy.respond("0 2 0")
+    policy.respond("1 0 0 0 0 W3 W5 T3 T4 T6 T7 B3 B5 B5 B6 B9 F3 F4")
+    policy.hand.clear()
+    policy.hand.update("W3 W5 W5 T3 T4 T6 T7 B5 B6 B7 W2 W1 T8".split())
+    policy.wall_counts[1] = 0
+
+    response = policy.respond("3 0 PLAY T5")
+
+    assert response != "HU"
+    assert policy.stats["fan_check_rejects"] == 1
+
+
 def test_policy_suppresses_hu_when_fan_checker_unavailable():
     policy = BotzonePolicy(PreferHuPredictor("PLAY W1"))
     policy.fan_checker = None
