@@ -94,6 +94,7 @@ def test_run_rollout_set_writes_rows_with_policy_pool_and_terminal_result(monkey
     assert summary["policy_pool_names"] == ["base", "qadv005"]
     assert summary["terminal_action_counts"] == {"HU": 1}
     assert summary["hu_rate"] == 1.0
+    assert summary["huang_rate"] == 0.0
     assert summary["average_placement_rewards_4_2_1_0"] == [4.0, 0.0, 1.5, 1.5]
     assert summary["seat_labels"] == {"0": "A", "1": "B", "2": "C", "3": "D"}
     assert summary["seat_hu_counts"] == {"A": 1, "B": 0, "C": 0, "D": 0}
@@ -203,6 +204,118 @@ def test_rollout_gate_rejects_all_zero_terminal_signal():
     assert summary["gate_passed"] is False
     assert summary["gate_failures"]["nonzero_score_rate"] == 0.0
     assert summary["gate_failures"]["return_std"] == 0.0
+
+
+def test_rollout_gate_rejects_high_huang_rate():
+    games = [
+        {
+            "scores": [0, 0, 0, 0],
+            "terminal_result": {"action": "HUANG"},
+            "rows": [],
+            "seat_policy_names": ["base", "base", "base", "base"],
+        },
+        {
+            "scores": [16, -8, -4, -4],
+            "terminal_result": {"action": "HU", "winner": 0, "fan_count": 8, "base_fan_count": 8},
+            "rows": [{"player": 0, "response": "HU", "return_fields": {"discounted_return": 0.1}, "safety": {}}],
+            "seat_policy_names": ["base", "base", "base", "base"],
+        },
+    ]
+
+    summary = rollouts.summarize_games(
+        games,
+        policy_specs=[rollouts.PolicySpec(name="base", policy="transformer")],
+        min_games=2,
+        min_rows=0,
+        min_nonzero_score_rate=0.0,
+        min_return_std=0.0,
+        require_policy_pool_size=1,
+        max_huang_rate=0.01,
+    )
+
+    assert summary["gate_passed"] is False
+    assert summary["huang_rate"] == 0.5
+    assert summary["gate_failures"]["huang_rate"] == 0.5
+    assert summary["self_play_guideline"]["huang_rate_passed"] is False
+
+
+def test_rollout_gate_requires_checked_policy_hu_lift_over_baseline():
+    games = []
+    for winner, seat_names in [
+        (0, ["qadv", "baseA", "baseB", "baseC"]),
+        (1, ["qadv", "baseA", "baseB", "baseC"]),
+        (2, ["qadv", "baseA", "baseB", "baseC"]),
+        (None, ["qadv", "baseA", "baseB", "baseC"]),
+    ]:
+        if winner is None:
+            games.append(
+                {
+                    "scores": [0, 0, 0, 0],
+                    "terminal_result": {"action": "HUANG"},
+                    "rows": [],
+                    "seat_policy_names": seat_names,
+                }
+            )
+        else:
+            scores = [0, 0, 0, 0]
+            scores[winner] = 16
+            games.append(
+                {
+                    "scores": scores,
+                    "terminal_result": {"action": "HU", "winner": winner, "fan_count": 8, "base_fan_count": 8},
+                    "rows": [{"player": winner, "response": "HU", "return_fields": {"discounted_return": 0.1}, "safety": {}}],
+                    "seat_policy_names": seat_names,
+                }
+            )
+
+    summary = rollouts.summarize_games(
+        games,
+        policy_specs=[
+            rollouts.PolicySpec(name="qadv", policy="transformer"),
+            rollouts.PolicySpec(name="baseA", policy="transformer"),
+            rollouts.PolicySpec(name="baseB", policy="transformer"),
+            rollouts.PolicySpec(name="baseC", policy="transformer"),
+        ],
+        min_games=4,
+        min_rows=0,
+        min_nonzero_score_rate=0.0,
+        min_return_std=0.0,
+        require_policy_pool_size=4,
+        checked_policy_name="qadv",
+        baseline_policy_names=["baseA", "baseB", "baseC"],
+        min_checked_hu_lift=0.25,
+        max_huang_rate=0.01,
+    )
+
+    assert summary["gate_passed"] is False
+    assert summary["policy_hu_rates"]["qadv"] == 0.25
+    assert summary["self_play_guideline"]["baseline_average_hu_rate"] == pytest.approx(1 / 6)
+    assert summary["self_play_guideline"]["checked_policy_hu_lift_vs_baseline"] == pytest.approx(0.5)
+    assert summary["self_play_guideline"]["checked_hu_lift_passed"] is True
+    assert summary["gate_failures"]["huang_rate"] == 0.25
+
+    summary_without_huang_gate = rollouts.summarize_games(
+        games,
+        policy_specs=[
+            rollouts.PolicySpec(name="qadv", policy="transformer"),
+            rollouts.PolicySpec(name="baseA", policy="transformer"),
+            rollouts.PolicySpec(name="baseB", policy="transformer"),
+            rollouts.PolicySpec(name="baseC", policy="transformer"),
+        ],
+        min_games=4,
+        min_rows=0,
+        min_nonzero_score_rate=0.0,
+        min_return_std=0.0,
+        require_policy_pool_size=4,
+        checked_policy_name="qadv",
+        baseline_policy_names=["baseA", "baseB", "baseC"],
+        min_checked_hu_lift=1.0,
+    )
+
+    assert summary_without_huang_gate["gate_passed"] is False
+    lift_failure = summary_without_huang_gate["gate_failures"]["checked_policy_hu_lift"]
+    assert lift_failure["required_lift"] == 1.0
+    assert lift_failure["actual_lift"] == pytest.approx(0.5)
 
 
 def test_rollout_gate_rejects_low_fan_hu():

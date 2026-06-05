@@ -333,6 +333,10 @@ def summarize_games(
     min_nonzero_score_rate: float,
     min_return_std: float,
     require_policy_pool_size: int,
+    max_huang_rate: float | None = None,
+    checked_policy_name: str | None = None,
+    baseline_policy_names: list[str] | None = None,
+    min_checked_hu_lift: float | None = None,
 ) -> dict[str, Any]:
     rows = [row for game in games for row in game.get("rows", [])]
     terminal_counts: dict[str, int] = {}
@@ -403,6 +407,34 @@ def summarize_games(
             action_outside_mask_count += 1
     return_std = statistics.pstdev(returns) if len(returns) > 1 else 0.0
     nonzero_score_rate = nonzero_score_games / len(games) if games else 0.0
+    huang_games = terminal_counts.get("HUANG", 0)
+    huang_rate = huang_games / len(games) if games else None
+    policy_hu_rates = {
+        name: policy_hu_counts.get(name, 0) / len(games) if games else None
+        for name in policy_hu_counts
+    }
+    baseline_names = list(baseline_policy_names or [])
+    baseline_rates = [
+        float(policy_hu_rates[name])
+        for name in baseline_names
+        if name in policy_hu_rates and policy_hu_rates[name] is not None
+    ]
+    baseline_average_hu_rate = sum(baseline_rates) / len(baseline_rates) if baseline_rates else None
+    checked_hu_rate = (
+        policy_hu_rates.get(checked_policy_name)
+        if checked_policy_name
+        else None
+    )
+    if (
+        checked_hu_rate is not None
+        and baseline_average_hu_rate is not None
+        and baseline_average_hu_rate > 0
+    ):
+        checked_hu_lift_vs_baseline = (checked_hu_rate / baseline_average_hu_rate) - 1.0
+    elif checked_hu_rate is not None and baseline_average_hu_rate == 0:
+        checked_hu_lift_vs_baseline = None
+    else:
+        checked_hu_lift_vs_baseline = None
     failures: dict[str, Any] = {}
     if len(games) < int(min_games):
         failures["games"] = len(games)
@@ -412,6 +444,27 @@ def summarize_games(
         failures["nonzero_score_rate"] = nonzero_score_rate
     if return_std < float(min_return_std):
         failures["return_std"] = return_std
+    if max_huang_rate is not None and huang_rate is not None and huang_rate > float(max_huang_rate):
+        failures["huang_rate"] = huang_rate
+    if checked_policy_name:
+        if checked_hu_rate is None:
+            failures["checked_policy_missing"] = checked_policy_name
+        elif baseline_names and baseline_average_hu_rate is None:
+            failures["baseline_policy_missing"] = baseline_names
+        elif (
+            min_checked_hu_lift is not None
+            and baseline_average_hu_rate is not None
+            and baseline_average_hu_rate > 0
+            and checked_hu_rate < baseline_average_hu_rate * (1.0 + float(min_checked_hu_lift))
+        ):
+            failures["checked_policy_hu_lift"] = {
+                "checked_policy": checked_policy_name,
+                "checked_hu_rate": checked_hu_rate,
+                "baseline_policy_names": baseline_names,
+                "baseline_average_hu_rate": baseline_average_hu_rate,
+                "required_lift": float(min_checked_hu_lift),
+                "actual_lift": checked_hu_lift_vs_baseline,
+            }
     if low_fan_hu_count:
         failures["low_fan_hu_count"] = low_fan_hu_count
     if illegal_hu_count:
@@ -430,6 +483,8 @@ def summarize_games(
         "terminal_action_counts": terminal_counts,
         "hu_games": terminal_counts.get("HU", 0),
         "hu_rate": terminal_counts.get("HU", 0) / len(games) if games else None,
+        "huang_games": huang_games,
+        "huang_rate": huang_rate,
         "nonzero_score_games": nonzero_score_games,
         "nonzero_score_rate": nonzero_score_rate,
         "return_std": return_std,
@@ -462,10 +517,7 @@ def summarize_games(
         "policy_seat_games": policy_seat_games,
         "policy_hu_counts": policy_hu_counts,
         "policy_hu_rate_denominator": "total_games",
-        "policy_hu_rates": {
-            name: policy_hu_counts.get(name, 0) / len(games) if games else None
-            for name in policy_hu_counts
-        },
+        "policy_hu_rates": policy_hu_rates,
         "policy_hu_rates_per_seat_game": {
             name: policy_hu_counts.get(name, 0) / games_seen if games_seen else None
             for name, games_seen in policy_seat_games.items()
@@ -486,6 +538,26 @@ def summarize_games(
         "policy_average_final_score_rewards_4_2_1_0": {
             name: policy_placement_totals.get(name, 0.0) / games_seen if games_seen else None
             for name, games_seen in policy_seat_games.items()
+        },
+        "self_play_guideline": {
+            "max_huang_rate": max_huang_rate,
+            "checked_policy_name": checked_policy_name,
+            "baseline_policy_names": baseline_names,
+            "baseline_average_hu_rate": baseline_average_hu_rate,
+            "checked_policy_hu_rate": checked_hu_rate,
+            "min_checked_hu_lift": min_checked_hu_lift,
+            "checked_policy_hu_lift_vs_baseline": checked_hu_lift_vs_baseline,
+            "huang_rate_passed": (
+                None if max_huang_rate is None or huang_rate is None else huang_rate <= float(max_huang_rate)
+            ),
+            "checked_hu_lift_passed": (
+                None
+                if min_checked_hu_lift is None
+                or checked_hu_rate is None
+                or baseline_average_hu_rate is None
+                or baseline_average_hu_rate <= 0
+                else checked_hu_rate >= baseline_average_hu_rate * (1.0 + float(min_checked_hu_lift))
+            ),
         },
         "policy_diagnostics_totals": policy_diagnostics_totals,
         "seat_policy_diagnostics_totals": seat_policy_diagnostics_totals,
@@ -543,6 +615,10 @@ def run_rollout_set(args: argparse.Namespace) -> dict[str, Any]:
         min_nonzero_score_rate=float(args.min_nonzero_score_rate),
         min_return_std=float(args.min_return_std),
         require_policy_pool_size=int(args.require_policy_pool_size),
+        max_huang_rate=getattr(args, "max_huang_rate", None),
+        checked_policy_name=getattr(args, "checked_policy_name", None),
+        baseline_policy_names=list(getattr(args, "baseline_policy_name", None) or []),
+        min_checked_hu_lift=getattr(args, "min_checked_hu_lift", None),
     )
     summary.update(
         {
@@ -595,6 +671,10 @@ def main() -> int:
     parser.add_argument("--min-nonzero-score-rate", type=float, default=0.05)
     parser.add_argument("--min-return-std", type=float, default=0.03)
     parser.add_argument("--require-policy-pool-size", type=int, default=2)
+    parser.add_argument("--max-huang-rate", type=float, default=None)
+    parser.add_argument("--checked-policy-name", default=None)
+    parser.add_argument("--baseline-policy-name", action="append", default=[])
+    parser.add_argument("--min-checked-hu-lift", type=float, default=None)
     parser.add_argument("--fail-on-gate", action="store_true")
     args = parser.parse_args()
     if not args.policy_spec:
