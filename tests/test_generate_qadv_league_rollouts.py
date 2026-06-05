@@ -95,6 +95,11 @@ def test_run_rollout_set_writes_rows_with_policy_pool_and_terminal_result(monkey
     assert summary["terminal_action_counts"] == {"HU": 1}
     assert summary["hu_rate"] == 1.0
     assert summary["average_placement_rewards_4_2_1_0"] == [4.0, 0.0, 1.5, 1.5]
+    assert summary["seat_labels"] == {"0": "A", "1": "B", "2": "C", "3": "D"}
+    assert summary["seat_hu_counts"] == {"A": 1, "B": 0, "C": 0, "D": 0}
+    assert summary["seat_hu_rates"] == {"A": 1.0, "B": 0.0, "C": 0.0, "D": 0.0}
+    assert summary["seat_average_hu_turns"] == {"A": 2.0, "B": None, "C": None, "D": None}
+    assert summary["seat_average_raw_scores"] == {"A": 16.0, "B": -8.0, "C": -4.0, "D": -4.0}
     assert summary["policy_seat_games"] == {"base": 2, "qadv005": 2}
     assert summary["policy_hu_counts"] == {"base": 1, "qadv005": 0}
     assert summary["policy_hu_rate_denominator"] == "total_games"
@@ -171,6 +176,10 @@ def test_hu_rate_uses_total_games_and_hu_turn_uses_winner_discard_cycle():
     assert summary["policy_hu_rates_per_seat_game"] == {"base": 0.25, "qadv": 0.0}
     assert summary["policy_average_hu_turns"] == {"base": 3.0, "qadv": None}
     assert summary["policy_average_raw_judge_hu_turns"] == {"base": 101.0, "qadv": None}
+    assert summary["seat_hu_counts"] == {"A": 1, "B": 0, "C": 0, "D": 0}
+    assert summary["seat_hu_rates"] == {"A": 0.5, "B": 0.0, "C": 0.0, "D": 0.0}
+    assert summary["seat_average_hu_turns"] == {"A": 3.0, "B": None, "C": None, "D": None}
+    assert summary["seat_average_raw_scores"] == {"A": 8.0, "B": -4.0, "C": -2.0, "D": -2.0}
 
 
 def test_rollout_gate_rejects_all_zero_terminal_signal():

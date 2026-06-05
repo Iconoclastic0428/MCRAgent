@@ -19,6 +19,7 @@ from official_judge_match import load_initdata, make_policy, run_match
 from official_judge_match import placement_rewards_from_scores
 
 QADV_ROLLOUT_SCHEMA = "qadv_league_rollout_v1"
+SEAT_LABELS = ("A", "B", "C", "D")
 POLICY_CHOICES = {
     "fallback",
     "shanten",
@@ -340,6 +341,9 @@ def summarize_games(
     wrong_hu_count = 0
     nonzero_score_games = 0
     placement_reward_totals = [0.0, 0.0, 0.0, 0.0]
+    seat_raw_score_totals = [0.0, 0.0, 0.0, 0.0]
+    seat_hu_counts = [0, 0, 0, 0]
+    seat_hu_turns: list[list[float]] = [[], [], [], []]
     policy_seat_games = {spec.name: 0 for spec in policy_specs}
     policy_hu_counts = {spec.name: 0 for spec in policy_specs}
     policy_hu_turns: dict[str, list[float]] = {spec.name: [] for spec in policy_specs}
@@ -366,10 +370,17 @@ def summarize_games(
         placement_rewards = placement_rewards_from_scores(scores)
         for seat, reward in enumerate(placement_rewards):
             placement_reward_totals[seat] += float(reward)
+        for seat in range(4):
+            if seat < len(scores):
+                seat_raw_score_totals[seat] += float(scores[seat])
         seat_names = list(game.get("seat_policy_names") or [])
-        winner = terminal.get("winner")
+        winner = _parse_int(terminal.get("winner"))
         raw_turns = terminal.get("turns")
         hu_discard_turn = _winner_discard_turn(game)
+        if action == "HU" and isinstance(winner, int) and 0 <= winner < 4:
+            seat_hu_counts[winner] += 1
+            if isinstance(hu_discard_turn, (int, float)):
+                seat_hu_turns[winner].append(float(hu_discard_turn))
         for seat, name in enumerate(seat_names[:4]):
             policy_seat_games.setdefault(name, 0)
             policy_hu_counts.setdefault(name, 0)
@@ -431,6 +442,23 @@ def summarize_games(
         "average_placement_rewards_4_2_1_0": [
             reward / len(games) if games else 0.0 for reward in placement_reward_totals
         ],
+        "seat_labels": {str(seat): SEAT_LABELS[seat] for seat in range(4)},
+        "seat_raw_score_totals": {
+            SEAT_LABELS[seat]: seat_raw_score_totals[seat] for seat in range(4)
+        },
+        "seat_average_raw_scores": {
+            SEAT_LABELS[seat]: seat_raw_score_totals[seat] / len(games) if games else None
+            for seat in range(4)
+        },
+        "seat_hu_counts": {SEAT_LABELS[seat]: seat_hu_counts[seat] for seat in range(4)},
+        "seat_hu_rates": {
+            SEAT_LABELS[seat]: seat_hu_counts[seat] / len(games) if games else None
+            for seat in range(4)
+        },
+        "seat_average_hu_turns": {
+            SEAT_LABELS[seat]: (sum(seat_hu_turns[seat]) / len(seat_hu_turns[seat]) if seat_hu_turns[seat] else None)
+            for seat in range(4)
+        },
         "policy_seat_games": policy_seat_games,
         "policy_hu_counts": policy_hu_counts,
         "policy_hu_rate_denominator": "total_games",
