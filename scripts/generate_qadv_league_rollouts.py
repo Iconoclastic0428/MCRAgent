@@ -178,6 +178,38 @@ def _illegal_hu(terminal: dict[str, Any]) -> bool:
     return action == "WH" or _low_fan_hu(terminal)
 
 
+def _response_action(response: str) -> str:
+    return str(response or "").strip().split(" ", 1)[0].upper()
+
+
+def _winner_discard_turn(game: dict[str, Any]) -> int | None:
+    """Return the winner's discard-cycle turn, on the roughly 1..22 MCR scale.
+
+    The official judge's raw ``turns`` counter advances on every judge output
+    and includes reaction windows, so it is much larger than a player's
+    draw/discard turn count. For Hu timing we count the winner's completed
+    ``PLAY`` responses, and count the terminal Hu opportunity as the next turn.
+    """
+
+    terminal = game.get("terminal_result") or {}
+    if str(terminal.get("action") or "").upper() != "HU":
+        return None
+    winner = _parse_int(terminal.get("winner"))
+    if winner is None or winner < 0 or winner > 3:
+        return None
+    discard_counts = [0, 0, 0, 0]
+    for row in game.get("rows", []) or []:
+        player = _parse_int(row.get("player"))
+        if player is None or player < 0 or player > 3:
+            continue
+        action = _response_action(row.get("response", ""))
+        if action == "HU" and player == winner:
+            return discard_counts[player] + 1
+        if action == "PLAY":
+            discard_counts[player] += 1
+    return discard_counts[winner] + 1
+
+
 def _rows_from_result(
     *,
     result: dict[str, Any],
@@ -311,6 +343,7 @@ def summarize_games(
     policy_seat_games = {spec.name: 0 for spec in policy_specs}
     policy_hu_counts = {spec.name: 0 for spec in policy_specs}
     policy_hu_turns: dict[str, list[float]] = {spec.name: [] for spec in policy_specs}
+    policy_raw_hu_turns: dict[str, list[float]] = {spec.name: [] for spec in policy_specs}
     policy_placement_totals = {spec.name: 0.0 for spec in policy_specs}
     policy_diagnostics_totals = aggregate_policy_diagnostics_by_name(games, policy_specs)
     seat_policy_diagnostics_totals = aggregate_policy_diagnostics_by_seat(games)
@@ -335,19 +368,23 @@ def summarize_games(
             placement_reward_totals[seat] += float(reward)
         seat_names = list(game.get("seat_policy_names") or [])
         winner = terminal.get("winner")
-        turns = terminal.get("turns")
+        raw_turns = terminal.get("turns")
+        hu_discard_turn = _winner_discard_turn(game)
         for seat, name in enumerate(seat_names[:4]):
             policy_seat_games.setdefault(name, 0)
             policy_hu_counts.setdefault(name, 0)
             policy_hu_turns.setdefault(name, [])
+            policy_raw_hu_turns.setdefault(name, [])
             policy_placement_totals.setdefault(name, 0.0)
             policy_seat_games[name] += 1
             if seat < len(placement_rewards):
                 policy_placement_totals[name] += float(placement_rewards[seat])
             if action == "HU" and winner == seat:
                 policy_hu_counts[name] += 1
-                if isinstance(turns, (int, float)):
-                    policy_hu_turns[name].append(float(turns))
+                if isinstance(hu_discard_turn, (int, float)):
+                    policy_hu_turns[name].append(float(hu_discard_turn))
+                if isinstance(raw_turns, (int, float)):
+                    policy_raw_hu_turns[name].append(float(raw_turns))
     for row in rows:
         seat_coverage[str(row["player"])] += 1
         returns.append(float((row.get("return_fields") or {}).get("discounted_return", 0.0)))
@@ -396,13 +433,26 @@ def summarize_games(
         ],
         "policy_seat_games": policy_seat_games,
         "policy_hu_counts": policy_hu_counts,
+        "policy_hu_rate_denominator": "total_games",
         "policy_hu_rates": {
+            name: policy_hu_counts.get(name, 0) / len(games) if games else None
+            for name in policy_hu_counts
+        },
+        "policy_hu_rates_per_seat_game": {
             name: policy_hu_counts.get(name, 0) / games_seen if games_seen else None
             for name, games_seen in policy_seat_games.items()
         },
+        "policy_hu_turn_definition": (
+            "winner discard-cycle turn: completed PLAY responses by the winning seat, "
+            "plus one for the terminal Hu opportunity"
+        ),
         "policy_average_hu_turns": {
             name: (sum(turns) / len(turns) if turns else None)
             for name, turns in policy_hu_turns.items()
+        },
+        "policy_average_raw_judge_hu_turns": {
+            name: (sum(turns) / len(turns) if turns else None)
+            for name, turns in policy_raw_hu_turns.items()
         },
         "policy_placement_reward_totals_4_2_1_0": policy_placement_totals,
         "policy_average_final_score_rewards_4_2_1_0": {

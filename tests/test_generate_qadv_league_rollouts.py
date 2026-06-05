@@ -41,7 +41,7 @@ def test_run_rollout_set_writes_rows_with_policy_pool_and_terminal_result(monkey
     def fake_run_match(policies, initdata, **kwargs):
         return {
             "terminal_reason": "finish",
-            "turns": 2,
+            "turns": 103,
             "scores": [16, -8, -4, -4],
             "final_output": {"display": {"action": "HU", "player": 0, "fanCnt": 8, "baseFanCnt": 8}},
             "policy_diagnostics": [
@@ -53,6 +53,8 @@ def test_run_rollout_set_writes_rows_with_policy_pool_and_terminal_result(monkey
             "log": [
                 {"output": {"content": {"0": "2 W1", "2": "3 0 PLAY W1"}}},
                 {"0": {"response": "PLAY W1"}, "2": {"response": "PASS"}},
+                {"output": {"content": {"0": "2 W2", "1": "3 0 PLAY W2"}}},
+                {"0": {"response": "HU"}, "1": {"response": "PASS"}},
             ],
         }
 
@@ -88,15 +90,18 @@ def test_run_rollout_set_writes_rows_with_policy_pool_and_terminal_result(monkey
     summary = rollouts.run_rollout_set(args)
 
     rows = [rollouts.loads_jsonl_line(line) for line in out_jsonl.read_text().splitlines()]
-    assert summary["rows"] == 2
+    assert summary["rows"] == 4
     assert summary["policy_pool_names"] == ["base", "qadv005"]
     assert summary["terminal_action_counts"] == {"HU": 1}
     assert summary["hu_rate"] == 1.0
     assert summary["average_placement_rewards_4_2_1_0"] == [4.0, 0.0, 1.5, 1.5]
     assert summary["policy_seat_games"] == {"base": 2, "qadv005": 2}
     assert summary["policy_hu_counts"] == {"base": 1, "qadv005": 0}
-    assert summary["policy_hu_rates"] == {"base": 0.5, "qadv005": 0.0}
+    assert summary["policy_hu_rate_denominator"] == "total_games"
+    assert summary["policy_hu_rates"] == {"base": 1.0, "qadv005": 0.0}
+    assert summary["policy_hu_rates_per_seat_game"] == {"base": 0.5, "qadv005": 0.0}
     assert summary["policy_average_hu_turns"] == {"base": 2.0, "qadv005": None}
+    assert summary["policy_average_raw_judge_hu_turns"] == {"base": 103.0, "qadv005": None}
     assert summary["policy_average_final_score_rewards_4_2_1_0"] == {
         "base": 2.75,
         "qadv005": 0.75,
@@ -123,6 +128,49 @@ def test_run_rollout_set_writes_rows_with_policy_pool_and_terminal_result(monkey
     assert rows[0]["terminal_result"]["base_fan_count"] == 8
     assert rows[0]["safety"]["illegal_hu"] is False
     assert made[1] == ("transformer", "models/base.pt", "models/qadv.pt", 0.05)
+
+
+def test_hu_rate_uses_total_games_and_hu_turn_uses_winner_discard_cycle():
+    games = [
+        {
+            "scores": [16, -8, -4, -4],
+            "terminal_result": {"action": "HU", "winner": 0, "fan_count": 8, "base_fan_count": 8, "turns": 101},
+            "seat_policy_names": ["base", "qadv", "base", "qadv"],
+            "rows": [
+                {"player": 0, "response": "PLAY W1", "return_fields": {"discounted_return": 0.1}, "safety": {}},
+                {"player": 0, "response": "PLAY W2", "return_fields": {"discounted_return": 0.1}, "safety": {}},
+                {"player": 0, "response": "HU", "return_fields": {"discounted_return": 0.1}, "safety": {}},
+            ],
+        },
+        {
+            "scores": [0, 0, 0, 0],
+            "terminal_result": {"action": "HUANG", "turns": 120},
+            "seat_policy_names": ["qadv", "base", "qadv", "base"],
+            "rows": [
+                {"player": 1, "response": "PLAY B1", "return_fields": {"discounted_return": -0.1}, "safety": {}},
+            ],
+        },
+    ]
+
+    summary = rollouts.summarize_games(
+        games,
+        policy_specs=[
+            rollouts.PolicySpec(name="base", policy="transformer"),
+            rollouts.PolicySpec(name="qadv", policy="transformer"),
+        ],
+        min_games=2,
+        min_rows=0,
+        min_nonzero_score_rate=0.0,
+        min_return_std=0.0,
+        require_policy_pool_size=2,
+    )
+
+    assert summary["policy_seat_games"] == {"base": 4, "qadv": 4}
+    assert summary["policy_hu_counts"] == {"base": 1, "qadv": 0}
+    assert summary["policy_hu_rates"] == {"base": 0.5, "qadv": 0.0}
+    assert summary["policy_hu_rates_per_seat_game"] == {"base": 0.25, "qadv": 0.0}
+    assert summary["policy_average_hu_turns"] == {"base": 3.0, "qadv": None}
+    assert summary["policy_average_raw_judge_hu_turns"] == {"base": 101.0, "qadv": None}
 
 
 def test_rollout_gate_rejects_all_zero_terminal_signal():
