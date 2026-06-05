@@ -170,3 +170,28 @@ def test_rollout_gate_rejects_low_fan_hu():
     assert summary["low_fan_hu_count"] == 1
     assert summary["illegal_hu_count"] == 1
     assert summary["gate_failures"]["illegal_hu_count"] == 1
+
+
+def test_rollout_gate_rejects_wrong_hu_terminal():
+    summary = rollouts.summarize_games(
+        [
+            {
+                "scores": [10, 10, -30, 10],
+                "terminal_result": {"action": "WH", "winner": 2, "fan_count": 5},
+                "rows": [],
+                "seat_policy_names": ["base", "base", "base", "base"],
+            }
+        ],
+        policy_specs=[rollouts.PolicySpec(name="base", policy="transformer")],
+        min_games=1,
+        min_rows=0,
+        min_nonzero_score_rate=0.0,
+        min_return_std=0.0,
+        require_policy_pool_size=1,
+    )
+
+    assert summary["gate_passed"] is False
+    assert summary["wrong_hu_count"] == 1
+    assert summary["low_fan_hu_count"] == 1
+    assert summary["illegal_hu_count"] == 1
+    assert summary["gate_failures"]["illegal_hu_count"] == 1

@@ -164,7 +164,8 @@ def _return_fields(
 
 
 def _low_fan_hu(terminal: dict[str, Any]) -> bool:
-    if terminal.get("action") != "HU":
+    action = str(terminal.get("action") or "").upper()
+    if action not in {"HU", "WH"}:
         return False
     gate_fan = terminal.get("base_fan_count")
     if gate_fan is None:
@@ -173,7 +174,8 @@ def _low_fan_hu(terminal: dict[str, Any]) -> bool:
 
 
 def _illegal_hu(terminal: dict[str, Any]) -> bool:
-    return _low_fan_hu(terminal)
+    action = str(terminal.get("action") or "").upper()
+    return action == "WH" or _low_fan_hu(terminal)
 
 
 def _rows_from_result(
@@ -303,6 +305,7 @@ def summarize_games(
     terminal_counts: dict[str, int] = {}
     low_fan_hu_count = 0
     illegal_hu_count = 0
+    wrong_hu_count = 0
     nonzero_score_games = 0
     placement_reward_totals = [0.0, 0.0, 0.0, 0.0]
     policy_seat_games = {spec.name: 0 for spec in policy_specs}
@@ -325,6 +328,8 @@ def summarize_games(
             low_fan_hu_count += 1
         if _illegal_hu(terminal):
             illegal_hu_count += 1
+        if action == "WH":
+            wrong_hu_count += 1
         placement_rewards = placement_rewards_from_scores(scores)
         for seat, reward in enumerate(placement_rewards):
             placement_reward_totals[seat] += float(reward)
@@ -382,6 +387,7 @@ def summarize_games(
         "return_std": return_std,
         "low_fan_hu_count": low_fan_hu_count,
         "illegal_hu_count": illegal_hu_count,
+        "wrong_hu_count": wrong_hu_count,
         "action_outside_mask_count": action_outside_mask_count,
         "placement_reward_schema": "score rank reward 4/2/1/0; tied nonzero ranks split rewards; all-zero games score 0",
         "placement_reward_totals_4_2_1_0": placement_reward_totals,
