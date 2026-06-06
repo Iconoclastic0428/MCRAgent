@@ -1,0 +1,162 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tjong-data-audit-cpu-20260605a
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: data-audit
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app: tjong-replication
+        task: data-audit
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: tjong-data-audit
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              python - <<'PY'
+              import gzip
+              import json
+              import os
+              import subprocess
+              import sys
+              from pathlib import Path
+
+              root = Path.cwd()
+              candidates = [
+                  "data/raw/botzone_mcr_519338.jsonl",
+                  "data/raw/tziakcha_all_plus_live_elo2300_session_audit_raw.jsonl",
+                  "data/raw/tziakcha_all_plus_live_elo2300_botzone.jsonl",
+                  "data/raw/botzone_mcr_5000.jsonl",
+                  "data/raw/botzone_2026_strong_ai_raw.jsonl",
+                  "data/raw/botzone_2026_strong_ai_raw_5000.jsonl",
+              ]
+              report = {
+                  "format": "tjong_paper_data_audit_v1",
+                  "working_dir": str(root),
+                  "required_paper_corpus": "data/raw/botzone_mcr_519338.jsonl",
+                  "required_own_source_corpus": "data/raw/tziakcha_all_plus_live_elo2300_session_audit_raw.jsonl",
+                  "required_own_botzone_corpus": "data/raw/tziakcha_all_plus_live_elo2300_botzone.jsonl",
+                  "required_own_records": 763358,
+                  "required_code_paths": [
+                      "scripts/tziakcha_records.py",
+                      "papers/tjong_cit2_12298/src/tjong_replication/model.py",
+                      "papers/tjong_cit2_12298/src/tjong_replication/paper_metrics.py",
+                      "papers/tjong_cit2_12298/src/tjong_replication/convert_tziakcha_to_botzone.py",
+                      "papers/tjong_cit2_12298/src/tjong_replication/validate_paper_corpus.py",
+                      "papers/tjong_cit2_12298/src/tjong_replication/verify_paper_compliance.py",
+                      "papers/tjong_cit2_12298/src/tjong_replication/verify_paper_metrics.py",
+                      "papers/tjong_cit2_12298/src/tjong_replication/tensorize_botzone.py",
+                      "papers/tjong_cit2_12298/src/tjong_replication/train_supervised.py",
+                      "papers/tjong_cit2_12298/src/tjong_replication/train_ppo.py",
+                  ],
+                  "code_paths": {},
+                  "files": {},
+                  "paper_compliance": {"checked": False},
+              }
+              for name in report["required_code_paths"]:
+                  path = root / name
+                  report["code_paths"][name] = {
+                      "exists": path.exists(),
+                      "bytes": path.stat().st_size if path.exists() else 0,
+                  }
+              for name in candidates:
+                  path = root / name
+                  item = {"exists": path.exists(), "bytes": path.stat().st_size if path.exists() else 0}
+                  if path.exists() and path.stat().st_size > 0:
+                      opener = gzip.open if path.suffix == ".gz" else open
+                      count = 0
+                      first_keys = []
+                      with opener(path, "rt", encoding="utf-8-sig") as src:
+                          for line in src:
+                              if not line.strip():
+                                  continue
+                              count += 1
+                              if count == 1:
+                                  try:
+                                      first_keys = sorted(json.loads(line).keys())
+                                  except Exception:
+                                      first_keys = ["<json-parse-error>"]
+                      item["records"] = count
+                      item["first_record_keys"] = first_keys
+                  report["files"][name] = item
+              required = report["files"][report["required_paper_corpus"]]
+              report["paper_corpus_ready"] = bool(required.get("exists") and required.get("records") == 519338)
+              own_source = report["files"][report["required_own_source_corpus"]]
+              own_botzone = report["files"][report["required_own_botzone_corpus"]]
+              report["own_source_corpus_ready"] = bool(
+                  own_source.get("exists") and own_source.get("records") == report["required_own_records"]
+              )
+              report["own_botzone_corpus_ready"] = bool(
+                  own_botzone.get("exists") and own_botzone.get("records") == report["required_own_records"]
+              )
+              report["paper_code_ready"] = all(item["exists"] for item in report["code_paths"].values())
+              if report["paper_code_ready"]:
+                  compliance_summary = Path("runs/tjong_paper_compliance_20260605a.json")
+                  env = os.environ.copy()
+                  env["PYTHONPATH"] = f"{root / 'papers/tjong_cit2_12298/src'}:{env.get('PYTHONPATH', '')}"
+                  result = subprocess.run(
+                      [
+                          sys.executable,
+                          "-m",
+                          "tjong_replication.verify_paper_compliance",
+                          "--paper-root",
+                          "papers/tjong_cit2_12298",
+                          "--summary-out",
+                          str(compliance_summary),
+                      ],
+                      cwd=root,
+                      env=env,
+                      text=True,
+                      capture_output=True,
+                      check=False,
+                  )
+                  report["paper_compliance"] = {
+                      "checked": True,
+                      "returncode": result.returncode,
+                      "stdout_tail": result.stdout[-2000:],
+                      "stderr_tail": result.stderr[-2000:],
+                  }
+                  if compliance_summary.exists():
+                      report["paper_compliance"]["summary"] = json.loads(compliance_summary.read_text(encoding="utf-8"))
+                  report["paper_compliance_ready"] = bool(
+                      result.returncode == 0
+                      and report["paper_compliance"].get("summary", {}).get("passed")
+                  )
+              else:
+                  report["paper_compliance_ready"] = False
+              out = Path("runs/tjong_data_audit_20260605a.json")
+              out.parent.mkdir(parents=True, exist_ok=True)
+              out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+              print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+              PY
+          resources:
+            requests:
+              cpu: "1"
+              memory: 4Gi
+              ephemeral-storage: 8Gi
+            limits:
+              cpu: "1"
+              memory: 4Gi
+              ephemeral-storage: 16Gi
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

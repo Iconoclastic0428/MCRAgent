@@ -1,0 +1,96 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tjong-supervised-epoch-sweep-live-l40-20260605a
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: supervised-epoch-sweep-live
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 86400
+  template:
+    metadata:
+      labels:
+        app: tjong-replication
+        task: supervised-epoch-sweep-live
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+        - key: nautilus.io/reservation
+          operator: Equal
+          value: csu-tide
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-L40
+      containers:
+        - name: tjong-supervised-epoch-sweep-live
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+            - name: CUBLAS_WORKSPACE_CONFIG
+              value: ":4096:8"
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              export PYTHONPATH="${PWD}/papers/tjong_cit2_12298/src:${PYTHONPATH:-}"
+              CHECKPOINT_DIR="${TJONG_CHECKPOINT_DIR:-models/tjong_supervised_all_sources_20260605a_checkpoints}"
+              EVAL_PT="${TJONG_EVAL_PT:-data/processed/tjong/tziakcha_all_sources_botzone_20260605a_tensorized.pt}"
+              METRICS_OUT="${TJONG_METRICS_OUT:-runs/tjong_supervised_all_sources_epoch_sweep_live_20260605a.json}"
+              RESULTS_JSONL="${TJONG_RESULTS_JSONL:-runs/tjong_supervised_all_sources_epoch_sweep_live_20260605a.jsonl}"
+              TENSOR_ENCODING_VERSION="${TJONG_TENSOR_ENCODING_VERSION:-tjong_cit2_12298_v3_hidden_concealed_kong}"
+              test -s "${EVAL_PT}"
+              python - <<'PY'
+              import os
+              from pathlib import Path
+              checkpoint_dir = Path(os.environ.get("CHECKPOINT_DIR", "models/tjong_supervised_all_sources_20260605a_checkpoints"))
+              checkpoints = sorted(checkpoint_dir.glob("epoch_*.pt"))
+              if not checkpoints:
+                  raise SystemExit(f"no epoch checkpoints found in {checkpoint_dir}")
+              print("epoch_checkpoint_count", len(checkpoints), "latest", checkpoints[-1])
+              PY
+              python -m tjong_replication.evaluate_checkpoints \
+                --checkpoint-glob "${CHECKPOINT_DIR}/epoch_*.pt" \
+                --eval-pt "${EVAL_PT}" \
+                --metrics-out "${METRICS_OUT}" \
+                --results-jsonl "${RESULTS_JSONL}" \
+                --batch-size 1024 \
+                --num-workers 0 \
+                --require-encoding-version "${TENSOR_ENCODING_VERSION}" \
+                --require-paper-config \
+                --seed 0 \
+                --strict-deterministic \
+                --device cuda
+          resources:
+            limits:
+              cpu: "4"
+              memory: 64Gi
+              ephemeral-storage: 100Gi
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "4"
+              memory: 64Gi
+              ephemeral-storage: 80Gi
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

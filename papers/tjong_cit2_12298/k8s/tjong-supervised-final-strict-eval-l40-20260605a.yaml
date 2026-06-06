@@ -1,0 +1,93 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tjong-supervised-final-strict-eval-l40-20260605a
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: supervised-final-strict-eval
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 86400
+  template:
+    metadata:
+      labels:
+        app: tjong-replication
+        task: supervised-final-strict-eval
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+        - key: nautilus.io/reservation
+          operator: Equal
+          value: csu-tide
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-L40
+      containers:
+        - name: tjong-supervised-final-strict-eval
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+            - name: CUBLAS_WORKSPACE_CONFIG
+              value: ":4096:8"
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              export PYTHONPATH="${PWD}/papers/tjong_cit2_12298/src:${PYTHONPATH:-}"
+              FINAL_CHECKPOINT="${TJONG_FINAL_CHECKPOINT:-models/tjong_supervised_all_sources_20260605a.pt}"
+              EVAL_PT="${TJONG_EVAL_PT:-data/processed/tjong/tziakcha_all_sources_botzone_20260605a_tensorized.pt}"
+              EVAL_OUT="${TJONG_EVAL_OUT:-runs/tjong_supervised_all_sources_20260605a_eval.json}"
+              METRIC_GATE="${TJONG_METRIC_GATE:-runs/tjong_supervised_all_sources_20260605a_paper_metric_gate.json}"
+              TENSOR_ENCODING_VERSION="${TJONG_TENSOR_ENCODING_VERSION:-tjong_cit2_12298_v3_hidden_concealed_kong}"
+              PAPER_METRIC_TOLERANCE="${TJONG_PAPER_METRIC_TOLERANCE:-0.00005}"
+              test -s "${FINAL_CHECKPOINT}"
+              test -s "${EVAL_PT}"
+              python -m tjong_replication.evaluate_supervised \
+                --checkpoint "${FINAL_CHECKPOINT}" \
+                --eval-pt "${EVAL_PT}" \
+                --metrics-out "${EVAL_OUT}" \
+                --batch-size 1024 \
+                --num-workers 0 \
+                --require-encoding-version "${TENSOR_ENCODING_VERSION}" \
+                --require-paper-config \
+                --seed 0 \
+                --strict-deterministic \
+                --device cuda
+              python -m tjong_replication.verify_paper_metrics \
+                --metrics "${EVAL_OUT}" \
+                --summary-out "${METRIC_GATE}" \
+                --require-strict-deterministic \
+                --tolerance "${PAPER_METRIC_TOLERANCE}"
+          resources:
+            limits:
+              cpu: "4"
+              memory: 64Gi
+              ephemeral-storage: 100Gi
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "4"
+              memory: 64Gi
+              ephemeral-storage: 80Gi
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

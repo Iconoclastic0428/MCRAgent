@@ -1,0 +1,93 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tjong-preserve-supervised-model-cpu-20260606a
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: preserve-supervised-model
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        app: tjong-replication
+        task: preserve-supervised-model
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: preserve-supervised-model
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: SOURCE_CHECKPOINT
+              value: models/tjong_supervised_original_fresh_20260605b.pt
+            - name: PRESERVED_CHECKPOINT
+              value: models/preserved/tjong_supervised_original_fresh_20260605b_for_reuse_20260606a.pt
+            - name: PRESERVE_SUMMARY
+              value: runs/tjong_preserve_supervised_model_20260606a.json
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              test -s "${SOURCE_CHECKPOINT}"
+              mkdir -p "$(dirname "${PRESERVED_CHECKPOINT}")" "$(dirname "${PRESERVE_SUMMARY}")"
+              cp -p "${SOURCE_CHECKPOINT}" "${PRESERVED_CHECKPOINT}"
+              test -s "${PRESERVED_CHECKPOINT}"
+              python - <<'PY'
+              import hashlib
+              import json
+              import os
+              import time
+              from pathlib import Path
+
+              source = Path(os.environ["SOURCE_CHECKPOINT"])
+              preserved = Path(os.environ["PRESERVED_CHECKPOINT"])
+              summary_out = Path(os.environ["PRESERVE_SUMMARY"])
+
+              def sha256(path: Path) -> str:
+                  digest = hashlib.sha256()
+                  with path.open("rb") as handle:
+                      for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                          digest.update(chunk)
+                  return digest.hexdigest()
+
+              source_hash = sha256(source)
+              preserved_hash = sha256(preserved)
+              report = {
+                  "format": "tjong_preserved_supervised_model_v1",
+                  "source": str(source),
+                  "preserved": str(preserved),
+                  "source_bytes": source.stat().st_size,
+                  "preserved_bytes": preserved.stat().st_size,
+                  "source_sha256": source_hash,
+                  "preserved_sha256": preserved_hash,
+                  "sha256_match": source_hash == preserved_hash,
+                  "created_unix": time.time(),
+                  "purpose": "Separate preserved SL checkpoint for non-training reuse before continuing paper-faithful Tjong-final work.",
+              }
+              assert report["source_bytes"] == report["preserved_bytes"], report
+              assert report["sha256_match"], report
+              summary_out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+              print(json.dumps(report, sort_keys=True))
+              PY
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+              ephemeral-storage: 4Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+              ephemeral-storage: 8Gi
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

@@ -1,0 +1,88 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tjong-selfplay-merge-cpu-20260605a
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: selfplay-merge
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 172800
+  template:
+    metadata:
+      labels:
+        app: tjong-replication
+        task: selfplay-merge
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: tjong-selfplay-merge
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              export PYTHONPATH="${PWD}/papers/tjong_cit2_12298/src:${PYTHONPATH:-}"
+              SHARD_DIR="${TJONG_SELFPLAY_SHARD_DIR:-data/processed/tjong/selfplay_shards_20260605a}"
+              SHARDS="${TJONG_SELFPLAY_SHARDS:-32}"
+              EXPECTED_GAMES="${TJONG_SELFPLAY_TOTAL_GAMES:-763358}"
+              SELFPLAY_MIN_GAMES="${TJONG_SELFPLAY_MIN_GAMES:-519338}"
+              MIN_TOTAL_HU_RATE="${TJONG_MIN_TOTAL_HU_RATE:-0.99}"
+              MAX_HUANG_RATE="${TJONG_MAX_HUANG_RATE:-0.01}"
+              SELFPLAY_RAW="${TJONG_SELFPLAY_RAW:-data/processed/tjong/tjong_selfplay_raw.jsonl}"
+              FAN_ITEMS_JSONL="${TJONG_FAN_ITEMS_JSONL:-data/processed/tjong/tjong_selfplay_fan_items.jsonl}"
+              SELFPLAY_TENSOR_PT="${TJONG_SELFPLAY_TENSOR_PT:-data/processed/tjong/tjong_selfplay_tensorized.pt}"
+              TENSOR_ENCODING_VERSION="${TJONG_TENSOR_ENCODING_VERSION:-tjong_cit2_12298_v3_hidden_concealed_kong}"
+              python -m tjong_replication.merge_selfplay_shards \
+                --shard-dir "${SHARD_DIR}" \
+                --shards "${SHARDS}" \
+                --out-raw "${SELFPLAY_RAW}" \
+                --out-fan-items "${FAN_ITEMS_JSONL}" \
+                --summary-out runs/tjong_selfplay_shard_merge_20260605a_summary.json \
+                --expected-games "${EXPECTED_GAMES}" \
+                --min-games "${SELFPLAY_MIN_GAMES}" \
+                --min-total-hu-rate "${MIN_TOTAL_HU_RATE}" \
+                --max-huang-rate "${MAX_HUANG_RATE}"
+              test -s "${SELFPLAY_RAW}"
+              test -s "${FAN_ITEMS_JSONL}"
+              python -m tjong_replication.tensorize_botzone \
+                --in "${SELFPLAY_RAW}" \
+                --out "${SELFPLAY_TENSOR_PT}" \
+                --summary-out runs/tjong_selfplay_tensorize_20260605a_summary.json
+              test -s "${SELFPLAY_TENSOR_PT}"
+              export EXPECTED_GAMES TENSOR_ENCODING_VERSION
+              python - <<'PY'
+              import json
+              import os
+              from pathlib import Path
+              merge_summary = json.loads(Path("runs/tjong_selfplay_shard_merge_20260605a_summary.json").read_text())
+              tensor_summary = json.loads(Path("runs/tjong_selfplay_tensorize_20260605a_summary.json").read_text())
+              expected = int(os.environ["EXPECTED_GAMES"])
+              assert int(merge_summary.get("games", -1)) == expected, merge_summary
+              assert int(tensor_summary.get("stats", {}).get("matches", -1)) == expected, tensor_summary
+              assert int(tensor_summary.get("stats", {}).get("record_error_lines", 0) or 0) == 0, tensor_summary
+              assert tensor_summary.get("encoding_schema", {}).get("version") == os.environ["TENSOR_ENCODING_VERSION"], tensor_summary
+              assert int(tensor_summary.get("examples", 0) or 0) > 0, tensor_summary
+              PY
+          resources:
+            limits:
+              cpu: "16"
+              memory: 128Gi
+              ephemeral-storage: 240Gi
+            requests:
+              cpu: "16"
+              memory: 128Gi
+              ephemeral-storage: 160Gi
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

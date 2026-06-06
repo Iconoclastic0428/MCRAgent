@@ -1,0 +1,284 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tjong-supervised-action-breakdown-l40-20260606b
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: supervised-action-breakdown
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 7200
+  template:
+    metadata:
+      labels:
+        app: tjong-replication
+        task: supervised-action-breakdown
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+        - key: nautilus.io/reservation
+          operator: Equal
+          value: csu-tide
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-L40
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - rci-tide-gpu-11.sdsu.edu
+      containers:
+        - name: action-breakdown
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+            - name: CUBLAS_WORKSPACE_CONFIG
+              value: ":4096:8"
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              export PYTHONPATH="${PWD}/papers/tjong_cit2_12298/src:${PYTHONPATH:-}"
+              CHECKPOINT="${TJONG_CHECKPOINT:-models/tjong_supervised_original_fresh_20260605b.pt}"
+              EVAL_PT="${TJONG_EVAL_PT:-data/processed/tjong/tziakcha_all_plus_live_elo2300_tensorized.pt}"
+              OUT="${TJONG_ACTION_BREAKDOWN_OUT:-runs/tjong_supervised_original_fresh_20260605b_action_breakdown.json}"
+              export CHECKPOINT EVAL_PT OUT
+              python - <<'PY'
+              import json
+              import os
+              from pathlib import Path
+
+              import torch
+              from torch.utils.data import DataLoader
+
+              from tjong_replication.actions import (
+                  ACTION_NAMES,
+                  ACTION_TO_INDEX,
+                  CLAIM_GROUP_SIZES,
+                  CLAIM_OFFSETS,
+                  CLAIM_SIZE,
+                  DISCARD_SIZE,
+                  unflatten_claim,
+              )
+              from tjong_replication.evaluate_supervised import configure_deterministic_eval, load_model
+              from tjong_replication.tiles import SUIT_ORDER, TILE_NAMES
+              from tjong_replication.train_supervised import load_tensor_dataset, unpack_batch
+
+              checkpoint = Path(os.environ["CHECKPOINT"])
+              eval_pt = Path(os.environ["EVAL_PT"])
+              out = Path(os.environ["OUT"])
+              encoding = "tjong_cit2_12298_v3_hidden_concealed_kong"
+              batch_size = 1024
+              configure_deterministic_eval(0, strict=False)
+              device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+              dataset = load_tensor_dataset(eval_pt, expected_encoding_version=encoding)
+              model = load_model(
+                  checkpoint,
+                  device,
+                  expected_encoding_version=encoding,
+                  require_paper_config=True,
+              )
+              model.eval()
+              loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+
+              action_count = torch.zeros(len(ACTION_NAMES), dtype=torch.long)
+              action_correct = torch.zeros(len(ACTION_NAMES), dtype=torch.long)
+              action_pred_count = torch.zeros(len(ACTION_NAMES), dtype=torch.long)
+              action_confusion = torch.zeros((len(ACTION_NAMES), len(ACTION_NAMES)), dtype=torch.long)
+
+              claim_count = torch.zeros(CLAIM_SIZE, dtype=torch.long)
+              claim_correct = torch.zeros(CLAIM_SIZE, dtype=torch.long)
+              claim_pred_count = torch.zeros(CLAIM_SIZE, dtype=torch.long)
+
+              discard_count = torch.zeros(DISCARD_SIZE, dtype=torch.long)
+              discard_correct = torch.zeros(DISCARD_SIZE, dtype=torch.long)
+              discard_pred_count = torch.zeros(DISCARD_SIZE, dtype=torch.long)
+
+              claim_action_indices = torch.tensor(
+                  [
+                      ACTION_TO_INDEX["CHOW"],
+                      ACTION_TO_INDEX["PONG"],
+                      ACTION_TO_INDEX["MINGKONG"],
+                      ACTION_TO_INDEX["BUKONG"],
+                      ACTION_TO_INDEX["ANKONG"],
+                  ],
+                  device=device,
+              )
+              discard_action = ACTION_TO_INDEX["DISCARD"]
+
+              with torch.no_grad():
+                  for batch in loader:
+                      inputs, labels = unpack_batch(batch, device)
+                      action_label, claim_label, discard_label = labels
+                      outputs = model(**inputs)
+                      action_pred = outputs["action_logits"].argmax(dim=-1)
+                      claim_pred = outputs["claim_logits"].argmax(dim=-1)
+                      discard_pred = outputs["discard_logits"].argmax(dim=-1)
+
+                      for index in range(len(ACTION_NAMES)):
+                          mask = action_label == index
+                          action_count[index] += int(mask.sum().item())
+                          action_correct[index] += int((action_pred[mask] == action_label[mask]).sum().item())
+                          action_pred_count[index] += int((action_pred == index).sum().item())
+                      flat_conf = action_label.cpu() * len(ACTION_NAMES) + action_pred.cpu()
+                      action_confusion += torch.bincount(
+                          flat_conf,
+                          minlength=len(ACTION_NAMES) * len(ACTION_NAMES),
+                      ).reshape(len(ACTION_NAMES), len(ACTION_NAMES))
+
+                      claim_mask = (action_label.unsqueeze(-1) == claim_action_indices).any(dim=-1)
+                      if bool(claim_mask.any()):
+                          true_claim = claim_label[claim_mask].cpu()
+                          pred_claim = claim_pred[claim_mask].cpu()
+                          claim_count += torch.bincount(true_claim, minlength=CLAIM_SIZE)
+                          claim_pred_count += torch.bincount(pred_claim, minlength=CLAIM_SIZE)
+                          correct_claim = true_claim[true_claim == pred_claim]
+                          claim_correct += torch.bincount(correct_claim, minlength=CLAIM_SIZE)
+
+                      discard_mask = action_label == discard_action
+                      if bool(discard_mask.any()):
+                          true_discard = discard_label[discard_mask].cpu()
+                          pred_discard = discard_pred[discard_mask].cpu()
+                          discard_count += torch.bincount(true_discard, minlength=DISCARD_SIZE)
+                          discard_pred_count += torch.bincount(pred_discard, minlength=DISCARD_SIZE)
+                          correct_discard = true_discard[true_discard == pred_discard]
+                          discard_correct += torch.bincount(correct_discard, minlength=DISCARD_SIZE)
+
+              def ratio(correct: int, count: int):
+                  return (float(correct) / float(count)) if count else None
+
+              def item(correct_tensor, count_tensor, index: int, pred_tensor=None):
+                  count = int(count_tensor[index].item())
+                  correct = int(correct_tensor[index].item())
+                  result = {
+                      "count": count,
+                      "correct": correct,
+                      "accuracy": ratio(correct, count),
+                  }
+                  if pred_tensor is not None:
+                      result["predicted_count"] = int(pred_tensor[index].item())
+                  return result
+
+              def decode_chow(local: int) -> dict:
+                  suit = SUIT_ORDER[local // 21]
+                  rem = local % 21
+                  middle_rank = rem // 3 + 2
+                  offer_position = rem % 3 + 1
+                  event_rank = middle_rank + offer_position - 2
+                  return {
+                      "middle": f"{suit}{middle_rank}",
+                      "event_tile": f"{suit}{event_rank}",
+                      "sequence": [f"{suit}{middle_rank - 1}", f"{suit}{middle_rank}", f"{suit}{middle_rank + 1}"],
+                  }
+
+              action_breakdown = {
+                  name: item(action_correct, action_count, index, action_pred_count)
+                  for index, name in enumerate(ACTION_NAMES)
+              }
+
+              claim_breakdown = {}
+              claim_family_breakdown = {}
+              for family, start in CLAIM_OFFSETS.items():
+                  size = CLAIM_GROUP_SIZES[family]
+                  family_count = int(claim_count[start : start + size].sum().item())
+                  family_correct = int(claim_correct[start : start + size].sum().item())
+                  claim_family_breakdown[family] = {
+                      "count": family_count,
+                      "correct": family_correct,
+                      "accuracy": ratio(family_correct, family_count),
+                      "predicted_count": int(claim_pred_count[start : start + size].sum().item()),
+                  }
+              for flat_index in range(CLAIM_SIZE):
+                  decoded = unflatten_claim(flat_index)
+                  entry = item(claim_correct, claim_count, flat_index, claim_pred_count)
+                  entry["family"] = decoded.family
+                  entry["local_index"] = decoded.local_index
+                  if decoded.family == "CHOW":
+                      entry.update(decode_chow(decoded.local_index))
+                      key = f"CHOW:{decoded.local_index:02d}:{entry['middle']}:event_{entry['event_tile']}"
+                  else:
+                      entry["tile"] = TILE_NAMES[decoded.local_index]
+                      key = f"{decoded.family}:{entry['tile']}"
+                  claim_breakdown[key] = entry
+
+              discard_breakdown = {
+                  tile: item(discard_correct, discard_count, index, discard_pred_count)
+                  for index, tile in enumerate(TILE_NAMES)
+              }
+
+              total_action_count = int(action_count.sum().item())
+              total_action_correct = int(action_correct.sum().item())
+              total_claim_count = int(claim_count.sum().item())
+              total_claim_correct = int(claim_correct.sum().item())
+              total_discard_count = int(discard_count.sum().item())
+              total_discard_correct = int(discard_correct.sum().item())
+
+              report = {
+                  "format": "tjong_supervised_action_breakdown_v1",
+                  "checkpoint": str(checkpoint),
+                  "eval_pt": str(eval_pt),
+                  "device": str(device),
+                  "batch_size": batch_size,
+                  "action": {
+                      "count": total_action_count,
+                      "correct": total_action_correct,
+                      "accuracy": ratio(total_action_correct, total_action_count),
+                      "by_label": action_breakdown,
+                      "confusion_rows_true_cols_pred": {
+                          true_name: {
+                              pred_name: int(action_confusion[true_index, pred_index].item())
+                              for pred_index, pred_name in enumerate(ACTION_NAMES)
+                          }
+                          for true_index, true_name in enumerate(ACTION_NAMES)
+                      },
+                  },
+                  "claim_subactions": {
+                      "count": total_claim_count,
+                      "correct": total_claim_correct,
+                      "accuracy": ratio(total_claim_correct, total_claim_count),
+                      "by_family": claim_family_breakdown,
+                      "by_subaction": claim_breakdown,
+                  },
+                  "discard_subactions": {
+                      "count": total_discard_count,
+                      "correct": total_discard_correct,
+                      "accuracy": ratio(total_discard_correct, total_discard_count),
+                      "by_tile": discard_breakdown,
+                  },
+              }
+              out.parent.mkdir(parents=True, exist_ok=True)
+              out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+              print(json.dumps(report, sort_keys=True), flush=True)
+              PY
+          resources:
+            limits:
+              cpu: "4"
+              memory: 96Gi
+              ephemeral-storage: 160Gi
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "4"
+              memory: 96Gi
+              ephemeral-storage: 120Gi
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

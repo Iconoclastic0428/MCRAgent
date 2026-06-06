@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tjong-staging-pod-20260605a
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: staging
+spec:
+  restartPolicy: Never
+  containers:
+    - name: staging
+      image: docker.io/zpliang/documentsegementation:latest
+      imagePullPolicy: Always
+      workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+      command: ["sh", "-lc"]
+      args:
+        - |
+          set -eux
+          sleep 3600
+      resources:
+        requests:
+          cpu: "1"
+          memory: 2Gi
+          ephemeral-storage: 4Gi
+        limits:
+          cpu: "1"
+          memory: 2Gi
+          ephemeral-storage: 8Gi
+      volumeMounts:
+        - name: idl-data
+          mountPath: /data/idl
+  volumes:
+    - name: idl-data
+      persistentVolumeClaim:
+        claimName: llama-model-pvc

@@ -1,0 +1,85 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tjong-tziakcha-all-botzone-merge-cpu-20260605b
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: tziakcha-all-botzone-merge
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 43200
+  template:
+    metadata:
+      labels:
+        app: tjong-replication
+        task: tziakcha-all-botzone-merge
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: tziakcha-all-botzone-merge
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              export PYTHONPATH="${PWD}/papers/tjong_cit2_12298/src:${PYTHONPATH:-}"
+              MAIN_BOTZONE="${TJONG_MAIN_BOTZONE:-data/raw/tziakcha_all_plus_live_elo2300_botzone.jsonl}"
+              HUMAN32_BOTZONE="${TJONG_HUMAN32_BOTZONE:-data/raw/tziakcha_human_botzone_raw_32.jsonl}"
+              HUMAN517_BOTZONE="${TJONG_HUMAN517_BOTZONE:-data/raw/tziakcha_human_botzone_raw_517.jsonl}"
+              CHAGA_BOTZONE="${TJONG_CHAGA_BOTZONE:-data/raw/tziakcha_chaga0208_botzone_raw.jsonl}"
+              ALL_BOTZONE="${TJONG_ALL_BOTZONE:-data/raw/tziakcha_all_sources_botzone_20260605b.jsonl}"
+              SUMMARY="${TJONG_ALL_BOTZONE_SUMMARY:-runs/tjong_tziakcha_all_sources_botzone_20260605b_summary.json}"
+              VALIDATION="${TJONG_ALL_BOTZONE_VALIDATION:-runs/tjong_validate_tziakcha_all_sources_botzone_20260605b.json}"
+              COVERAGE="${TJONG_ALL_BOTZONE_COVERAGE:-runs/tjong_tziakcha_all_sources_botzone_coverage_20260605b.json}"
+              test -s "${MAIN_BOTZONE}"
+              test -s "${HUMAN32_BOTZONE}"
+              test -s "${HUMAN517_BOTZONE}"
+              test -s "${CHAGA_BOTZONE}"
+              python -m tjong_replication.merge_botzone_corpora \
+                --in "${MAIN_BOTZONE}" \
+                --in "${HUMAN32_BOTZONE}" \
+                --in "${HUMAN517_BOTZONE}" \
+                --in "${CHAGA_BOTZONE}" \
+                --out "${ALL_BOTZONE}" \
+                --summary-out "${SUMMARY}" \
+                --min-written 763471 \
+                --overwrite \
+                --fail-on-error
+              EXPECTED_RECORDS="$(python - <<'PY'
+              import json
+              with open('runs/tjong_tziakcha_all_sources_botzone_20260605b_summary.json', encoding='utf-8') as f:
+                  print(json.load(f)['records_written'])
+              PY
+              )"
+              python -m tjong_replication.validate_paper_corpus \
+                --in "${ALL_BOTZONE}" \
+                --expected-records "${EXPECTED_RECORDS}" \
+                --summary-out "${VALIDATION}"
+              python -m tjong_replication.audit_tziakcha_botzone_coverage \
+                --repo-root . \
+                --merge-summary "${SUMMARY}" \
+                --validation-summary "${VALIDATION}" \
+                --summary-out "${COVERAGE}" \
+                --fail-on-missing
+          resources:
+            requests:
+              cpu: "4"
+              memory: 16Gi
+              ephemeral-storage: 20Gi
+            limits:
+              cpu: "4"
+              memory: 16Gi
+              ephemeral-storage: 80Gi
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

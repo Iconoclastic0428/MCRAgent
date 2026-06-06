@@ -1,0 +1,168 @@
+﻿apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tjong-ppo-l40-20260605b
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: ppo
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 259200
+  template:
+    metadata:
+      labels:
+        app: tjong-replication
+        task: ppo
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+        - key: nautilus.io/reservation
+          operator: Equal
+          value: csu-tide
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-L40
+      containers:
+        - name: tjong-ppo
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              export PYTHONPATH="${PWD}/papers/tjong_cit2_12298/src:${PYTHONPATH:-}"
+              python - <<'PY'
+              import torch
+              print("repo_commit", "tjong-ppo-l40-20260605b")
+              print("torch", torch.__version__, "cuda", torch.cuda.is_available(), "device_count", torch.cuda.device_count())
+              PY
+              INIT="${TJONG_INIT_CHECKPOINT:-models/tjong_supervised_all_sources_20260605b.pt}"
+              TENSOR_ENCODING_VERSION="${TJONG_TENSOR_ENCODING_VERSION:-tjong_cit2_12298_v3_hidden_concealed_kong}"
+              ROLLOUT_PT="${TJONG_ROLLOUT_PT:-data/processed/tjong/tjong_selfplay_20260605b_fan_backward_rollouts.pt}"
+              ROLLOUT_SOURCE_PT="${TJONG_ROLLOUT_SOURCE_PT:-data/processed/tjong/tjong_selfplay_20260605b_fan_backward_tensorized.pt}"
+              SELFPLAY_TENSOR_PT="${TJONG_SELFPLAY_TENSOR_PT:-data/processed/tjong/tjong_selfplay_20260605b_tensorized.pt}"
+              SELFPLAY_RAW="${TJONG_SELFPLAY_RAW:-data/processed/tjong/tjong_selfplay_20260605b_raw.jsonl}"
+              FAN_ITEMS_JSONL="${TJONG_FAN_ITEMS_JSONL:-data/processed/tjong/tjong_selfplay_20260605b_fan_items.jsonl}"
+              HUANG_PENALTY="${TJONG_HUANG_PENALTY:-100.0}"
+              test -s "${INIT}"
+              if [ ! -f "${ROLLOUT_SOURCE_PT}" ]; then
+                test -s "${SELFPLAY_TENSOR_PT}"
+                test -s "${SELFPLAY_RAW}"
+                if [ -s "${FAN_ITEMS_JSONL}" ]; then
+                  python -m tjong_replication.populate_fan_backward_rewards \
+                    --tensor-pt "${SELFPLAY_TENSOR_PT}" \
+                    --raw "${SELFPLAY_RAW}" \
+                    --fan-items-jsonl "${FAN_ITEMS_JSONL}" \
+                    --out "${ROLLOUT_SOURCE_PT}" \
+                    --summary-out runs/tjong_fan_backward_20260605b_summary.json \
+                    --require-hu-reward \
+                    --huang-penalty "${HUANG_PENALTY}"
+                else
+                  python -m tjong_replication.populate_fan_backward_rewards \
+                    --tensor-pt "${SELFPLAY_TENSOR_PT}" \
+                    --raw "${SELFPLAY_RAW}" \
+                    --out "${ROLLOUT_SOURCE_PT}" \
+                    --summary-out runs/tjong_fan_backward_20260605b_summary.json \
+                    --require-hu-reward \
+                    --huang-penalty "${HUANG_PENALTY}"
+                fi
+                python - <<'PY'
+                import json
+                from pathlib import Path
+                summary = json.loads(Path("runs/tjong_fan_backward_20260605b_summary.json").read_text())
+                allowed = {
+                  "explicit_fan_items",
+                  "structural_fan_attribution_from_display",
+                  "structural_fan_attribution_from_display_with_empty_explicit_items",
+                }
+                assert set(summary["fan_tile_sources"]).issubset(allowed), summary
+                assert summary["nonzero_rewards"] > 0, summary
+                assert summary["hu_matches"] > 0, summary
+                assert summary["hu_matches_without_reward"] == [], summary
+                assert summary["huang_penalty"] > 0, summary
+                if summary["huang_matches"] > 0:
+                  assert summary["huang_penalized_matches"] == summary["huang_matches"], summary
+                  assert summary["huang_penalized_player_terminals"] >= summary["huang_matches"], summary
+                PY
+              fi
+              if [ ! -f "${ROLLOUT_PT}" ]; then
+                test -s "${ROLLOUT_SOURCE_PT}"
+                python -m tjong_replication.build_ppo_rollouts \
+                  --tensor-pt "${ROLLOUT_SOURCE_PT}" \
+                  --checkpoint "${INIT}" \
+                  --out "${ROLLOUT_PT}" \
+                  --summary-out runs/tjong_rollout_build_20260605b_summary.json \
+                  --reward-key fan_backward_reward \
+                  --require-reward-key \
+                  --require-encoding-version "${TENSOR_ENCODING_VERSION}" \
+                  --require-paper-config \
+                  --gamma 1.0 \
+                  --normalize-advantage \
+                  --batch-size 1024 \
+                  --device cuda
+                python - <<'PY'
+                import json
+                from pathlib import Path
+                summary = json.loads(Path("runs/tjong_rollout_build_20260605b_summary.json").read_text())
+                assert summary.get("actual_reward_source") == "fan_backward_reward", summary
+                PY
+              fi
+              test -s "${ROLLOUT_PT}"
+              RESUME_ARGS=""
+              if [ -n "${TJONG_PPO_RESUME_CHECKPOINT:-}" ]; then
+                RESUME_ARGS="--resume-checkpoint ${TJONG_PPO_RESUME_CHECKPOINT}"
+              fi
+              python -m tjong_replication.train_ppo \
+                --init-checkpoint "${INIT}" \
+                --rollout-pt "${ROLLOUT_PT}" \
+                --checkpoint-out models/tjong_ppo_20260605b.pt \
+                --metrics-out runs/tjong_ppo_20260605b_metrics.json \
+                --metrics-jsonl runs/tjong_ppo_20260605b_metrics.jsonl \
+                --epochs 1 \
+                --batch-size 1024 \
+                --lr 0.0001 \
+                --policy-clip 0.2 \
+                --value-clip 0.3 \
+                --grad-clip 0.5 \
+                --require-encoding-version "${TENSOR_ENCODING_VERSION}" \
+                --require-paper-config \
+                --require-rollout-reward-source fan_backward_reward \
+                --device cuda \
+                --data-parallel \
+                --checkpoint-every-epochs 1 \
+                --checkpoint-dir models/tjong_ppo_20260605b_checkpoints \
+                ${RESUME_ARGS}
+          resources:
+            limits:
+              cpu: "8"
+              memory: 96Gi
+              ephemeral-storage: 180Gi
+              nvidia.com/gpu: 2
+            requests:
+              cpu: "8"
+              memory: 96Gi
+              ephemeral-storage: 120Gi
+              nvidia.com/gpu: 2
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

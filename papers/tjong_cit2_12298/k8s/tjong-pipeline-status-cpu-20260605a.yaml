@@ -1,0 +1,54 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tjong-pipeline-status-cpu-20260605a
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: pipeline-status
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app: tjong-replication
+        task: pipeline-status
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: tjong-pipeline-status
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              export PYTHONPATH="${PWD}/papers/tjong_cit2_12298/src:${PYTHONPATH:-}"
+              EXPECTED_RECORDS="${TJONG_EXPECTED_RECORDS:-0}"
+              python -m tjong_replication.pipeline_status \
+                --repo-root . \
+                --expected-records "${EXPECTED_RECORDS}" \
+                --summary-out runs/tjong_pipeline_status_20260605a.json
+          resources:
+            limits:
+              cpu: "2"
+              memory: 8Gi
+              ephemeral-storage: 20Gi
+            requests:
+              cpu: "2"
+              memory: 8Gi
+              ephemeral-storage: 10Gi
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc
