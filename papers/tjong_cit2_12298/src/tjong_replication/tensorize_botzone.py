@@ -158,6 +158,22 @@ class ReplayState:
         if action in {"HU", "HUANG"}:
             self.claimable_discard = None
 
+    def apply_deal_requests(self, requests: dict[str, Any]) -> None:
+        for player_text, request in requests.items():
+            try:
+                player = int(player_text)
+            except (TypeError, ValueError):
+                continue
+            if player < 0 or player >= 4:
+                continue
+            tokens = str(request).strip().split()
+            if len(tokens) < 6 or tokens[0] != "1":
+                continue
+            tiles = [tile for tile in tokens[5:] if tile in TILE_NAMES]
+            self.hands[player] = Counter(tiles)
+            self._remove_from_wall(self.hands[player].elements())
+        self.claimable_discard = None
+
     def after_claim(self, player: int, request: str, response: str) -> "ReplayState | None":
         """Return a cloned state after the claim but before its forced discard."""
 
@@ -779,6 +795,8 @@ def tensorize_record(
         if not isinstance(requests, dict) or not isinstance(display, dict):
             continue
         state.apply_display(display)
+        if str(display.get("action") or "").upper() == "DEAL" and not display.get("hand"):
+            state.apply_deal_requests(requests)
 
         for player_text, request in requests.items():
             try:

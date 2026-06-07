@@ -1623,6 +1623,63 @@ def test_tensorizer_rejects_under_eight_can_hu_values():
     assert at_threshold[ACTION_TO_INDEX["HU"]] == 1.0
 
 
+def test_tensorizer_replays_converted_deal_content_for_chow_legality():
+    record = {
+        "match_id": "converted-deal-chow",
+        "scores": {"0": -8, "1": 24, "2": -8, "3": -8},
+        "initdata": {"quan": 0, "walltiles": " ".join(TILE_NAMES * 4)},
+        "logs": [
+            {
+                "output": {
+                    "content": {"0": "0 0 0", "1": "0 1 0", "2": "0 2 0", "3": "0 3 0"},
+                    "display": {"action": "INIT"},
+                }
+            },
+            {"0": {"raw": "PASS"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+            {
+                "output": {
+                    "content": {
+                        "0": "1 0 0 0 0 W1 W3 W6 W7 W8 W9 T1 T2 T3 B1 B2 B3 F1",
+                        "1": "1 0 0 0 0 W2 W4 W5 W7 W8 W9 T1 T2 T3 B1 B2 B3 F2",
+                        "2": "1 0 0 0 0 W1 W2 W3 W4 W5 W6 W7 W8 W9 T1 T2 T3 B1",
+                        "3": "1 0 0 0 0 B1 B2 B3 B4 B5 B6 B7 B8 B9 T1 T2 T3 W1",
+                    },
+                    "display": {"action": "DEAL"},
+                }
+            },
+            {"0": {"raw": "PASS"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+            {
+                "output": {
+                    "content": {"0": "2 W6", "1": "3 0 DRAW", "2": "3 0 DRAW", "3": "3 0 DRAW"},
+                    "display": {"action": "DRAW", "player": 0, "tile": "W6", "canHu": [-4, -4, -4, -4]},
+                }
+            },
+            {"0": {"raw": "PLAY W3"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+            {
+                "output": {
+                    "content": {
+                        "0": "3 0 PLAY W3",
+                        "1": "3 0 PLAY W3",
+                        "2": "3 0 PLAY W3",
+                        "3": "3 0 PLAY W3",
+                    },
+                    "display": {"action": "PLAY", "player": 0, "tile": "W3", "canHu": [-4, -4, -4, -4]},
+                }
+            },
+            {"0": {"raw": "PASS"}, "1": {"raw": "CHI W3 W5"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+        ],
+    }
+
+    examples, stats = tensorize_record(record)
+
+    assert stats["action:CHOW"] == 1
+    assert stats["claim_discard_examples"] == 1
+    assert stats.get("label_outside_mask:CHOW", 0) == 0
+    action_counts = Counter(example.action_label for example in examples)
+    assert action_counts[ACTION_TO_INDEX["CHOW"]] == 1
+    assert action_counts[ACTION_TO_INDEX["DISCARD"]] == 2
+
+
 def test_tensorizer_keeps_sampled_single_action_discards():
     record = {
         "match_id": "single-discard-sampling",
