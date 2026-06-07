@@ -16,6 +16,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .evaluate_supervised import load_model
+from .tensorize_botzone import metadata_column
 from .train_ppo import hierarchical_log_prob_and_entropy
 from .train_supervised import load_tensor_dataset, unpack_batch, validate_tensor_encoding
 
@@ -160,15 +161,22 @@ def reward_to_go(
 ) -> torch.Tensor:
     rewards = rewards.float().reshape(-1)
     returns = torch.zeros_like(rewards)
-    if not metadata or "match_id" not in metadata or "player" not in metadata:
+    if not metadata:
         running = 0.0
         for index in range(rewards.numel() - 1, -1, -1):
             running = float(rewards[index]) + float(gamma) * running
             returns[index] = running
         return returns
 
-    match_ids = list(metadata.get("match_id") or [])
-    players = list(metadata.get("player") or [])
+    match_ids = metadata_column(metadata, "match_id")
+    players = metadata_column(metadata, "player")
+    if len(match_ids) != rewards.numel() or len(players) != rewards.numel():
+        running = 0.0
+        for index in range(rewards.numel() - 1, -1, -1):
+            running = float(rewards[index]) + float(gamma) * running
+            returns[index] = running
+        return returns
+
     running_by_key: dict[tuple[str, int], float] = {}
     for index in range(rewards.numel() - 1, -1, -1):
         key = (str(match_ids[index]), int(players[index]))

@@ -1,0 +1,270 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tjong-supervised-hu-l40-20260607f
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: supervised-hu
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 172800
+  template:
+    metadata:
+      labels:
+        app: tjong-replication
+        task: supervised-hu
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-L40
+                      - NVIDIA-L40S
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - rci-tide-gpu-01.sdsu.edu
+                      - rci-tide-gpu-02.sdsu.edu
+                      - rci-tide-gpu-03.sdsu.edu
+                      - rci-tide-gpu-04.sdsu.edu
+                      - rci-tide-gpu-05.sdsu.edu
+                      - rci-tide-gpu-06.sdsu.edu
+                      - rci-tide-gpu-07.sdsu.edu
+                      - rci-tide-gpu-08.sdsu.edu
+                      - rci-tide-gpu-09.sdsu.edu
+                      - rci-tide-gpu-10.sdsu.edu
+                      - rci-tide-gpu-11.sdsu.edu
+                      - rci-tide-gpu-12.sdsu.edu
+                      - rci-tide-gpu-13.sdsu.edu
+                      - rci-tide-gpu-14.sdsu.edu
+                      - rci-tide-gpu-15.sdsu.edu
+                      - rci-tide-gpu-16.sdsu.edu
+                      - rci-tide-gpu-17.sdsu.edu
+      containers:
+        - name: supervised-hu
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+            - name: CUBLAS_WORKSPACE_CONFIG
+              value: ":4096:8"
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              export PYTHONPATH="${PWD}/papers/tjong_cit2_12298/src:${PYTHONPATH:-}"
+              python - <<'PY'
+              from pathlib import Path
+              import torch
+              print("repo_commit", "tjong-supervised-hu-l40-20260607f")
+              print("torch", torch.__version__, "cuda", torch.cuda.is_available(), "device_count", torch.cuda.device_count())
+              model = Path("papers/tjong_cit2_12298/src/tjong_replication/model.py").read_text(encoding="utf-8")
+              trainer = Path("papers/tjong_cit2_12298/src/tjong_replication/train_supervised.py").read_text(encoding="utf-8")
+              actions = Path("papers/tjong_cit2_12298/src/tjong_replication/actions.py").read_text(encoding="utf-8")
+              assert "ACTION_NAMES" in actions and '"PASS"' in actions and '"ANKONG"' in actions, "missing 8-action hierarchy"
+              assert "CLAIM_GROUP_SIZES" in actions and '"CHOW": 63' in actions and '"ANKONG": 34' in actions, "missing paper claim subaction sizes"
+              assert "action_head" in model and "claim_head" in model and "discard_head" in model, "missing hierarchical output heads"
+              assert "policy_backbone" in model and "tile_decision_state" in model, "missing shared TIT hierarchical decision path"
+              assert "CrossEntropyLoss" in trainer and "decision_masks" in trainer and "supervised_loss" in trainer, "missing hierarchical CE loss"
+              assert "validate_paper_supervised_args" in trainer, "paper supervised hyperparameter gate is required"
+              assert "nn.DataParallel" in trainer, "paper 2-GPU supervised run must activate data parallelism"
+              assert "ShardedTensorDataset" in trainer, "supervised trainer must load shard indexes"
+              PY
+              python -m tjong_replication.verify_paper_compliance \
+                --paper-root papers/tjong_cit2_12298 \
+                --summary-out runs/tjong_paper_compliance_hu_20260606c.json
+
+              DATA_TAG=20260607f
+              RUN_TAG="${TJONG_RUN_TAG:-20260607f_sharded_hu_paper}"
+              RAW_TAG=20260606b
+              TRAIN_PT="${TJONG_TRAIN_PT:-data/processed/tjong/tziakcha_all_sources_botzone_hu_${DATA_TAG}_shards/index.json}"
+              EVAL_PT="${TJONG_EVAL_PT:-${TRAIN_PT}}"
+              TENSORIZE_SUMMARY="${TJONG_TENSORIZE_SUMMARY:-runs/tjong_tensorize_all_sources_hu_${DATA_TAG}_summary.json}"
+              VALIDATION_SUMMARY="${TJONG_VALIDATION_SUMMARY:-runs/tjong_validate_tziakcha_all_sources_botzone_hu_${RAW_TAG}.json}"
+              HU_AUDIT="${TJONG_HU_AUDIT:-runs/tjong_hu_restore_audit_${RAW_TAG}.json}"
+              TENSOR_ENCODING_VERSION="${TJONG_TENSOR_ENCODING_VERSION:-tjong_cit2_12298_v3_hidden_concealed_kong}"
+              CHECKPOINT_DIR="${TJONG_SUPERVISED_CHECKPOINT_DIR:-models/tjong_supervised_hu_${RUN_TAG}_checkpoints}"
+              FINAL_CHECKPOINT="${TJONG_FINAL_CHECKPOINT:-models/tjong_supervised_hu_${RUN_TAG}.pt}"
+              METRICS_OUT="${TJONG_METRICS_OUT:-runs/tjong_supervised_hu_${RUN_TAG}_metrics.json}"
+              METRICS_JSONL="${TJONG_METRICS_JSONL:-runs/tjong_supervised_hu_${RUN_TAG}_metrics.jsonl}"
+              EVAL_OUT="${TJONG_EVAL_OUT:-runs/tjong_supervised_hu_${RUN_TAG}_eval.json}"
+              METRIC_COMPARISON="${TJONG_METRIC_COMPARISON:-runs/tjong_supervised_hu_${RUN_TAG}_paper_metric_comparison.json}"
+              TRAIN_SEED="${TJONG_TRAIN_SEED:-0}"
+              EPOCHS="${TJONG_SUPERVISED_EPOCHS:-125}"
+              BATCH_SIZE="${TJONG_BATCH_SIZE:-1024}"
+              MAX_STEPS="${TJONG_MAX_STEPS:-0}"
+              CUDA_SYNC_DEBUG="${TJONG_CUDA_SYNC_DEBUG:-0}"
+              CHECKPOINT_EVERY_BATCHES="${TJONG_CHECKPOINT_EVERY_BATCHES:-0}"
+              CHECKPOINT_AT_GLOBAL_BATCHES="${TJONG_CHECKPOINT_AT_GLOBAL_BATCHES:-}"
+              CHECKPOINT_AT_EPOCH_BATCHES="${TJONG_CHECKPOINT_AT_EPOCH_BATCHES:-}"
+
+              test -s "${TRAIN_PT}"
+              test -s "${TENSORIZE_SUMMARY}"
+              test -s "${VALIDATION_SUMMARY}"
+              test -s "${HU_AUDIT}"
+              export TENSORIZE_SUMMARY HU_AUDIT TENSOR_ENCODING_VERSION
+              python - <<'PY'
+              import json
+              import os
+              from pathlib import Path
+              tensorize = json.loads(Path(os.environ["TENSORIZE_SUMMARY"]).read_text(encoding="utf-8"))
+              audit = json.loads(Path(os.environ["HU_AUDIT"]).read_text(encoding="utf-8"))
+              stats = tensorize.get("stats") or {}
+              action_hu = int(stats.get("action:HU", 0))
+              action_discard = int(stats.get("action:DISCARD", 0))
+              expected_actions = {
+                  "CHOW": 1829984,
+                  "PONG": 1274394,
+                  "MINGKONG": 58468,
+                  "BUKONG": 71554,
+                  "ANKONG": 44483,
+                  "HU": 745368,
+              }
+              label_outside_hu = int(stats.get("label_outside_mask:HU", 0) or 0)
+              discard_seen = int(stats.get("single_action_discard_seen", 0))
+              discard_kept = int(stats.get("single_action_discard_kept", 0))
+              sampled_out = int(stats.get("single_action_discard_sampled_out", 0) or 0)
+              examples = int(tensorize.get("examples", 0))
+              matches = int(stats.get("matches", 0))
+              assert tensorize.get("format") == "tjong_tensor_shards_v1", tensorize
+              assert tensorize.get("sharded") is True, tensorize
+              assert tensorize.get("compact_metadata") is True, tensorize
+              assert tensorize.get("compact_storage") is True, tensorize
+              assert int(tensorize.get("parallel_workers", 0)) == 32, tensorize
+              assert int(audit.get("hu_response_count", 0)) > 0, audit
+              assert int(audit.get("bad_hu_count", -1)) == 0, audit
+              assert int(tensorize.get("single_action_discard_stride", 0)) == 1, tensorize
+              assert action_hu > 0, tensorize
+              assert label_outside_hu == 0, tensorize
+              assert discard_seen > 0, tensorize
+              assert discard_kept == discard_seen, tensorize
+              assert sampled_out == 0, tensorize
+              assert action_discard > action_hu, tensorize
+              for action, expected in expected_actions.items():
+                  observed = int(stats.get(f"action:{action}", 0))
+                  assert observed == expected, {"action": action, "observed": observed, "expected": expected}
+              assert matches > 0 and examples / matches > 10.0, tensorize
+              assert tensorize.get("shards"), tensorize
+              assert (tensorize.get("encoding_schema") or {}).get("version") == os.environ["TENSOR_ENCODING_VERSION"], tensorize
+              print(
+                  "supervised_hu_preflight",
+                  {
+                      "hu_response_count": int(audit.get("hu_response_count", 0)),
+                      "examples": examples,
+                      "matches": matches,
+                      "examples_per_match": examples / matches,
+                      "action_DISCARD": action_discard,
+                      "action_HU": action_hu,
+                      "action_CHOW": int(stats.get("action:CHOW", 0)),
+                      "action_PONG": int(stats.get("action:PONG", 0)),
+                      "action_MINGKONG": int(stats.get("action:MINGKONG", 0)),
+                      "action_BUKONG": int(stats.get("action:BUKONG", 0)),
+                      "action_ANKONG": int(stats.get("action:ANKONG", 0)),
+                      "label_outside_mask_HU": label_outside_hu,
+                      "single_action_discard_seen": discard_seen,
+                      "single_action_discard_kept": discard_kept,
+                      "shards": len(tensorize.get("shards") or []),
+                  },
+                  flush=True,
+              )
+              PY
+
+              RESUME_ARGS=""
+              if [ -n "${TJONG_RESUME_CHECKPOINT:-}" ]; then
+                RESUME_ARGS="--resume-checkpoint ${TJONG_RESUME_CHECKPOINT}"
+              elif [ "${TJONG_AUTO_RESUME:-0}" = "1" ] && [ -s "${CHECKPOINT_DIR}/latest.pt" ]; then
+                RESUME_ARGS="--resume-checkpoint ${CHECKPOINT_DIR}/latest.pt"
+              fi
+              BATCH_CHECKPOINT_ARGS=""
+              if [ "${CHECKPOINT_EVERY_BATCHES}" != "0" ]; then
+                BATCH_CHECKPOINT_ARGS="${BATCH_CHECKPOINT_ARGS} --checkpoint-every-batches ${CHECKPOINT_EVERY_BATCHES}"
+              fi
+              if [ -n "${CHECKPOINT_AT_GLOBAL_BATCHES}" ]; then
+                BATCH_CHECKPOINT_ARGS="${BATCH_CHECKPOINT_ARGS} --checkpoint-at-global-batches ${CHECKPOINT_AT_GLOBAL_BATCHES}"
+              fi
+              if [ -n "${CHECKPOINT_AT_EPOCH_BATCHES}" ]; then
+                BATCH_CHECKPOINT_ARGS="${BATCH_CHECKPOINT_ARGS} --checkpoint-at-epoch-batches ${CHECKPOINT_AT_EPOCH_BATCHES}"
+              fi
+              DEBUG_ARGS=""
+              if [ "${CUDA_SYNC_DEBUG}" = "1" ]; then
+                DEBUG_ARGS="${DEBUG_ARGS} --cuda-sync-debug"
+              fi
+
+              python -m tjong_replication.train_supervised \
+                --train-pt "${TRAIN_PT}" \
+                --checkpoint-out "${FINAL_CHECKPOINT}" \
+                --metrics-out "${METRICS_OUT}" \
+                --metrics-jsonl "${METRICS_JSONL}" \
+                --epochs "${EPOCHS}" \
+                --batch-size "${BATCH_SIZE}" \
+                --lr 0.0001 \
+                --d-model 384 \
+                --n-heads 6 \
+                --ffn-dim 1536 \
+                --require-encoding-version "${TENSOR_ENCODING_VERSION}" \
+                --require-paper-config \
+                --seed "${TRAIN_SEED}" \
+                --num-workers 0 \
+                --device cuda \
+                --data-parallel \
+                --checkpoint-every-epochs 1 \
+                --checkpoint-dir "${CHECKPOINT_DIR}" \
+                --force-math-sdp \
+                --fail-on-nonfinite \
+                --max-steps "${MAX_STEPS}" \
+                ${BATCH_CHECKPOINT_ARGS} \
+                ${DEBUG_ARGS} \
+                ${RESUME_ARGS}
+
+              python -m tjong_replication.evaluate_supervised \
+                --checkpoint "${FINAL_CHECKPOINT}" \
+                --eval-pt "${EVAL_PT}" \
+                --metrics-out "${EVAL_OUT}" \
+                --batch-size 1024 \
+                --num-workers 0 \
+                --require-encoding-version "${TENSOR_ENCODING_VERSION}" \
+                --require-paper-config \
+                --strict-deterministic \
+                --device cuda
+
+              if python -m tjong_replication.verify_paper_metrics \
+                --metrics "${EVAL_OUT}" \
+                --summary-out "${METRIC_COMPARISON}" \
+                --require-strict-deterministic \
+                --tolerance 0.00005; then
+                echo "paper_metric_comparison_passed"
+              else
+                echo "paper_metric_comparison_nonfatal_mismatch"
+              fi
+          resources:
+            limits:
+              cpu: "8"
+              memory: 96Gi
+              ephemeral-storage: 200Gi
+              nvidia.com/gpu: 2
+            requests:
+              cpu: "8"
+              memory: 96Gi
+              ephemeral-storage: 160Gi
+              nvidia.com/gpu: 2
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

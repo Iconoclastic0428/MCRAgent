@@ -37,6 +37,11 @@ ROLLOUT_REQUIRED = [
     "returns",
     "old_value",
 ]
+PAPER_PPO_BATCH_SIZE = 1024
+PAPER_PPO_LR = 1e-4
+PAPER_POLICY_CLIP = 0.2
+PAPER_VALUE_CLIP = 0.3
+PAPER_GRAD_CLIP = 0.5
 
 
 def write_metrics_file(path: Path, metrics: dict) -> None:
@@ -63,6 +68,32 @@ def validate_resume_config(resume_payload: dict, config: TjongConfig) -> None:
     }
     if mismatches:
         raise ValueError(f"resume checkpoint config mismatch: {json.dumps(mismatches, sort_keys=True)}")
+
+
+def validate_paper_ppo_args(args: argparse.Namespace, ppo_config: PPOConfig) -> None:
+    if not bool(getattr(args, "require_paper_config", False)):
+        return
+    expected = {
+        "batch_size": PAPER_PPO_BATCH_SIZE,
+        "lr": PAPER_PPO_LR,
+        "policy_clip": PAPER_POLICY_CLIP,
+        "value_clip": PAPER_VALUE_CLIP,
+        "grad_clip": PAPER_GRAD_CLIP,
+    }
+    observed = {
+        "batch_size": getattr(args, "batch_size", None),
+        "lr": getattr(args, "lr", None),
+        "policy_clip": ppo_config.policy_clip,
+        "value_clip": ppo_config.value_clip,
+        "grad_clip": ppo_config.grad_clip,
+    }
+    mismatches = {
+        key: {"expected": value, "observed": observed[key]}
+        for key, value in expected.items()
+        if observed[key] != value
+    }
+    if mismatches:
+        raise ValueError(f"paper PPO training config mismatch: {json.dumps(mismatches, sort_keys=True)}")
 
 
 def checkpoint_directory(args: argparse.Namespace) -> Path:
@@ -319,6 +350,7 @@ def train(args: argparse.Namespace) -> dict:
         entropy_coef=args.entropy_coef,
         value_coef=args.value_coef,
     )
+    validate_paper_ppo_args(args, ppo_config)
     start_epoch = 1
     metrics = {
         "paper": "Tjong CIT2.12298",

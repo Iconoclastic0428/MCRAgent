@@ -18,6 +18,9 @@ from .tensorize_botzone import SHARD_INDEX_FORMAT, TENSOR_ENCODING_VERSION, tens
 from .tiles import TILE_NAMES
 
 CLAIM_ACTION_INDICES = tuple(ACTION_TO_INDEX[name] for name in ("CHOW", "PONG", "MINGKONG", "BUKONG", "ANKONG"))
+PAPER_SUPERVISED_EPOCHS = 125
+PAPER_SUPERVISED_BATCH_SIZE = 1024
+PAPER_SUPERVISED_LR = 1e-4
 
 
 def validate_tensor_encoding(data: dict, *, expected_version: str | None = None, path: Path | None = None) -> None:
@@ -252,6 +255,32 @@ def validate_resume_config(resume_payload: dict, config: TjongConfig) -> None:
     }
     if mismatches:
         raise ValueError(f"resume checkpoint config mismatch: {json.dumps(mismatches, sort_keys=True)}")
+
+
+def validate_paper_supervised_args(args: argparse.Namespace, config: TjongConfig) -> None:
+    if not bool(getattr(args, "require_paper_config", False)):
+        return
+    expected_config = TjongConfig()
+    config_mismatches = {
+        key: {"expected": value, "observed": getattr(config, key)}
+        for key, value in expected_config.__dict__.items()
+        if getattr(config, key) != value
+    }
+    expected_args = {
+        "epochs": PAPER_SUPERVISED_EPOCHS,
+        "batch_size": PAPER_SUPERVISED_BATCH_SIZE,
+        "lr": PAPER_SUPERVISED_LR,
+    }
+    arg_mismatches = {
+        key: {"expected": value, "observed": getattr(args, key, None)}
+        for key, value in expected_args.items()
+        if getattr(args, key, None) != value
+    }
+    if config_mismatches or arg_mismatches:
+        raise ValueError(
+            "paper supervised training config mismatch: "
+            + json.dumps({"model": config_mismatches, "training": arg_mismatches}, sort_keys=True)
+        )
 
 
 def configure_cuda_attention(*, force_math_sdp: bool = False) -> dict[str, bool | None]:
@@ -511,8 +540,12 @@ def train(args: argparse.Namespace) -> dict:
         ffn_dim=args.ffn_dim,
         dropout=args.dropout,
     )
+    validate_paper_supervised_args(args, config)
     base_model = TjongNetwork(config)
-    model: nn.Module = base_model.to(device)
+    if bool(getattr(args, "data_parallel", False)) and device.type == "cuda" and torch.cuda.device_count() > 1:
+        model: nn.Module = nn.DataParallel(base_model).to(device)
+    else:
+        model = base_model.to(device)
     train_payload = load_tensor_payload(Path(args.train_pt), expected_encoding_version=args.require_encoding_version)
     encoding_schema = train_payload.get("encoding_schema") or tensor_encoding_schema()
     checkpoint_encoding_version = encoding_schema.get("version") or args.require_encoding_version

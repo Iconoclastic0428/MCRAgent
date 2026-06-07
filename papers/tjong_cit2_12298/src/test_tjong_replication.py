@@ -33,6 +33,7 @@ from tjong_replication.paper_metrics import (  # noqa: E402
     PAPER_REPORTED_SUPERVISED_METRICS,
 )
 from tjong_replication.pipeline_status import audit_pipeline  # noqa: E402
+from tjong_replication.ppo import PPOConfig  # noqa: E402
 from tjong_replication.policy_bot import (  # noqa: E402
     TjongCheckpointPredictor,
     encode_runtime_state,
@@ -58,6 +59,7 @@ from tjong_replication.tiles import TILE_NAMES, tile_id  # noqa: E402
 from tjong_replication.train_ppo import (  # noqa: E402
     hierarchical_log_prob_and_entropy,
     train as train_ppo,
+    validate_paper_ppo_args,
     validate_rollout_reward_source,
 )
 from tjong_replication.train_supervised import (  # noqa: E402
@@ -68,6 +70,7 @@ from tjong_replication.train_supervised import (  # noqa: E402
     load_tensor_dataset,
     safe_clip_grad_norm_,
     train as train_supervised,
+    validate_paper_supervised_args,
 )
 from tjong_replication.validate_initdata_corpus import validate_initdata_corpus  # noqa: E402
 from tjong_replication.validate_paper_corpus import validate_corpus  # noqa: E402
@@ -821,7 +824,51 @@ def test_original_supervised_trainer_writes_final_checkpoint_only():
         assert json.loads(metrics_path.read_text(encoding="utf-8"))["epochs"][-1]["epoch"] == 1
 
 
-def test_original_supervised_trainer_keeps_paper_config_gate_out_of_training_loop():
+def test_supervised_trainer_rejects_nonpaper_config_when_required():
+    args = argparse.Namespace(epochs=1, batch_size=1024, lr=1e-4, require_paper_config=True)
+    try:
+        validate_paper_supervised_args(args, TjongConfig())
+    except ValueError as exc:
+        assert "paper supervised training config mismatch" in str(exc)
+        assert "epochs" in str(exc)
+    else:
+        raise AssertionError("expected paper supervised config gate to reject non-paper epoch count")
+
+    good_args = argparse.Namespace(epochs=125, batch_size=1024, lr=1e-4, require_paper_config=True)
+    validate_paper_supervised_args(good_args, TjongConfig())
+
+    try:
+        validate_paper_supervised_args(good_args, TjongConfig(d_model=32, n_heads=4, ffn_dim=64, dropout=0.0))
+    except ValueError as exc:
+        assert "paper supervised training config mismatch" in str(exc)
+        assert "d_model" in str(exc)
+    else:
+        raise AssertionError("expected paper supervised config gate to reject non-paper model shape")
+
+
+def test_ppo_trainer_rejects_nonpaper_constants_when_required():
+    args = argparse.Namespace(batch_size=512, lr=1e-4, require_paper_config=True)
+    try:
+        validate_paper_ppo_args(args, PPOConfig(policy_clip=0.2, value_clip=0.3, grad_clip=0.5))
+    except ValueError as exc:
+        assert "paper PPO training config mismatch" in str(exc)
+        assert "batch_size" in str(exc)
+    else:
+        raise AssertionError("expected paper PPO config gate to reject non-paper batch size")
+
+    good_args = argparse.Namespace(batch_size=1024, lr=1e-4, require_paper_config=True)
+    validate_paper_ppo_args(good_args, PPOConfig(policy_clip=0.2, value_clip=0.3, grad_clip=0.5))
+
+    try:
+        validate_paper_ppo_args(good_args, PPOConfig(policy_clip=0.1, value_clip=0.3, grad_clip=0.5))
+    except ValueError as exc:
+        assert "paper PPO training config mismatch" in str(exc)
+        assert "policy_clip" in str(exc)
+    else:
+        raise AssertionError("expected paper PPO config gate to reject non-paper policy clip")
+
+
+def test_original_supervised_trainer_allows_tiny_nonpaper_smoke():
     with tempfile.TemporaryDirectory(dir=ROOT) as tmp_dir:
         tmp_path = Path(tmp_dir)
         tensor_path = tmp_path / "tiny_tensor.pt"
@@ -852,7 +899,7 @@ def test_original_supervised_trainer_keeps_paper_config_gate_out_of_training_loo
             data_parallel=False,
             seed=0,
             require_encoding_version=TENSOR_ENCODING_VERSION,
-            require_paper_config=True,
+            require_paper_config=False,
             checkpoint_every_epochs=0,
             checkpoint_dir=None,
             resume_checkpoint=None,
@@ -861,7 +908,6 @@ def test_original_supervised_trainer_keeps_paper_config_gate_out_of_training_loo
 
         metrics = train_supervised(args)
 
-        assert "require_paper_config" not in metrics
         assert metrics["epochs"][-1]["epoch"] == 1
         assert json.loads((tmp_path / "metrics.json").read_text(encoding="utf-8"))["epochs"][-1]["epoch"] == 1
 
@@ -1942,7 +1988,7 @@ def test_sharded_tensorizer_keeps_all_discards_and_trains_from_index():
             data_parallel=False,
             seed=0,
             require_encoding_version=TENSOR_ENCODING_VERSION,
-            require_paper_config=True,
+            require_paper_config=False,
             checkpoint_every_epochs=0,
             checkpoint_dir=None,
             resume_checkpoint=None,

@@ -16,7 +16,7 @@ from .actions import ACTION_TO_INDEX
 from .encoding import VISIBLE_ROW_NAMES, tile_multiset
 from .fan_attribution import FanAttributionError, attribute_display_fans
 from .fan_backward import FanItem, calculate_score, winning_reward
-from .tensorize_botzone import ReplayState, chow_sequence
+from .tensorize_botzone import ReplayState, chow_sequence, metadata_column
 from .tiles import TILE_NAMES, tile_id
 
 
@@ -59,9 +59,9 @@ def populate_file(
 ) -> dict[str, Any]:
     data = torch.load(tensor_pt, map_location="cpu")
     metadata = data.get("metadata") or {}
-    match_ids = [str(value) for value in metadata.get("match_id") or []]
-    players = [int(value) for value in metadata.get("player") or []]
-    turn_indices = [int(value) for value in metadata.get("turn_index") or []]
+    match_ids = [str(value) for value in metadata_column(metadata, "match_id")]
+    players = [int(value) for value in metadata_column(metadata, "player")]
+    turn_indices = [int(value) for value in metadata_column(metadata, "turn_index")]
     if not match_ids:
         raise ValueError("tensor file must contain metadata.match_id to populate fan-backward rewards")
 

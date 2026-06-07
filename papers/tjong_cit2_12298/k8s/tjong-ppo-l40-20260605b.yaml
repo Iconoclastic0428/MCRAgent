@@ -29,6 +29,26 @@ spec:
                     operator: In
                     values:
                       - NVIDIA-L40
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - rci-tide-gpu-01.sdsu.edu
+                      - rci-tide-gpu-02.sdsu.edu
+                      - rci-tide-gpu-03.sdsu.edu
+                      - rci-tide-gpu-04.sdsu.edu
+                      - rci-tide-gpu-05.sdsu.edu
+                      - rci-tide-gpu-06.sdsu.edu
+                      - rci-tide-gpu-07.sdsu.edu
+                      - rci-tide-gpu-08.sdsu.edu
+                      - rci-tide-gpu-09.sdsu.edu
+                      - rci-tide-gpu-10.sdsu.edu
+                      - rci-tide-gpu-11.sdsu.edu
+                      - rci-tide-gpu-12.sdsu.edu
+                      - rci-tide-gpu-13.sdsu.edu
+                      - rci-tide-gpu-14.sdsu.edu
+                      - rci-tide-gpu-15.sdsu.edu
+                      - rci-tide-gpu-16.sdsu.edu
+                      - rci-tide-gpu-17.sdsu.edu
       containers:
         - name: tjong-ppo
           image: docker.io/zpliang/documentsegementation:latest

@@ -257,6 +257,47 @@ def verify_paper_compliance(paper_root: Path | None = None) -> dict:
         )
     )
 
+    hu_supervised_manifest = root / "k8s" / "tjong-supervised-hu-l40-20260607f.yaml"
+    hu_supervised_ok, hu_supervised_missing = _manifest_contains(
+        hu_supervised_manifest,
+        [
+            "DATA_TAG=20260607f",
+            "tziakcha_all_sources_botzone_hu_${DATA_TAG}_shards/index.json",
+            "expected_actions = {",
+            "\"CHOW\": 1829984",
+            "\"PONG\": 1274394",
+            "\"MINGKONG\": 58468",
+            "\"BUKONG\": 71554",
+            "\"ANKONG\": 44483",
+            "\"HU\": 745368",
+            "parallel_workers",
+            "validate_paper_supervised_args",
+            "CrossEntropyLoss",
+            "ACTION_NAMES",
+            "CLAIM_GROUP_SIZES",
+            "--epochs \"${EPOCHS}\"",
+            "EPOCHS=\"${TJONG_SUPERVISED_EPOCHS:-125}\"",
+            "--batch-size \"${BATCH_SIZE}\"",
+            "BATCH_SIZE=\"${TJONG_BATCH_SIZE:-1024}\"",
+            "--lr 0.0001",
+            "--data-parallel",
+            "nvidia.com/gpu: 2",
+            "rci-tide-gpu-17.sdsu.edu",
+        ],
+    )
+    hu_supervised_text = hu_supervised_manifest.read_text(encoding="utf-8", errors="replace") if hu_supervised_manifest.exists() else ""
+    checks.append(
+        _check(
+            "current_hu_supervised_manifest_matches_paper_hierarchy",
+            hu_supervised_ok
+            and "nautilus.io/reservation=csu-tide" not in hu_supervised_text
+            and "--grad-clip" not in hu_supervised_text,
+            observed="k8s/tjong-supervised-hu-l40-20260607f.yaml",
+            expected="verified HU shard index, 2-GPU hierarchical CE supervised training, paper lr/batch/epochs, no CSU-TIDE toleration",
+            detail=f"missing: {hu_supervised_missing}" if hu_supervised_missing else None,
+        )
+    )
+
     strict_eval_ok, strict_eval_missing = _manifest_contains(
         root / "k8s" / "tjong-supervised-final-strict-eval-l40-20260605b.yaml",
         [
@@ -547,12 +588,14 @@ def verify_paper_compliance(paper_root: Path | None = None) -> dict:
             "--checkpoint-dir models/tjong_ppo_20260605b_checkpoints",
             "--metrics-jsonl runs/tjong_ppo_20260605b_metrics.jsonl",
             "TJONG_PPO_RESUME_CHECKPOINT",
+            "rci-tide-gpu-17.sdsu.edu",
         ],
     )
+    ppo_text = (root / "k8s" / "tjong-ppo-l40-20260605b.yaml").read_text(encoding="utf-8", errors="replace")
     checks.append(
         _check(
             "ppo_l40_manifest_matches_paper_rl_constants",
-            ppo_ok,
+            ppo_ok and "nautilus.io/reservation=csu-tide" not in ppo_text,
             observed="k8s/tjong-ppo-l40-20260605b.yaml",
             expected="2-GPU PPO pod with fan-backward rewards and paper clipping constants",
             detail=f"missing: {ppo_missing}" if ppo_missing else None,
