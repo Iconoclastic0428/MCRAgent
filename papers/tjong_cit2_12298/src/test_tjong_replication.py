@@ -61,6 +61,7 @@ from tjong_replication.train_ppo import (  # noqa: E402
 )
 from tjong_replication.train_supervised import (  # noqa: E402
     batch_metric_sums,
+    evaluate_model,
     finalize_metric_sums,
     load_tensor_dataset,
     safe_clip_grad_norm_,
@@ -170,6 +171,66 @@ def test_supervised_safe_grad_clip_uses_manual_norm():
 
     assert abs(total_norm - 5.0) < 1e-6
     assert abs(float(parameter.grad.norm().item()) - 0.5) < 1e-6
+
+
+def test_supervised_paths_skip_value_hidden_tiles(monkeypatch):
+    with tempfile.TemporaryDirectory(dir=ROOT) as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        tensor_path = tmp_path / "tiny_tensor.pt"
+        torch.save(
+            {
+                "visible_tiles": torch.zeros(2, 4, 22, 34),
+                "game_features": torch.zeros(2, 4, 24),
+                "hidden_tiles": torch.ones(2, 5, 34),
+                "action_label": torch.tensor([ACTION_TO_INDEX["DISCARD"], ACTION_TO_INDEX["PASS"]]),
+                "claim_label": torch.zeros(2, dtype=torch.long),
+                "discard_label": torch.tensor([tile_id("W1"), 0]),
+                "encoding_schema": tensor_encoding_schema(),
+            },
+            tensor_path,
+        )
+        original_forward = TjongNetwork.forward
+        calls = []
+
+        def wrapped_forward(self, *args, **kwargs):
+            assert kwargs.get("hidden_tiles") is None
+            calls.append(True)
+            return original_forward(self, *args, **kwargs)
+
+        monkeypatch.setattr(TjongNetwork, "forward", wrapped_forward)
+        dataset = load_tensor_dataset(tensor_path, expected_encoding_version=TENSOR_ENCODING_VERSION)
+        model = TjongNetwork(TjongConfig(d_model=32, n_heads=4, ffn_dim=64, dropout=0.0))
+
+        evaluate_model(model, dataset, device=torch.device("cpu"), batch_size=2, num_workers=0)
+
+        args = argparse.Namespace(
+            train_pt=tensor_path,
+            checkpoint_out=tmp_path / "supervised.pt",
+            metrics_out=tmp_path / "metrics.json",
+            epochs=1,
+            batch_size=2,
+            lr=1e-4,
+            d_model=32,
+            n_heads=4,
+            ffn_dim=64,
+            dropout=0.0,
+            num_workers=0,
+            device="cpu",
+            data_parallel=False,
+            require_encoding_version=TENSOR_ENCODING_VERSION,
+            checkpoint_every_epochs=0,
+            checkpoint_dir=None,
+            resume_checkpoint=None,
+            metrics_jsonl=None,
+            grad_clip=0.5,
+            force_math_sdp=False,
+            fail_on_nonfinite=True,
+            cuda_sync_debug=False,
+            max_steps=1,
+        )
+        train_supervised(args)
+
+        assert calls
 
 
 def test_policy_outer_transformer_uses_causal_memory_mask():

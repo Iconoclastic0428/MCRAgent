@@ -114,6 +114,11 @@ def configure_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(int(seed))
 
 
+def configure_cuda_device(device_arg: str | None) -> None:
+    if torch.cuda.is_available() and (device_arg is None or str(device_arg).startswith("cuda")):
+        torch.cuda.set_device(0)
+
+
 def validate_resume_config(resume_payload: dict, config: TjongConfig) -> None:
     observed = resume_payload.get("config") or {}
     expected = config.__dict__
@@ -145,53 +150,33 @@ def configure_cuda_attention(*, force_math_sdp: bool = False) -> dict[str, bool 
     return status
 
 
-def iter_named_model_parameters(model: nn.Module):
-    if isinstance(model, nn.DataParallel):
-        return model.module.named_parameters()
-    return model.named_parameters()
-
-
-def first_nonfinite_parameters(model: nn.Module, *, limit: int = 8) -> list[str]:
-    bad = []
-    for name, parameter in iter_named_model_parameters(model):
-        if not bool(torch.isfinite(parameter).all().item()):
-            bad.append(name)
-            if len(bad) >= limit:
-                break
-    return bad
-
-
-def first_nonfinite_gradients(model: nn.Module, *, limit: int = 8) -> list[str]:
-    bad = []
-    for name, parameter in iter_named_model_parameters(model):
-        if parameter.grad is None:
-            continue
-        if not bool(torch.isfinite(parameter.grad).all().item()):
-            bad.append(name)
-            if len(bad) >= limit:
-                break
-    return bad
-
-
 def safe_clip_grad_norm_(parameters: list[torch.nn.Parameter], max_norm: float) -> float:
-    """Manual non-foreach gradient clipping to avoid CUDA foreach kernel faults."""
-    grads = [parameter.grad.detach() for parameter in parameters if parameter.grad is not None]
-    if not grads:
+    """Clip gradients without foreach kernels or CUDA-wide finite scans."""
+    params = [parameter for parameter in parameters if parameter.grad is not None]
+    if not params:
         return 0.0
-    total_sq = torch.zeros((), device=grads[0].device)
-    for grad in grads:
-        if not bool(torch.isfinite(grad).all().item()):
+    total_sq = 0.0
+    for parameter in params:
+        grad = parameter.grad.detach()
+        if grad.is_sparse:
+            grad = grad.coalesce().values()
+        grad_norm = torch.linalg.vector_norm(grad, 2)
+        grad_norm_value = float(grad_norm.cpu())
+        if not math.isfinite(grad_norm_value):
             return float("nan")
-        total_sq = total_sq + grad.float().pow(2).sum()
-    total = torch.sqrt(total_sq)
-    total_value = float(total.detach().item())
-    if not math.isfinite(total_value):
-        return total_value
-    scale = float(max_norm) / (total_value + 1e-6)
-    if scale < 1.0:
-        for grad in grads:
-            grad.mul_(scale)
-    return total_value
+        total_sq += grad_norm_value * grad_norm_value
+
+    total_norm = math.sqrt(total_sq)
+    if total_norm > max_norm:
+        scale = float(max_norm) / (total_norm + 1e-12)
+        for parameter in params:
+            parameter.grad.mul_(scale)
+    return total_norm
+
+
+def cuda_sync_debug(args: argparse.Namespace, device: torch.device) -> None:
+    if bool(getattr(args, "cuda_sync_debug", False)) and device.type == "cuda":
+        torch.cuda.synchronize(device)
 
 
 def action_count_context(action_label: torch.Tensor) -> dict[str, int]:
@@ -201,6 +186,8 @@ def action_count_context(action_label: torch.Tensor) -> dict[str, int]:
 def unpack_batch(
     batch: tuple[torch.Tensor, ...],
     device: torch.device,
+    *,
+    include_hidden_tiles: bool = True,
 ) -> tuple[dict[str, torch.Tensor], tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
     (
         visible_tiles,
@@ -215,7 +202,22 @@ def unpack_batch(
         action_label,
         claim_label,
         discard_label,
-    ) = [tensor.to(device) for tensor in batch]
+    ) = batch
+    visible_tiles = visible_tiles.to(device, non_blocking=True)
+    game_features = game_features.to(device, non_blocking=True)
+    rewards = rewards.to(device, non_blocking=True)
+    previous_actions = previous_actions.to(device, non_blocking=True)
+    sub_visible_tiles = sub_visible_tiles.to(device, non_blocking=True)
+    sub_game_features = sub_game_features.to(device, non_blocking=True)
+    sub_rewards = sub_rewards.to(device, non_blocking=True)
+    sub_previous_actions = sub_previous_actions.to(device, non_blocking=True)
+    if include_hidden_tiles:
+        hidden_tiles = hidden_tiles.to(device, non_blocking=True)
+    else:
+        hidden_tiles = None
+    action_label = action_label.to(device, non_blocking=True)
+    claim_label = claim_label.to(device, non_blocking=True)
+    discard_label = discard_label.to(device, non_blocking=True)
     inputs = {
         "visible_tiles": visible_tiles,
         "game_features": game_features,
@@ -225,8 +227,9 @@ def unpack_batch(
         "sub_game_features": sub_game_features,
         "sub_rewards": sub_rewards,
         "sub_previous_actions": sub_previous_actions,
-        "hidden_tiles": hidden_tiles,
     }
+    if include_hidden_tiles:
+        inputs["hidden_tiles"] = hidden_tiles
     return inputs, (action_label, claim_label, discard_label)
 
 
@@ -358,7 +361,7 @@ def evaluate_model(
     metric_sums: dict[str, float] = {}
     with torch.no_grad():
         for batch in loader:
-            inputs, labels = unpack_batch(batch, device)
+            inputs, labels = unpack_batch(batch, device, include_hidden_tiles=False)
             outputs = model(**inputs)
             merge_metric_sums(metric_sums, batch_metric_sums(outputs, labels))
     return finalize_metric_sums(metric_sums)
@@ -367,9 +370,12 @@ def evaluate_model(
 def train(args: argparse.Namespace) -> dict:
     seed = int(getattr(args, "seed", 0) or 0)
     configure_seed(seed)
+    configure_cuda_device(getattr(args, "device", None))
     grad_clip = float(getattr(args, "grad_clip", 0.0) or 0.0)
     fail_on_nonfinite = bool(getattr(args, "fail_on_nonfinite", False))
     force_math_sdp = bool(getattr(args, "force_math_sdp", False))
+    max_steps = int(getattr(args, "max_steps", 0) or 0)
+    sync_debug = bool(getattr(args, "cuda_sync_debug", False))
     cuda_attention = configure_cuda_attention(force_math_sdp=force_math_sdp)
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     config = TjongConfig(
@@ -379,11 +385,7 @@ def train(args: argparse.Namespace) -> dict:
         dropout=args.dropout,
     )
     base_model = TjongNetwork(config)
-    model: nn.Module
-    if args.data_parallel and device.type == "cuda" and torch.cuda.device_count() > 1:
-        model = nn.DataParallel(base_model).to(device)
-    else:
-        model = base_model.to(device)
+    model: nn.Module = base_model.to(device)
     train_payload = load_tensor_payload(Path(args.train_pt), expected_encoding_version=args.require_encoding_version)
     encoding_schema = train_payload.get("encoding_schema") or tensor_encoding_schema()
     checkpoint_encoding_version = encoding_schema.get("version") or args.require_encoding_version
@@ -401,6 +403,8 @@ def train(args: argparse.Namespace) -> dict:
         "shuffle_seed_mode": "seed_plus_epoch",
         "grad_clip": grad_clip,
         "fail_on_nonfinite": fail_on_nonfinite,
+        "cuda_sync_debug": sync_debug,
+        "max_steps": max_steps,
         "force_math_sdp": force_math_sdp,
         "cuda_attention": cuda_attention,
         "required_encoding_version": args.require_encoding_version,
@@ -427,12 +431,15 @@ def train(args: argparse.Namespace) -> dict:
             global_batch = int(metrics["epochs"][-1].get("global_batch", 0) or 0)
     metrics["grad_clip"] = grad_clip
     metrics["fail_on_nonfinite"] = fail_on_nonfinite
+    metrics["cuda_sync_debug"] = sync_debug
+    metrics["max_steps"] = max_steps
     metrics["force_math_sdp"] = force_math_sdp
     metrics["cuda_attention"] = cuda_attention
 
     checkpoint_every_batches = int(getattr(args, "checkpoint_every_batches", 0) or 0)
     checkpoint_at_global_batches = parse_batch_set(getattr(args, "checkpoint_at_global_batches", None))
     checkpoint_at_epoch_batches = parse_batch_set(getattr(args, "checkpoint_at_epoch_batches", None))
+    stop_after_epoch = False
     for epoch in range(start_epoch, args.epochs + 1):
         model.train()
         total_loss = 0.0
@@ -452,10 +459,12 @@ def train(args: argparse.Namespace) -> dict:
         for batch in loader:
             batches += 1
             global_batch += 1
-            inputs, labels = unpack_batch(batch, device)
+            inputs, labels = unpack_batch(batch, device, include_hidden_tiles=False)
             optimizer.zero_grad(set_to_none=True)
             outputs = model(**inputs)
+            cuda_sync_debug(args, device)
             loss = supervised_loss(outputs, labels)
+            cuda_sync_debug(args, device)
             if fail_on_nonfinite and not torch.isfinite(loss).item():
                 raise FloatingPointError(
                     "non-finite supervised loss at "
@@ -463,35 +472,19 @@ def train(args: argparse.Namespace) -> dict:
                     f"loss={loss.detach().item()} action_counts={action_count_context(labels[0])}"
                 )
             loss.backward()
+            cuda_sync_debug(args, device)
             if grad_clip > 0.0:
                 grad_norm = safe_clip_grad_norm_(trainable_parameters, grad_clip)
                 if math.isfinite(grad_norm):
                     max_grad_norm_before_clip = max(max_grad_norm_before_clip, grad_norm)
                 elif fail_on_nonfinite:
-                    bad_grads = first_nonfinite_gradients(model)
                     raise FloatingPointError(
                         "non-finite supervised gradients before clipping at "
                         f"epoch={epoch} batch={batches} global_batch={global_batch} "
-                        f"grad_norm={grad_norm} bad_gradients={bad_grads} "
+                        f"grad_norm={grad_norm} "
                         f"action_counts={action_count_context(labels[0])}"
                     )
-            elif fail_on_nonfinite:
-                bad_grads = first_nonfinite_gradients(model)
-                if bad_grads:
-                    raise FloatingPointError(
-                        "non-finite supervised gradients at "
-                        f"epoch={epoch} batch={batches} global_batch={global_batch} "
-                        f"bad_gradients={bad_grads} action_counts={action_count_context(labels[0])}"
-                    )
             optimizer.step()
-            if fail_on_nonfinite:
-                bad_parameters = first_nonfinite_parameters(model)
-                if bad_parameters:
-                    raise FloatingPointError(
-                        "non-finite supervised parameters after optimizer step at "
-                        f"epoch={epoch} batch={batches} global_batch={global_batch} "
-                        f"bad_parameters={bad_parameters} action_counts={action_count_context(labels[0])}"
-                    )
             batch_size = int(labels[0].numel())
             total_loss += float(loss.item()) * batch_size
             total += batch_size
@@ -513,6 +506,9 @@ def train(args: argparse.Namespace) -> dict:
                     path=checkpoint_dir / f"batch_{global_batch:08d}.pt",
                     include_training_state=True,
                 )
+            if max_steps and global_batch >= max_steps:
+                stop_after_epoch = True
+                break
         epoch_metrics = {
             "epoch": epoch,
             "batches": batches,
@@ -557,6 +553,8 @@ def train(args: argparse.Namespace) -> dict:
                 path=checkpoint_dir / "latest.pt",
                 include_training_state=True,
             )
+        if stop_after_epoch:
+            break
     if args.checkpoint_out:
         Path(args.checkpoint_out).parent.mkdir(parents=True, exist_ok=True)
         save_supervised_checkpoint(
@@ -630,6 +628,8 @@ def main() -> int:
     parser.add_argument("--grad-clip", type=float, default=0.0)
     parser.add_argument("--force-math-sdp", action="store_true")
     parser.add_argument("--fail-on-nonfinite", action="store_true")
+    parser.add_argument("--cuda-sync-debug", action="store_true")
+    parser.add_argument("--max-steps", type=int, default=0)
     args = parser.parse_args()
     train(args)
     return 0
