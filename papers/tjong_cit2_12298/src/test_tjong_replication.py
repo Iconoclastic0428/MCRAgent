@@ -1599,6 +1599,131 @@ def test_botzone_tensorizer_smoke_with_post_claim_discard():
     assert examples[2].discard_label == tile_id("T1")
 
 
+def test_tensorizer_rejects_under_eight_can_hu_values():
+    state = ReplayState.from_record({"initdata": {"quan": 0, "walltiles": " ".join(TILE_NAMES * 4)}})
+    state.apply_display(
+        {
+            "action": "DEAL",
+            "hand": [
+                ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+                ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+                ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+                ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+            ],
+        }
+    )
+
+    under_threshold = action_type_mask(0, ["2", "W1"], state, {"canHu": [7, -4, -4, -4]})
+    at_threshold = action_type_mask(0, ["2", "W1"], state, {"canHu": [8, -4, -4, -4]})
+
+    assert under_threshold[ACTION_TO_INDEX["HU"]] == 0.0
+    assert under_threshold[ACTION_TO_INDEX["DISCARD"]] == 1.0
+    assert at_threshold[ACTION_TO_INDEX["HU"]] == 1.0
+
+
+def test_tensorizer_keeps_sampled_single_action_discards():
+    record = {
+        "match_id": "single-discard-sampling",
+        "scores": {"0": 24, "1": -8, "2": -8, "3": -8},
+        "initdata": {"quan": 0, "walltiles": " ".join(TILE_NAMES * 4)},
+        "logs": [
+            {
+                "output": {
+                    "content": {"0": "0 0 0", "1": "0 1 0", "2": "0 2 0", "3": "0 3 0"},
+                    "display": {"action": "INIT", "quan": 0, "tileCnt": [21, 21, 21, 21]},
+                }
+            },
+            {"0": {"raw": "PASS"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+            {
+                "output": {
+                    "content": {
+                        "0": "1 0 0 0 0 W1 W2 W3 W4 W5 W6 W7 W8 W9 T1 T2 T3 T4",
+                        "1": "1 0 0 0 0 W1 W2 W3 W4 W5 W6 W7 W8 W9 T1 T2 T3 T4",
+                        "2": "1 0 0 0 0 W1 W2 W3 W4 W5 W6 W7 W8 W9 T1 T2 T3 T4",
+                        "3": "1 0 0 0 0 W1 W2 W3 W4 W5 W6 W7 W8 W9 T1 T2 T3 T4",
+                    },
+                    "display": {
+                        "action": "DEAL",
+                        "hand": [
+                            ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+                            ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+                            ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+                            ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+                        ],
+                        "tileCnt": [21, 21, 21, 21],
+                    },
+                }
+            },
+            {"0": {"raw": "PASS"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+        ],
+    }
+    for tile in ("W1", "W2", "W3"):
+        record["logs"].extend(
+            [
+                {
+                    "output": {
+                        "content": {"0": f"2 {tile}", "1": f"3 0 DRAW {tile}", "2": f"3 0 DRAW {tile}", "3": f"3 0 DRAW {tile}"},
+                        "display": {
+                            "action": "DRAW",
+                            "player": 0,
+                            "tile": tile,
+                            "canHu": [-4, -4, -4, -4],
+                            "tileCnt": [20, 21, 21, 21],
+                        },
+                    }
+                },
+                {"0": {"raw": f"PLAY {tile}"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+                {
+                    "output": {
+                        "content": {
+                            "0": f"3 0 PLAY {tile}",
+                            "1": f"3 0 PLAY {tile}",
+                            "2": f"3 0 PLAY {tile}",
+                            "3": f"3 0 PLAY {tile}",
+                        },
+                        "display": {
+                            "action": "PLAY",
+                            "player": 0,
+                            "tile": tile,
+                            "canHu": [-4, -4, -4, -4],
+                            "tileCnt": [20, 21, 21, 21],
+                        },
+                    }
+                },
+                {"0": {"raw": "PASS"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+            ]
+        )
+    record["logs"].extend(
+        [
+            {
+                "output": {
+                    "content": {"0": "2 W4", "1": "3 0 DRAW W4", "2": "3 0 DRAW W4", "3": "3 0 DRAW W4"},
+                    "display": {
+                        "action": "DRAW",
+                        "player": 0,
+                        "tile": "W4",
+                        "canHu": [8, -4, -4, -4],
+                        "tileCnt": [20, 21, 21, 21],
+                    },
+                }
+            },
+            {"0": {"raw": "HU"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+        ]
+    )
+
+    examples, stats = tensorize_record(record, single_action_discard_stride=2)
+
+    assert stats["single_action_discard_seen"] == 3
+    assert stats["single_action_discard_kept"] == 2
+    assert stats["single_action_discard_sampled_out"] == 1
+    assert stats["action:DISCARD"] == 2
+    assert stats["action:HU"] == 1
+    assert stats["action:DISCARD"] > stats["action:HU"]
+    action_counts = Counter(example.action_label for example in examples)
+    assert action_counts[ACTION_TO_INDEX["DISCARD"]] == 2
+    assert action_counts[ACTION_TO_INDEX["HU"]] == 1
+
+
 def test_populate_fan_backward_rewards_with_explicit_fan_items():
     record = {
         "match_id": "fan-smoke",

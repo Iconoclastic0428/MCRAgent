@@ -317,6 +317,7 @@ def tensorize_file(
     max_matches: int | None = None,
     memory_len: int = 4,
     include_single_action: bool = False,
+    single_action_discard_stride: int = 32,
     streaming: bool = False,
     compact_metadata: bool = False,
     progress_every: int = 0,
@@ -330,6 +331,7 @@ def tensorize_file(
             max_matches=max_matches,
             memory_len=memory_len,
             include_single_action=include_single_action,
+            single_action_discard_stride=single_action_discard_stride,
             compact_metadata=compact_metadata,
             progress_every=progress_every,
         )
@@ -349,6 +351,7 @@ def tensorize_file(
                     record,
                     memory_len=memory_len,
                     include_single_action=include_single_action,
+                    single_action_discard_stride=single_action_discard_stride,
                 )
             except Exception as exc:
                 stats[f"record_error:{type(exc).__name__}"] += 1
@@ -391,6 +394,7 @@ def tensorize_file(
         "encoding_schema": encoding_schema,
         "memory_len": memory_len,
         "include_single_action": include_single_action,
+        "single_action_discard_stride": int(single_action_discard_stride),
         "assumptions": [
             "Chow claim indices use suit * 21 + (middle_rank - 2) * 3 + (offer_position - 1), matching the public Lawlorentz/Botzone action layout.",
             "The policy-visible remaining-tile rows are live tile counts from the acting player's visible perspective.",
@@ -414,6 +418,7 @@ def tensorize_file_streaming(
     max_matches: int | None = None,
     memory_len: int = 4,
     include_single_action: bool = False,
+    single_action_discard_stride: int = 32,
     compact_metadata: bool = False,
     progress_every: int = 0,
 ) -> dict[str, Any]:
@@ -429,6 +434,7 @@ def tensorize_file_streaming(
         max_matches=max_matches,
         memory_len=memory_len,
         include_single_action=include_single_action,
+        single_action_discard_stride=single_action_discard_stride,
         progress_every=progress_every,
     )
     total_examples = int(stats.get("examples", 0))
@@ -448,6 +454,7 @@ def tensorize_file_streaming(
                     record,
                     memory_len=memory_len,
                     include_single_action=include_single_action,
+                    single_action_discard_stride=single_action_discard_stride,
                 )
             except Exception as exc:
                 second_stats[f"record_error:{type(exc).__name__}"] += 1
@@ -499,6 +506,7 @@ def tensorize_file_streaming(
         "encoding_schema": encoding_schema,
         "memory_len": memory_len,
         "include_single_action": include_single_action,
+        "single_action_discard_stride": int(single_action_discard_stride),
         "streaming": True,
         "compact_metadata": bool(compact_metadata),
         "assumptions": [
@@ -521,6 +529,7 @@ def _scan_tensorize_stats(
     max_matches: int | None,
     memory_len: int,
     include_single_action: bool,
+    single_action_discard_stride: int,
     progress_every: int,
 ) -> Counter[str]:
     stats: Counter[str] = Counter()
@@ -536,6 +545,7 @@ def _scan_tensorize_stats(
                     record,
                     memory_len=memory_len,
                     include_single_action=include_single_action,
+                    single_action_discard_stride=single_action_discard_stride,
                 )
             except Exception as exc:
                 stats[f"record_error:{type(exc).__name__}"] += 1
@@ -569,6 +579,7 @@ def tensorize_record(
     *,
     memory_len: int = 4,
     include_single_action: bool = False,
+    single_action_discard_stride: int = 32,
 ) -> tuple[list[EncodedExample], Counter[str]]:
     state = ReplayState.from_record(record)
     histories: list[deque[MemoryFrame]] = [deque(maxlen=memory_len - 1) for _ in range(4)]
@@ -615,8 +626,16 @@ def tensorize_record(
                 continue
             action_mask = action_type_mask(player, request_tokens, state, display)
             if not include_single_action and sum(1 for value in action_mask if value > 0.0) <= 1:
-                stats["single_action_mask"] += 1
-                continue
+                if label[0] == DISCARD_ACTION and single_action_discard_stride > 0:
+                    stats["single_action_discard_seen"] += 1
+                    if (stats["single_action_discard_seen"] - 1) % int(single_action_discard_stride) == 0:
+                        stats["single_action_discard_kept"] += 1
+                    else:
+                        stats["single_action_discard_sampled_out"] += 1
+                        continue
+                else:
+                    stats["single_action_mask"] += 1
+                    continue
             if action_mask[label[0]] <= 0.0:
                 stats[f"label_outside_mask:{ACTION_NAMES[label[0]]}"] += 1
                 continue
@@ -1144,7 +1163,7 @@ def _display_player(display: dict[str, Any]) -> int | None:
 
 def _can_hu_value(value: Any) -> bool:
     try:
-        return int(value) >= 0
+        return int(value) >= 8
     except (TypeError, ValueError):
         return False
 
@@ -1164,6 +1183,7 @@ def main() -> int:
     parser.add_argument("--max-matches", type=int, default=None)
     parser.add_argument("--memory-len", type=int, default=4)
     parser.add_argument("--include-single-action", action="store_true")
+    parser.add_argument("--single-action-discard-stride", type=int, default=32)
     parser.add_argument("--streaming", action="store_true")
     parser.add_argument("--compact-metadata", action="store_true")
     parser.add_argument("--progress-every", type=int, default=0)
@@ -1176,6 +1196,7 @@ def main() -> int:
         max_matches=args.max_matches,
         memory_len=args.memory_len,
         include_single_action=args.include_single_action,
+        single_action_discard_stride=args.single_action_discard_stride,
         streaming=args.streaming,
         compact_metadata=args.compact_metadata,
         progress_every=args.progress_every,

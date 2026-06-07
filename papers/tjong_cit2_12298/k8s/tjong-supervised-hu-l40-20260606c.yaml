@@ -76,8 +76,8 @@ spec:
                 --paper-root papers/tjong_cit2_12298 \
                 --summary-out runs/tjong_paper_compliance_hu_20260606c.json
 
-              DATA_TAG=20260606c
-              RUN_TAG="${TJONG_RUN_TAG:-20260607b_single_gpu}"
+              DATA_TAG=20260607c
+              RUN_TAG="${TJONG_RUN_TAG:-20260607c_single_gpu}"
               RAW_TAG=20260606b
               TRAIN_PT="${TJONG_TRAIN_PT:-data/processed/tjong/tziakcha_all_sources_botzone_hu_${DATA_TAG}_tensorized.pt}"
               EVAL_PT="${TJONG_EVAL_PT:-${TRAIN_PT}}"
@@ -112,20 +112,29 @@ spec:
               tensorize = json.loads(Path(os.environ["TENSORIZE_SUMMARY"]).read_text(encoding="utf-8"))
               audit = json.loads(Path(os.environ["HU_AUDIT"]).read_text(encoding="utf-8"))
               stats = tensorize.get("stats") or {}
+              action_hu = int(stats.get("action:HU", 0))
+              action_discard = int(stats.get("action:DISCARD", 0))
+              label_outside_hu = int(stats.get("label_outside_mask:HU", 0) or 0)
+              discard_kept = int(stats.get("single_action_discard_kept", 0))
               assert tensorize.get("streaming") is True, tensorize
               assert tensorize.get("compact_metadata") is True, tensorize
               assert int(audit.get("hu_response_count", 0)) > 0, audit
               assert int(audit.get("bad_hu_count", -1)) == 0, audit
-              assert int(stats.get("action:HU", 0)) > 0, tensorize
-              assert int(stats.get("label_outside_mask:HU", 0) or 0) == 0, tensorize
+              assert int(tensorize.get("single_action_discard_stride", 0)) > 0, tensorize
+              assert action_hu > 0, tensorize
+              assert label_outside_hu == 0, tensorize
+              assert discard_kept > 0, tensorize
+              assert action_discard > action_hu, tensorize
               assert (tensorize.get("encoding_schema") or {}).get("version") == os.environ["TENSOR_ENCODING_VERSION"], tensorize
               print(
                   "supervised_hu_preflight",
                   {
                       "hu_response_count": int(audit.get("hu_response_count", 0)),
                       "examples": int(tensorize.get("examples", 0)),
-                      "action_HU": int(stats.get("action:HU", 0)),
-                      "label_outside_mask_HU": int(stats.get("label_outside_mask:HU", 0) or 0),
+                      "action_DISCARD": action_discard,
+                      "action_HU": action_hu,
+                      "label_outside_mask_HU": label_outside_hu,
+                      "single_action_discard_kept": discard_kept,
                   },
                   flush=True,
               )
