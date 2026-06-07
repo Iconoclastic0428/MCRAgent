@@ -44,6 +44,7 @@ from tjong_replication.populate_fan_backward_rewards import infer_loser, populat
 from tjong_replication.plot_supervised_progress import load_epoch_metrics, summarize_epochs  # noqa: E402
 from tjong_replication.tensorize_botzone import (  # noqa: E402
     HIDDEN_TILE_ROW_NAMES,
+    SHARD_INDEX_FORMAT,
     TENSOR_ENCODING_VERSION,
     ReplayState,
     action_type_mask,
@@ -60,6 +61,7 @@ from tjong_replication.train_ppo import (  # noqa: E402
     validate_rollout_reward_source,
 )
 from tjong_replication.train_supervised import (  # noqa: E402
+    ShardedTensorDataset,
     batch_metric_sums,
     evaluate_model,
     finalize_metric_sums,
@@ -1722,6 +1724,187 @@ def test_tensorizer_keeps_sampled_single_action_discards():
     action_counts = Counter(example.action_label for example in examples)
     assert action_counts[ACTION_TO_INDEX["DISCARD"]] == 2
     assert action_counts[ACTION_TO_INDEX["HU"]] == 1
+
+
+def _single_action_discard_hu_record(match_id: str) -> dict:
+    record = {
+        "match_id": match_id,
+        "scores": {"0": 24, "1": -8, "2": -8, "3": -8},
+        "initdata": {"quan": 0, "walltiles": " ".join(TILE_NAMES * 4)},
+        "logs": [
+            {
+                "output": {
+                    "content": {"0": "0 0 0", "1": "0 1 0", "2": "0 2 0", "3": "0 3 0"},
+                    "display": {"action": "INIT", "quan": 0, "tileCnt": [21, 21, 21, 21]},
+                }
+            },
+            {"0": {"raw": "PASS"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+            {
+                "output": {
+                    "content": {
+                        "0": "1 0 0 0 0 W1 W2 W3 W4 W5 W6 W7 W8 W9 T1 T2 T3 T4",
+                        "1": "1 0 0 0 0 W1 W2 W3 W4 W5 W6 W7 W8 W9 T1 T2 T3 T4",
+                        "2": "1 0 0 0 0 W1 W2 W3 W4 W5 W6 W7 W8 W9 T1 T2 T3 T4",
+                        "3": "1 0 0 0 0 W1 W2 W3 W4 W5 W6 W7 W8 W9 T1 T2 T3 T4",
+                    },
+                    "display": {
+                        "action": "DEAL",
+                        "hand": [
+                            ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+                            ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+                            ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+                            ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+                        ],
+                        "tileCnt": [21, 21, 21, 21],
+                    },
+                }
+            },
+            {"0": {"raw": "PASS"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+        ],
+    }
+    for tile in ("W1", "W2", "W3"):
+        record["logs"].extend(
+            [
+                {
+                    "output": {
+                        "content": {"0": f"2 {tile}", "1": f"3 0 DRAW {tile}", "2": f"3 0 DRAW {tile}", "3": f"3 0 DRAW {tile}"},
+                        "display": {
+                            "action": "DRAW",
+                            "player": 0,
+                            "tile": tile,
+                            "canHu": [-4, -4, -4, -4],
+                            "tileCnt": [20, 21, 21, 21],
+                        },
+                    }
+                },
+                {"0": {"raw": f"PLAY {tile}"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+                {
+                    "output": {
+                        "content": {
+                            "0": f"3 0 PLAY {tile}",
+                            "1": f"3 0 PLAY {tile}",
+                            "2": f"3 0 PLAY {tile}",
+                            "3": f"3 0 PLAY {tile}",
+                        },
+                        "display": {
+                            "action": "PLAY",
+                            "player": 0,
+                            "tile": tile,
+                            "canHu": [-4, -4, -4, -4],
+                            "tileCnt": [20, 21, 21, 21],
+                        },
+                    }
+                },
+                {"0": {"raw": "PASS"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+            ]
+        )
+    record["logs"].extend(
+        [
+            {
+                "output": {
+                    "content": {"0": "2 W4", "1": "3 0 DRAW W4", "2": "3 0 DRAW W4", "3": "3 0 DRAW W4"},
+                    "display": {
+                        "action": "DRAW",
+                        "player": 0,
+                        "tile": "W4",
+                        "canHu": [8, -4, -4, -4],
+                        "tileCnt": [20, 21, 21, 21],
+                    },
+                }
+            },
+            {"0": {"raw": "HU"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+        ]
+    )
+    return record
+
+
+def test_sharded_tensorizer_keeps_all_discards_and_trains_from_index():
+    with tempfile.TemporaryDirectory(dir=ROOT) as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        raw_path = tmp_path / "raw.jsonl"
+        shard_dir = tmp_path / "shards"
+        index_path = shard_dir / "index.json"
+        metrics_path = tmp_path / "metrics.json"
+        checkpoint_path = tmp_path / "supervised.pt"
+        raw_path.write_text(
+            "\n".join(
+                json.dumps(_single_action_discard_hu_record(f"all-discard-{index}"))
+                for index in range(2)
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        summary = tensorize_file(
+            raw_path,
+            None,
+            shard_dir=shard_dir,
+            shard_index_out=index_path,
+            compact_metadata=True,
+            compact_storage=True,
+            shard_max_examples=7,
+            single_action_discard_stride=1,
+        )
+        loaded_summary = json.loads(index_path.read_text(encoding="utf-8"))
+        first_shard = torch.load(shard_dir / summary["shards"][0]["path"], map_location="cpu")
+        dataset = load_tensor_dataset(index_path, expected_encoding_version=TENSOR_ENCODING_VERSION)
+
+        assert summary["format"] == SHARD_INDEX_FORMAT
+        assert loaded_summary["format"] == SHARD_INDEX_FORMAT
+        assert summary["sharded"] is True
+        assert summary["compact_storage"] is True
+        assert summary["single_action_discard_stride"] == 1
+        assert summary["stats"]["single_action_discard_seen"] == 6
+        assert summary["stats"]["single_action_discard_kept"] == 6
+        assert summary["stats"].get("single_action_discard_sampled_out", 0) == 0
+        assert summary["stats"]["action:DISCARD"] == 6
+        assert summary["stats"]["action:HU"] == 2
+        assert summary["stats"]["action:DISCARD"] > summary["stats"]["action:HU"]
+        assert len(summary["shards"]) == 2
+        assert all(len(shard["sha256"]) == 64 for shard in summary["shards"])
+        assert first_shard["visible_tiles"].dtype == torch.uint8
+        assert first_shard["action_label"].dtype == torch.uint8
+        assert "rewards" not in first_shard
+        assert isinstance(dataset, ShardedTensorDataset)
+        assert len(dataset) == summary["examples"] == 14
+
+        args = argparse.Namespace(
+            train_pt=index_path,
+            checkpoint_out=checkpoint_path,
+            metrics_out=metrics_path,
+            epochs=1,
+            batch_size=2,
+            lr=1e-4,
+            d_model=32,
+            n_heads=4,
+            ffn_dim=64,
+            dropout=0.0,
+            num_workers=0,
+            device="cpu",
+            data_parallel=False,
+            seed=0,
+            require_encoding_version=TENSOR_ENCODING_VERSION,
+            require_paper_config=True,
+            checkpoint_every_epochs=0,
+            checkpoint_dir=None,
+            resume_checkpoint=None,
+            metrics_jsonl=None,
+            checkpoint_every_batches=0,
+            checkpoint_at_global_batches=None,
+            checkpoint_at_epoch_batches=None,
+            grad_clip=0.5,
+            force_math_sdp=False,
+            fail_on_nonfinite=True,
+            cuda_sync_debug=False,
+            max_steps=1,
+        )
+        metrics = train_supervised(args)
+
+        assert metrics["train_data_format"] == SHARD_INDEX_FORMAT
+        assert metrics["train_examples"] == 14
+        assert metrics["train_shard_count"] == 2
+        assert metrics["epochs"][-1]["batches"] == 1
+        assert metrics["epochs"][-1]["action_count"] == 2
 
 
 def test_populate_fan_backward_rewards_with_explicit_fan_items():

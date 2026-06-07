@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import math
 from pathlib import Path
 
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 from .actions import ACTION_NAMES, ACTION_TO_INDEX, CLAIM_ACTION_NAMES
 from .model import TjongConfig, TjongNetwork
-from .tensorize_botzone import TENSOR_ENCODING_VERSION, tensor_encoding_schema
+from .tensorize_botzone import SHARD_INDEX_FORMAT, TENSOR_ENCODING_VERSION, tensor_encoding_schema
 from .tiles import TILE_NAMES
 
 CLAIM_ACTION_INDICES = tuple(ACTION_TO_INDEX[name] for name in ("CHOW", "PONG", "MINGKONG", "BUKONG", "ANKONG"))
@@ -32,12 +33,88 @@ def validate_tensor_encoding(data: dict, *, expected_version: str | None = None,
 
 
 def load_tensor_payload(path: Path, *, expected_encoding_version: str | None = None) -> dict:
-    data = torch.load(path, map_location="cpu")
+    path = Path(path)
+    if path.suffix.lower() == ".json":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("format") != SHARD_INDEX_FORMAT:
+            raise ValueError(f"unsupported tensor index format in {path}: {data.get('format')!r}")
+        data["_index_path"] = str(path)
+    else:
+        data = torch.load(path, map_location="cpu")
     validate_tensor_encoding(data, expected_version=expected_encoding_version, path=path)
     return data
 
 
-def tensor_dataset_from_payload(data: dict) -> TensorDataset:
+class ShardedTensorDataset(Dataset):
+    def __init__(self, index: dict, *, index_path: Path):
+        self.index = index
+        self.index_path = Path(index_path)
+        self.shards = list(index.get("shards") or [])
+        self.cumulative_examples: list[int] = []
+        total = 0
+        for shard in self.shards:
+            total += int(shard.get("examples", 0))
+            self.cumulative_examples.append(total)
+        expected = int(index.get("examples", total) or 0)
+        if expected != total:
+            raise ValueError(f"sharded index example mismatch: index={expected} shards={total}")
+        self._cached_shard_index: int | None = None
+        self._cached_shard_dataset: TensorDataset | None = None
+
+    def __len__(self) -> int:
+        return self.cumulative_examples[-1] if self.cumulative_examples else 0
+
+    @property
+    def shard_count(self) -> int:
+        return len(self.shards)
+
+    def shard_path(self, shard_index: int) -> Path:
+        raw_path = Path(str(self.shards[shard_index]["path"]))
+        if raw_path.is_absolute():
+            return raw_path
+        index_relative = self.index_path.parent / raw_path
+        if index_relative.exists():
+            return index_relative
+        shard_dir = self.index.get("shard_dir")
+        if shard_dir:
+            return Path(str(shard_dir)) / raw_path
+        return index_relative
+
+    def load_shard_payload(self, shard_index: int) -> dict:
+        path = self.shard_path(shard_index)
+        payload = torch.load(path, map_location="cpu")
+        validate_tensor_encoding(payload, expected_version=(self.index.get("encoding_schema") or {}).get("version"), path=path)
+        expected_examples = int(self.shards[shard_index].get("examples", 0))
+        observed_examples = int(payload.get("examples", payload["visible_tiles"].shape[0]))
+        if expected_examples != observed_examples:
+            raise ValueError(
+                f"shard example mismatch in {path}: index={expected_examples} payload={observed_examples}"
+            )
+        return payload
+
+    def load_shard_dataset(self, shard_index: int) -> TensorDataset:
+        if self._cached_shard_index == shard_index and self._cached_shard_dataset is not None:
+            return self._cached_shard_dataset
+        dataset = tensor_dataset_from_payload(self.load_shard_payload(shard_index))
+        self._cached_shard_index = shard_index
+        self._cached_shard_dataset = dataset
+        return dataset
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, ...]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        shard_index = bisect.bisect_right(self.cumulative_examples, index)
+        previous_total = 0 if shard_index == 0 else self.cumulative_examples[shard_index - 1]
+        shard_dataset = self.load_shard_dataset(shard_index)
+        return shard_dataset[index - previous_total]
+
+
+def tensor_dataset_from_payload(data: dict) -> Dataset:
+    if data.get("format") == SHARD_INDEX_FORMAT:
+        index_path = Path(str(data.get("_index_path") or ".")).resolve()
+        return ShardedTensorDataset(data, index_path=index_path)
     required = ["visible_tiles", "game_features", "action_label", "claim_label", "discard_label"]
     missing = [key for key in required if key not in data]
     if missing:
@@ -53,23 +130,69 @@ def tensor_dataset_from_payload(data: dict) -> TensorDataset:
         torch.zeros(data["visible_tiles"].shape[0], TjongConfig.hidden_tile_rows, TjongConfig.tile_types),
     )
     return TensorDataset(
-        data["visible_tiles"].float(),
-        data["game_features"].float(),
-        rewards.float(),
-        previous_actions.long(),
-        sub_visible_tiles.float(),
-        sub_game_features.float(),
-        sub_rewards.float(),
-        sub_previous_actions.long(),
-        hidden_tiles.float(),
-        data["action_label"].long(),
-        data["claim_label"].long(),
-        data["discard_label"].long(),
+        data["visible_tiles"],
+        data["game_features"],
+        rewards,
+        previous_actions,
+        sub_visible_tiles,
+        sub_game_features,
+        sub_rewards,
+        sub_previous_actions,
+        hidden_tiles,
+        data["action_label"],
+        data["claim_label"],
+        data["discard_label"],
     )
 
 
-def load_tensor_dataset(path: Path, *, expected_encoding_version: str | None = None) -> TensorDataset:
+def load_tensor_dataset(path: Path, *, expected_encoding_version: str | None = None) -> Dataset:
     return tensor_dataset_from_payload(load_tensor_payload(path, expected_encoding_version=expected_encoding_version))
+
+
+def dataset_data_format(dataset: Dataset) -> str:
+    return SHARD_INDEX_FORMAT if isinstance(dataset, ShardedTensorDataset) else "monolithic"
+
+
+def iter_supervised_batches(
+    dataset: Dataset,
+    *,
+    batch_size: int,
+    shuffle: bool,
+    num_workers: int = 0,
+    seed: int | None = None,
+):
+    if isinstance(dataset, ShardedTensorDataset):
+        shard_order = list(range(dataset.shard_count))
+        if shuffle and shard_order:
+            generator = torch.Generator()
+            generator.manual_seed(int(seed or 0))
+            shard_order = torch.randperm(len(shard_order), generator=generator).tolist()
+        for order_position, shard_index in enumerate(shard_order):
+            shard_dataset = dataset.load_shard_dataset(int(shard_index))
+            loader_generator = None
+            if shuffle:
+                loader_generator = torch.Generator()
+                loader_generator.manual_seed(int(seed or 0) + int(shard_index) + order_position * 1009)
+            yield from DataLoader(
+                shard_dataset,
+                batch_size=batch_size,
+                shuffle=shuffle,
+                num_workers=num_workers,
+                generator=loader_generator,
+            )
+        return
+
+    loader_generator = None
+    if shuffle:
+        loader_generator = torch.Generator()
+        loader_generator.manual_seed(int(seed or 0))
+    yield from DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        generator=loader_generator,
+    )
 
 
 def write_metrics_file(path: Path, metrics: dict) -> None:
@@ -203,21 +326,21 @@ def unpack_batch(
         claim_label,
         discard_label,
     ) = batch
-    visible_tiles = visible_tiles.to(device, non_blocking=True)
-    game_features = game_features.to(device, non_blocking=True)
-    rewards = rewards.to(device, non_blocking=True)
-    previous_actions = previous_actions.to(device, non_blocking=True)
-    sub_visible_tiles = sub_visible_tiles.to(device, non_blocking=True)
-    sub_game_features = sub_game_features.to(device, non_blocking=True)
-    sub_rewards = sub_rewards.to(device, non_blocking=True)
-    sub_previous_actions = sub_previous_actions.to(device, non_blocking=True)
+    visible_tiles = visible_tiles.to(device, non_blocking=True).float()
+    game_features = game_features.to(device, non_blocking=True).float()
+    rewards = rewards.to(device, non_blocking=True).float()
+    previous_actions = previous_actions.to(device, non_blocking=True).long()
+    sub_visible_tiles = sub_visible_tiles.to(device, non_blocking=True).float()
+    sub_game_features = sub_game_features.to(device, non_blocking=True).float()
+    sub_rewards = sub_rewards.to(device, non_blocking=True).float()
+    sub_previous_actions = sub_previous_actions.to(device, non_blocking=True).long()
     if include_hidden_tiles:
-        hidden_tiles = hidden_tiles.to(device, non_blocking=True)
+        hidden_tiles = hidden_tiles.to(device, non_blocking=True).float()
     else:
         hidden_tiles = None
-    action_label = action_label.to(device, non_blocking=True)
-    claim_label = claim_label.to(device, non_blocking=True)
-    discard_label = discard_label.to(device, non_blocking=True)
+    action_label = action_label.to(device, non_blocking=True).long()
+    claim_label = claim_label.to(device, non_blocking=True).long()
+    discard_label = discard_label.to(device, non_blocking=True).long()
     inputs = {
         "visible_tiles": visible_tiles,
         "game_features": game_features,
@@ -350,17 +473,21 @@ def _named_breakdown(metric_sums: dict[str, float], prefix: str, names: tuple[st
 
 def evaluate_model(
     model: nn.Module,
-    dataset: TensorDataset,
+    dataset: Dataset,
     *,
     device: torch.device,
     batch_size: int,
     num_workers: int = 0,
 ) -> dict[str, float | None]:
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     model.eval()
     metric_sums: dict[str, float] = {}
     with torch.no_grad():
-        for batch in loader:
+        for batch in iter_supervised_batches(
+            dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+        ):
             inputs, labels = unpack_batch(batch, device, include_hidden_tiles=False)
             outputs = model(**inputs)
             merge_metric_sums(metric_sums, batch_metric_sums(outputs, labels))
@@ -390,6 +517,7 @@ def train(args: argparse.Namespace) -> dict:
     encoding_schema = train_payload.get("encoding_schema") or tensor_encoding_schema()
     checkpoint_encoding_version = encoding_schema.get("version") or args.require_encoding_version
     dataset = tensor_dataset_from_payload(train_payload)
+    train_data_format = dataset_data_format(dataset)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     start_epoch = 1
@@ -411,6 +539,9 @@ def train(args: argparse.Namespace) -> dict:
         "paper_tensor_encoding_version": TENSOR_ENCODING_VERSION,
         "checkpoint_encoding_version": checkpoint_encoding_version,
         "encoding_schema": encoding_schema,
+        "train_examples": len(dataset),
+        "train_data_format": train_data_format,
+        "train_shard_count": dataset.shard_count if isinstance(dataset, ShardedTensorDataset) else 0,
         "model_parameters": base_model.parameter_count(),
         "data_parallel": isinstance(model, nn.DataParallel),
         "device_count": torch.cuda.device_count() if device.type == "cuda" else 0,
@@ -435,6 +566,9 @@ def train(args: argparse.Namespace) -> dict:
     metrics["max_steps"] = max_steps
     metrics["force_math_sdp"] = force_math_sdp
     metrics["cuda_attention"] = cuda_attention
+    metrics["train_examples"] = len(dataset)
+    metrics["train_data_format"] = train_data_format
+    metrics["train_shard_count"] = dataset.shard_count if isinstance(dataset, ShardedTensorDataset) else 0
 
     checkpoint_every_batches = int(getattr(args, "checkpoint_every_batches", 0) or 0)
     checkpoint_at_global_batches = parse_batch_set(getattr(args, "checkpoint_at_global_batches", None))
@@ -447,14 +581,12 @@ def train(args: argparse.Namespace) -> dict:
         batches = 0
         max_grad_norm_before_clip = 0.0
         metric_sums: dict[str, float] = {}
-        generator = torch.Generator()
-        generator.manual_seed(seed + epoch)
-        loader = DataLoader(
+        loader = iter_supervised_batches(
             dataset,
             batch_size=args.batch_size,
             shuffle=True,
             num_workers=args.num_workers,
-            generator=generator,
+            seed=seed + epoch,
         )
         for batch in loader:
             batches += 1

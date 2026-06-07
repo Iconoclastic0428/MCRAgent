@@ -68,18 +68,21 @@ spec:
               set -eux
               export PYTHONPATH="${PWD}/papers/tjong_cit2_12298/src:${PYTHONPATH:-}"
               python - <<'PY'
+              from pathlib import Path
               import torch
               print("repo_commit", "tjong-supervised-hu-l40-20260606c")
               print("torch", torch.__version__, "cuda", torch.cuda.is_available(), "device_count", torch.cuda.device_count())
+              trainer = Path("papers/tjong_cit2_12298/src/tjong_replication/train_supervised.py").read_text(encoding="utf-8")
+              assert "ShardedTensorDataset" in trainer, "supervised trainer must load shard indexes"
               PY
               python -m tjong_replication.verify_paper_compliance \
                 --paper-root papers/tjong_cit2_12298 \
                 --summary-out runs/tjong_paper_compliance_hu_20260606c.json
 
-              DATA_TAG=20260607c
-              RUN_TAG="${TJONG_RUN_TAG:-20260607c_single_gpu}"
+              DATA_TAG=20260607d
+              RUN_TAG="${TJONG_RUN_TAG:-20260607d_sharded_single_gpu}"
               RAW_TAG=20260606b
-              TRAIN_PT="${TJONG_TRAIN_PT:-data/processed/tjong/tziakcha_all_sources_botzone_hu_${DATA_TAG}_tensorized.pt}"
+              TRAIN_PT="${TJONG_TRAIN_PT:-data/processed/tjong/tziakcha_all_sources_botzone_hu_${DATA_TAG}_shards/index.json}"
               EVAL_PT="${TJONG_EVAL_PT:-${TRAIN_PT}}"
               TENSORIZE_SUMMARY="${TJONG_TENSORIZE_SUMMARY:-runs/tjong_tensorize_all_sources_hu_${DATA_TAG}_summary.json}"
               VALIDATION_SUMMARY="${TJONG_VALIDATION_SUMMARY:-runs/tjong_validate_tziakcha_all_sources_botzone_hu_${RAW_TAG}.json}"
@@ -115,26 +118,40 @@ spec:
               action_hu = int(stats.get("action:HU", 0))
               action_discard = int(stats.get("action:DISCARD", 0))
               label_outside_hu = int(stats.get("label_outside_mask:HU", 0) or 0)
+              discard_seen = int(stats.get("single_action_discard_seen", 0))
               discard_kept = int(stats.get("single_action_discard_kept", 0))
-              assert tensorize.get("streaming") is True, tensorize
+              sampled_out = int(stats.get("single_action_discard_sampled_out", 0) or 0)
+              examples = int(tensorize.get("examples", 0))
+              matches = int(stats.get("matches", 0))
+              assert tensorize.get("format") == "tjong_tensor_shards_v1", tensorize
+              assert tensorize.get("sharded") is True, tensorize
               assert tensorize.get("compact_metadata") is True, tensorize
+              assert tensorize.get("compact_storage") is True, tensorize
               assert int(audit.get("hu_response_count", 0)) > 0, audit
               assert int(audit.get("bad_hu_count", -1)) == 0, audit
-              assert int(tensorize.get("single_action_discard_stride", 0)) > 0, tensorize
+              assert int(tensorize.get("single_action_discard_stride", 0)) == 1, tensorize
               assert action_hu > 0, tensorize
               assert label_outside_hu == 0, tensorize
-              assert discard_kept > 0, tensorize
+              assert discard_seen > 0, tensorize
+              assert discard_kept == discard_seen, tensorize
+              assert sampled_out == 0, tensorize
               assert action_discard > action_hu, tensorize
+              assert matches > 0 and examples / matches > 10.0, tensorize
+              assert tensorize.get("shards"), tensorize
               assert (tensorize.get("encoding_schema") or {}).get("version") == os.environ["TENSOR_ENCODING_VERSION"], tensorize
               print(
                   "supervised_hu_preflight",
                   {
                       "hu_response_count": int(audit.get("hu_response_count", 0)),
-                      "examples": int(tensorize.get("examples", 0)),
+                      "examples": examples,
+                      "matches": matches,
+                      "examples_per_match": examples / matches,
                       "action_DISCARD": action_discard,
                       "action_HU": action_hu,
                       "label_outside_mask_HU": label_outside_hu,
+                      "single_action_discard_seen": discard_seen,
                       "single_action_discard_kept": discard_kept,
+                      "shards": len(tensorize.get("shards") or []),
                   },
                   flush=True,
               )

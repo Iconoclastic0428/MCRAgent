@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import copy
 import gzip
+import hashlib
 import json
 from collections import Counter, deque
 from dataclasses import dataclass, field
@@ -34,6 +35,7 @@ CLAIM_ACTIONS = {
 }
 TRAINABLE_REQUEST_HEADS = {"2", "3"}
 TENSOR_ENCODING_VERSION = "tjong_cit2_12298_v3_hidden_concealed_kong"
+SHARD_INDEX_FORMAT = "tjong_tensor_shards_v1"
 HIDDEN_TILE_ROW_NAMES = (
     "opponent_hand_1",
     "opponent_hand_2",
@@ -310,18 +312,40 @@ class ReplayState:
 
 def tensorize_file(
     in_path: Path,
-    out_path: Path,
+    out_path: Path | None,
     *,
     summary_out: Path | None = None,
     corpus_validation: Path | None = None,
     max_matches: int | None = None,
     memory_len: int = 4,
     include_single_action: bool = False,
-    single_action_discard_stride: int = 32,
+    single_action_discard_stride: int = 1,
     streaming: bool = False,
     compact_metadata: bool = False,
+    compact_storage: bool = False,
+    shard_dir: Path | None = None,
+    shard_index_out: Path | None = None,
+    shard_max_examples: int = 50000,
     progress_every: int = 0,
 ) -> dict[str, Any]:
+    if shard_dir is not None:
+        return tensorize_file_sharded(
+            in_path,
+            shard_dir,
+            index_out=shard_index_out,
+            summary_out=summary_out,
+            corpus_validation=corpus_validation,
+            max_matches=max_matches,
+            memory_len=memory_len,
+            include_single_action=include_single_action,
+            single_action_discard_stride=single_action_discard_stride,
+            compact_metadata=compact_metadata,
+            compact_storage=compact_storage,
+            shard_max_examples=shard_max_examples,
+            progress_every=progress_every,
+        )
+    if out_path is None:
+        raise ValueError("out_path is required unless shard_dir is provided")
     if streaming:
         return tensorize_file_streaming(
             in_path,
@@ -418,7 +442,7 @@ def tensorize_file_streaming(
     max_matches: int | None = None,
     memory_len: int = 4,
     include_single_action: bool = False,
-    single_action_discard_stride: int = 32,
+    single_action_discard_stride: int = 1,
     compact_metadata: bool = False,
     progress_every: int = 0,
 ) -> dict[str, Any]:
@@ -523,6 +547,160 @@ def tensorize_file_streaming(
     return summary
 
 
+def tensorize_file_sharded(
+    in_path: Path,
+    shard_dir: Path,
+    *,
+    index_out: Path | None = None,
+    summary_out: Path | None = None,
+    corpus_validation: Path | None = None,
+    max_matches: int | None = None,
+    memory_len: int = 4,
+    include_single_action: bool = False,
+    single_action_discard_stride: int = 1,
+    compact_metadata: bool = False,
+    compact_storage: bool = False,
+    shard_max_examples: int = 50000,
+    progress_every: int = 0,
+) -> dict[str, Any]:
+    """Tensorize into immutable supervised shards plus a JSON index.
+
+    Keeping every single-action discard is required for the paper-style
+    supervised imitation objective, but a single monolithic tensor can exhaust
+    both RAM and PVC space. This writer flushes bounded shards and records a
+    small index manifest that the supervised trainer can stream shard by shard.
+    """
+
+    if shard_max_examples <= 0:
+        raise ValueError("shard_max_examples must be positive")
+    index_out = index_out or (shard_dir / "index.json")
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    index_out.parent.mkdir(parents=True, exist_ok=True)
+    if index_out.exists():
+        index_out.unlink()
+
+    stats: Counter[str] = Counter()
+    shard_stats: Counter[str] = Counter()
+    buffer: list[EncodedExample] = []
+    shards: list[dict[str, Any]] = []
+    encoding_schema = tensor_encoding_schema()
+    corpus_validation_payload = None
+    if corpus_validation is not None:
+        corpus_validation_payload = json.loads(corpus_validation.read_text(encoding="utf-8"))
+
+    def flush_shard() -> None:
+        nonlocal buffer, shard_stats
+        if not buffer:
+            return
+        shard_index = len(shards)
+        shard_path = shard_dir / f"shard_{shard_index:05d}.pt"
+        payload = _payload_from_examples(buffer, shard_stats, compact_metadata=compact_metadata)
+        payload["encoding_schema"] = encoding_schema
+        payload["format"] = "tjong_tensor_shard_v1"
+        payload["shard_index"] = shard_index
+        payload["examples"] = len(buffer)
+        if compact_storage:
+            _compact_supervised_payload(payload)
+        _finalize_metadata(payload)
+        torch.save(payload, shard_path)
+        shards.append(
+            {
+                "path": shard_path.name,
+                "examples": len(buffer),
+                "sha256": _sha256_file(shard_path),
+                "stats": dict(sorted(shard_stats.items())),
+            }
+        )
+        print(
+            json.dumps(
+                {
+                    "stage": "tensorize_shard_write",
+                    "shard": shard_index,
+                    "examples": len(buffer),
+                    "path": str(shard_path),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        buffer = []
+        shard_stats = Counter()
+
+    with _open_text(in_path) as src:
+        for line_no, line in enumerate(src, start=1):
+            if max_matches is not None and stats["matches"] >= max_matches:
+                break
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+                record_examples, record_stats = tensorize_record(
+                    record,
+                    memory_len=memory_len,
+                    include_single_action=include_single_action,
+                    single_action_discard_stride=single_action_discard_stride,
+                )
+            except Exception as exc:
+                stats[f"record_error:{type(exc).__name__}"] += 1
+                stats["record_error_lines"] += 1
+                continue
+            if buffer and len(buffer) + len(record_examples) > shard_max_examples:
+                flush_shard()
+            stats["matches"] += 1
+            stats.update(record_stats)
+            shard_stats["matches"] += 1
+            shard_stats.update(record_stats)
+            buffer.extend(record_examples)
+            if progress_every > 0 and stats["matches"] % progress_every == 0:
+                print(
+                    json.dumps(
+                        {
+                            "stage": "tensorize_sharded_collect",
+                            "matches": int(stats["matches"]),
+                            "examples": int(stats.get("examples", 0)),
+                            "line": int(line_no),
+                            "shards": len(shards),
+                            "buffer_examples": len(buffer),
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+        flush_shard()
+
+    summary = {
+        "format": SHARD_INDEX_FORMAT,
+        "input": str(in_path),
+        "output": str(index_out),
+        "shard_dir": str(shard_dir),
+        "corpus_validation": corpus_validation_payload,
+        "examples": int(stats.get("examples", 0)),
+        "stats": dict(sorted(stats.items())),
+        "encoding_schema": encoding_schema,
+        "memory_len": memory_len,
+        "include_single_action": include_single_action,
+        "single_action_discard_stride": int(single_action_discard_stride),
+        "sharded": True,
+        "compact_metadata": bool(compact_metadata),
+        "compact_storage": bool(compact_storage),
+        "shard_max_examples": int(shard_max_examples),
+        "shards": shards,
+        "assumptions": [
+            "Chow claim indices use suit * 21 + (middle_rank - 2) * 3 + (offer_position - 1), matching the public Lawlorentz/Botzone action layout.",
+            "The policy-visible remaining-tile rows are live tile counts from the acting player's visible perspective.",
+            "The value hidden matrix stores three opponent hands, concealed Kong tile counts, and remaining wall tiles to match the paper's 5 x 34 hidden/global feature shape.",
+            "Tile-decision heads receive sub-state tensors whose past frames match the action-decision memory and whose current frame is conditioned on the chosen action.",
+            "Claim responses with forced discards produce one claim-family example plus one post-claim discard example; the post-claim discard sub-state uses the replayed state after the meld.",
+            "Compact supervised shards store count/mask features and labels as uint8; rewards and value targets are reconstructed as zero tensors by supervised CE training.",
+        ],
+    }
+    index_out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    if summary_out is not None:
+        summary_out.parent.mkdir(parents=True, exist_ok=True)
+        summary_out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return summary
+
+
 def _scan_tensorize_stats(
     in_path: Path,
     *,
@@ -579,7 +757,7 @@ def tensorize_record(
     *,
     memory_len: int = 4,
     include_single_action: bool = False,
-    single_action_discard_stride: int = 32,
+    single_action_discard_stride: int = 1,
 ) -> tuple[list[EncodedExample], Counter[str]]:
     state = ReplayState.from_record(record)
     histories: list[deque[MemoryFrame]] = [deque(maxlen=memory_len - 1) for _ in range(4)]
@@ -1017,6 +1195,66 @@ def _stack_examples(examples: list[EncodedExample], stats: Counter[str]) -> dict
     }
 
 
+def _payload_from_examples(
+    examples: list[EncodedExample],
+    stats: Counter[str],
+    *,
+    compact_metadata: bool,
+) -> dict[str, Any]:
+    payload = _allocate_payload(len(examples), stats, compact_metadata=compact_metadata)
+    for index, example in enumerate(examples):
+        _write_example(payload, index, example)
+    return payload
+
+
+def _compact_supervised_payload(payload: dict[str, Any]) -> None:
+    for key in (
+        "visible_tiles",
+        "game_features",
+        "sub_visible_tiles",
+        "sub_game_features",
+        "hidden_tiles",
+    ):
+        payload[key] = _to_uint8_tensor(payload[key], key)
+    for key in (
+        "previous_actions",
+        "sub_previous_actions",
+        "action_label",
+        "claim_label",
+        "discard_label",
+    ):
+        payload[key] = _to_uint8_tensor(payload[key], key)
+    payload.pop("rewards", None)
+    payload.pop("sub_rewards", None)
+    payload.pop("value_target", None)
+    payload["compact_storage"] = True
+    payload["storage_schema"] = {
+        "format": "supervised_uint8_v1",
+        "feature_dtype": "uint8",
+        "label_dtype": "uint8",
+        "omitted_zero_tensors": ["rewards", "sub_rewards", "value_target"],
+    }
+
+
+def _to_uint8_tensor(tensor: torch.Tensor, name: str) -> torch.Tensor:
+    if tensor.numel():
+        if torch.is_floating_point(tensor) and not torch.isfinite(tensor).all().item():
+            raise ValueError(f"{name} contains non-finite values and cannot be compacted")
+        min_value = float(tensor.min().item())
+        max_value = float(tensor.max().item())
+        if min_value < 0.0 or max_value > 255.0:
+            raise ValueError(f"{name} has values outside uint8 range: min={min_value} max={max_value}")
+    return tensor.to(dtype=torch.uint8).contiguous()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as src:
+        for chunk in iter(lambda: src.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _allocate_payload(total_examples: int, stats: Counter[str], *, compact_metadata: bool) -> dict[str, Any]:
     payload = {
         "visible_tiles": torch.empty(total_examples, 4, 22, 34, dtype=torch.float32),
@@ -1177,20 +1415,26 @@ def _open_text(path: Path):
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--in", dest="infile", required=True)
-    parser.add_argument("--out", required=True)
+    parser.add_argument("--out", default=None)
+    parser.add_argument("--shard-dir", default=None)
+    parser.add_argument("--shard-index-out", default=None)
+    parser.add_argument("--shard-max-examples", type=int, default=50000)
     parser.add_argument("--summary-out", default=None)
     parser.add_argument("--corpus-validation", default=None)
     parser.add_argument("--max-matches", type=int, default=None)
     parser.add_argument("--memory-len", type=int, default=4)
     parser.add_argument("--include-single-action", action="store_true")
-    parser.add_argument("--single-action-discard-stride", type=int, default=32)
+    parser.add_argument("--single-action-discard-stride", type=int, default=1)
     parser.add_argument("--streaming", action="store_true")
     parser.add_argument("--compact-metadata", action="store_true")
+    parser.add_argument("--compact-storage", action="store_true")
     parser.add_argument("--progress-every", type=int, default=0)
     args = parser.parse_args()
+    if not args.out and not args.shard_dir:
+        parser.error("one of --out or --shard-dir is required")
     summary = tensorize_file(
         Path(args.infile),
-        Path(args.out),
+        Path(args.out) if args.out else None,
         summary_out=Path(args.summary_out) if args.summary_out else None,
         corpus_validation=Path(args.corpus_validation) if args.corpus_validation else None,
         max_matches=args.max_matches,
@@ -1199,6 +1443,10 @@ def main() -> int:
         single_action_discard_stride=args.single_action_discard_stride,
         streaming=args.streaming,
         compact_metadata=args.compact_metadata,
+        compact_storage=args.compact_storage,
+        shard_dir=Path(args.shard_dir) if args.shard_dir else None,
+        shard_index_out=Path(args.shard_index_out) if args.shard_index_out else None,
+        shard_max_examples=args.shard_max_examples,
         progress_every=args.progress_every,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
