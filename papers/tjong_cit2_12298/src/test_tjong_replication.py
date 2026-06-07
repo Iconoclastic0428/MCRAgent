@@ -1674,6 +1674,7 @@ def test_tensorizer_replays_converted_deal_content_for_chow_legality():
 
     assert stats["action:CHOW"] == 1
     assert stats["claim_discard_examples"] == 1
+    assert stats.get("action_mask_repaired:CHOW", 0) == 0
     assert stats.get("label_outside_mask:CHOW", 0) == 0
     action_counts = Counter(example.action_label for example in examples)
     assert action_counts[ACTION_TO_INDEX["CHOW"]] == 1
@@ -1962,6 +1963,47 @@ def test_sharded_tensorizer_keeps_all_discards_and_trains_from_index():
         assert metrics["train_shard_count"] == 2
         assert metrics["epochs"][-1]["batches"] == 1
         assert metrics["epochs"][-1]["action_count"] == 2
+
+
+def test_parallel_sharded_tensorizer_matches_single_worker_stats():
+    with tempfile.TemporaryDirectory(dir=ROOT) as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        raw_path = tmp_path / "raw.jsonl"
+        single_dir = tmp_path / "single"
+        parallel_dir = tmp_path / "parallel"
+        records = [_single_action_discard_hu_record(f"parallel-{index}") for index in range(6)]
+        raw_path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+
+        single = tensorize_file(
+            raw_path,
+            None,
+            shard_dir=single_dir,
+            shard_index_out=single_dir / "index.json",
+            compact_metadata=True,
+            compact_storage=True,
+            shard_max_examples=9,
+            single_action_discard_stride=1,
+        )
+        parallel = tensorize_file(
+            raw_path,
+            None,
+            shard_dir=parallel_dir,
+            shard_index_out=parallel_dir / "index.json",
+            compact_metadata=True,
+            compact_storage=True,
+            shard_max_examples=9,
+            single_action_discard_stride=1,
+            num_workers=2,
+        )
+        dataset = load_tensor_dataset(parallel_dir / "index.json", expected_encoding_version=TENSOR_ENCODING_VERSION)
+
+        assert parallel["format"] == SHARD_INDEX_FORMAT
+        assert parallel["parallel_workers"] == 2
+        assert parallel["examples"] == single["examples"]
+        assert parallel["stats"] == single["stats"]
+        assert sum(int(shard["examples"]) for shard in parallel["shards"]) == parallel["examples"]
+        assert {int(shard["worker"]) for shard in parallel["shards"]} == {0, 1}
+        assert len(dataset) == parallel["examples"]
 
 
 def test_populate_fan_backward_rewards_with_explicit_fan_items():

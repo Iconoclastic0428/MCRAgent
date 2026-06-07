@@ -12,6 +12,7 @@ import copy
 import gzip
 import hashlib
 import json
+import multiprocessing as mp
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -342,9 +343,27 @@ def tensorize_file(
     shard_dir: Path | None = None,
     shard_index_out: Path | None = None,
     shard_max_examples: int = 50000,
+    num_workers: int = 0,
     progress_every: int = 0,
 ) -> dict[str, Any]:
     if shard_dir is not None:
+        if int(num_workers or 0) > 1:
+            return tensorize_file_sharded_parallel(
+                in_path,
+                shard_dir,
+                index_out=shard_index_out,
+                summary_out=summary_out,
+                corpus_validation=corpus_validation,
+                max_matches=max_matches,
+                memory_len=memory_len,
+                include_single_action=include_single_action,
+                single_action_discard_stride=single_action_discard_stride,
+                compact_metadata=compact_metadata,
+                compact_storage=compact_storage,
+                shard_max_examples=shard_max_examples,
+                num_workers=int(num_workers),
+                progress_every=progress_every,
+            )
         return tensorize_file_sharded(
             in_path,
             shard_dir,
@@ -717,6 +736,251 @@ def tensorize_file_sharded(
     return summary
 
 
+def tensorize_file_sharded_parallel(
+    in_path: Path,
+    shard_dir: Path,
+    *,
+    index_out: Path | None = None,
+    summary_out: Path | None = None,
+    corpus_validation: Path | None = None,
+    max_matches: int | None = None,
+    memory_len: int = 4,
+    include_single_action: bool = False,
+    single_action_discard_stride: int = 1,
+    compact_metadata: bool = False,
+    compact_storage: bool = False,
+    shard_max_examples: int = 50000,
+    num_workers: int = 2,
+    progress_every: int = 0,
+) -> dict[str, Any]:
+    if max_matches is not None:
+        raise ValueError("parallel sharded tensorization does not support max_matches")
+    if str(in_path).endswith(".gz"):
+        raise ValueError("parallel sharded tensorization requires an uncompressed JSONL input")
+    if num_workers <= 1:
+        return tensorize_file_sharded(
+            in_path,
+            shard_dir,
+            index_out=index_out,
+            summary_out=summary_out,
+            corpus_validation=corpus_validation,
+            max_matches=max_matches,
+            memory_len=memory_len,
+            include_single_action=include_single_action,
+            single_action_discard_stride=single_action_discard_stride,
+            compact_metadata=compact_metadata,
+            compact_storage=compact_storage,
+            shard_max_examples=shard_max_examples,
+            progress_every=progress_every,
+        )
+    if shard_max_examples <= 0:
+        raise ValueError("shard_max_examples must be positive")
+
+    index_out = index_out or (shard_dir / "index.json")
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    index_out.parent.mkdir(parents=True, exist_ok=True)
+    if index_out.exists():
+        index_out.unlink()
+
+    input_size = in_path.stat().st_size
+    encoding_schema = tensor_encoding_schema()
+    corpus_validation_payload = None
+    if corpus_validation is not None:
+        corpus_validation_payload = json.loads(corpus_validation.read_text(encoding="utf-8"))
+
+    ranges = [
+        (input_size * worker // num_workers, input_size * (worker + 1) // num_workers)
+        for worker in range(num_workers)
+    ]
+    worker_args = [
+        {
+            "worker": worker,
+            "in_path": str(in_path),
+            "shard_dir": str(shard_dir),
+            "range_start": start,
+            "range_end": end,
+            "memory_len": memory_len,
+            "include_single_action": include_single_action,
+            "single_action_discard_stride": single_action_discard_stride,
+            "compact_metadata": compact_metadata,
+            "compact_storage": compact_storage,
+            "shard_max_examples": shard_max_examples,
+            "progress_every": progress_every,
+            "encoding_schema": encoding_schema,
+        }
+        for worker, (start, end) in enumerate(ranges)
+    ]
+    with mp.Pool(processes=num_workers) as pool:
+        worker_results = pool.map(_tensorize_sharded_range_worker, worker_args)
+
+    stats: Counter[str] = Counter()
+    shards: list[dict[str, Any]] = []
+    for result in sorted(worker_results, key=lambda item: int(item["worker"])):
+        stats.update(Counter(result.get("stats") or {}))
+        shards.extend(result.get("shards") or [])
+
+    summary = {
+        "format": SHARD_INDEX_FORMAT,
+        "input": str(in_path),
+        "output": str(index_out),
+        "shard_dir": str(shard_dir),
+        "corpus_validation": corpus_validation_payload,
+        "examples": int(stats.get("examples", 0)),
+        "stats": dict(sorted(stats.items())),
+        "encoding_schema": encoding_schema,
+        "memory_len": memory_len,
+        "include_single_action": include_single_action,
+        "single_action_discard_stride": int(single_action_discard_stride),
+        "sharded": True,
+        "parallel_workers": int(num_workers),
+        "compact_metadata": bool(compact_metadata),
+        "compact_storage": bool(compact_storage),
+        "shard_max_examples": int(shard_max_examples),
+        "shards": shards,
+        "assumptions": _tensorize_summary_assumptions(compact_storage=compact_storage),
+    }
+    index_out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    if summary_out is not None:
+        summary_out.parent.mkdir(parents=True, exist_ok=True)
+        summary_out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return summary
+
+
+def _tensorize_sharded_range_worker(args: dict[str, Any]) -> dict[str, Any]:
+    worker = int(args["worker"])
+    in_path = Path(str(args["in_path"]))
+    shard_dir = Path(str(args["shard_dir"]))
+    range_start = int(args["range_start"])
+    range_end = int(args["range_end"])
+    memory_len = int(args["memory_len"])
+    include_single_action = bool(args["include_single_action"])
+    single_action_discard_stride = int(args["single_action_discard_stride"])
+    compact_metadata = bool(args["compact_metadata"])
+    compact_storage = bool(args["compact_storage"])
+    shard_max_examples = int(args["shard_max_examples"])
+    progress_every = int(args["progress_every"])
+    encoding_schema = dict(args["encoding_schema"])
+    stats: Counter[str] = Counter()
+    shard_stats: Counter[str] = Counter()
+    buffer: list[EncodedExample] = []
+    shards: list[dict[str, Any]] = []
+
+    def flush_shard() -> None:
+        nonlocal buffer, shard_stats
+        if not buffer:
+            return
+        shard_index = len(shards)
+        shard_path = shard_dir / f"worker_{worker:02d}_shard_{shard_index:05d}.pt"
+        payload = _payload_from_examples(buffer, shard_stats, compact_metadata=compact_metadata)
+        payload["encoding_schema"] = encoding_schema
+        payload["format"] = "tjong_tensor_shard_v1"
+        payload["worker"] = worker
+        payload["shard_index"] = shard_index
+        payload["examples"] = len(buffer)
+        if compact_storage:
+            _compact_supervised_payload(payload)
+        _finalize_metadata(payload)
+        torch.save(payload, shard_path)
+        shards.append(
+            {
+                "path": shard_path.name,
+                "worker": worker,
+                "examples": len(buffer),
+                "sha256": _sha256_file(shard_path),
+                "stats": dict(sorted(shard_stats.items())),
+            }
+        )
+        print(
+            json.dumps(
+                {
+                    "stage": "tensorize_shard_write",
+                    "worker": worker,
+                    "shard": shard_index,
+                    "examples": len(buffer),
+                    "path": str(shard_path),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        buffer = []
+        shard_stats = Counter()
+
+    with in_path.open("rb") as src:
+        if range_start > 0:
+            src.seek(range_start - 1)
+            if src.read(1) != b"\n":
+                src.readline()
+        else:
+            src.seek(0)
+        while True:
+            line_start = src.tell()
+            if line_start >= range_end:
+                break
+            line = src.readline()
+            if not line:
+                break
+            try:
+                record = json.loads(line.decode("utf-8-sig"))
+                record_examples, record_stats = tensorize_record(
+                    record,
+                    memory_len=memory_len,
+                    include_single_action=include_single_action,
+                    single_action_discard_stride=single_action_discard_stride,
+                )
+            except Exception as exc:
+                stats[f"record_error:{type(exc).__name__}"] += 1
+                stats["record_error_lines"] += 1
+                continue
+            if buffer and len(buffer) + len(record_examples) > shard_max_examples:
+                flush_shard()
+            stats["matches"] += 1
+            stats.update(record_stats)
+            shard_stats["matches"] += 1
+            shard_stats.update(record_stats)
+            buffer.extend(record_examples)
+            if progress_every > 0 and stats["matches"] % progress_every == 0:
+                print(
+                    json.dumps(
+                        {
+                            "stage": "tensorize_sharded_collect",
+                            "worker": worker,
+                            "matches": int(stats["matches"]),
+                            "examples": int(stats.get("examples", 0)),
+                            "range_start": range_start,
+                            "range_end": range_end,
+                            "shards": len(shards),
+                            "buffer_examples": len(buffer),
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+    flush_shard()
+    return {
+        "worker": worker,
+        "range_start": range_start,
+        "range_end": range_end,
+        "stats": dict(sorted(stats.items())),
+        "shards": shards,
+    }
+
+
+def _tensorize_summary_assumptions(*, compact_storage: bool) -> list[str]:
+    assumptions = [
+        "Chow claim indices use suit * 21 + (middle_rank - 2) * 3 + (offer_position - 1), matching the public Lawlorentz/Botzone action layout.",
+        "The policy-visible remaining-tile rows are live tile counts from the acting player's visible perspective.",
+        "The value hidden matrix stores three opponent hands, concealed Kong tile counts, and remaining wall tiles to match the paper's 5 x 34 hidden/global feature shape.",
+        "Tile-decision heads receive sub-state tensors whose past frames match the action-decision memory and whose current frame is conditioned on the chosen action.",
+        "Claim responses with forced discards produce one claim-family example plus one post-claim discard example; the post-claim discard sub-state uses the replayed state after the meld.",
+    ]
+    if compact_storage:
+        assumptions.append(
+            "Compact supervised shards store count/mask features and labels as uint8; rewards and value targets are reconstructed as zero tensors by supervised CE training."
+        )
+    return assumptions
+
+
 def _scan_tensorize_stats(
     in_path: Path,
     *,
@@ -821,6 +1085,9 @@ def tensorize_record(
                 stats[f"unmapped:{response.split()[0].upper() if response.split() else 'EMPTY'}"] += 1
                 continue
             action_mask = action_type_mask(player, request_tokens, state, display)
+            if action_mask[label[0]] <= 0.0 and label[0] not in {PASS_ACTION, HU_ACTION}:
+                stats[f"action_mask_repaired:{ACTION_NAMES[label[0]]}"] += 1
+                action_mask[label[0]] = 1.0
             if not include_single_action and sum(1 for value in action_mask if value > 0.0) <= 1:
                 if label[0] == DISCARD_ACTION and single_action_discard_stride > 0:
                     stats["single_action_discard_seen"] += 1
@@ -1437,6 +1704,7 @@ def main() -> int:
     parser.add_argument("--shard-dir", default=None)
     parser.add_argument("--shard-index-out", default=None)
     parser.add_argument("--shard-max-examples", type=int, default=50000)
+    parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--summary-out", default=None)
     parser.add_argument("--corpus-validation", default=None)
     parser.add_argument("--max-matches", type=int, default=None)
@@ -1465,6 +1733,7 @@ def main() -> int:
         shard_dir=Path(args.shard_dir) if args.shard_dir else None,
         shard_index_out=Path(args.shard_index_out) if args.shard_index_out else None,
         shard_max_examples=args.shard_max_examples,
+        num_workers=args.num_workers,
         progress_every=args.progress_every,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
