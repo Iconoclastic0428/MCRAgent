@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from .actions import ACTION_TO_INDEX
+from .actions import ACTION_NAMES, ACTION_TO_INDEX, CLAIM_ACTION_NAMES
 from .model import TjongConfig, TjongNetwork
 from .tensorize_botzone import TENSOR_ENCODING_VERSION, tensor_encoding_schema
+from .tiles import TILE_NAMES
 
 CLAIM_ACTION_INDICES = tuple(ACTION_TO_INDEX[name] for name in ("CHOW", "PONG", "MINGKONG", "BUKONG", "ANKONG"))
 
@@ -68,6 +70,132 @@ def tensor_dataset_from_payload(data: dict) -> TensorDataset:
 
 def load_tensor_dataset(path: Path, *, expected_encoding_version: str | None = None) -> TensorDataset:
     return tensor_dataset_from_payload(load_tensor_payload(path, expected_encoding_version=expected_encoding_version))
+
+
+def write_metrics_file(path: Path, metrics: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(path.name + ".tmp")
+    temp_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def move_optimizer_state_to_device(optimizer: torch.optim.Optimizer, device: torch.device) -> None:
+    for state in optimizer.state.values():
+        for key, value in list(state.items()):
+            if torch.is_tensor(value):
+                state[key] = value.to(device)
+
+
+def checkpoint_directory(args: argparse.Namespace) -> Path:
+    checkpoint_dir = getattr(args, "checkpoint_dir", None)
+    if checkpoint_dir:
+        return Path(checkpoint_dir)
+    checkpoint_out = getattr(args, "checkpoint_out", None)
+    if not checkpoint_out:
+        raise ValueError("--checkpoint-dir is required when periodic checkpoints are enabled without --checkpoint-out")
+    checkpoint_path = Path(checkpoint_out)
+    return checkpoint_path.with_name(f"{checkpoint_path.stem}_checkpoints")
+
+
+def parse_batch_set(value: str | None) -> set[int]:
+    if not value:
+        return set()
+    result = set()
+    for part in str(value).replace(";", ",").split(","):
+        part = part.strip()
+        if part:
+            result.add(int(part))
+    return result
+
+
+def configure_seed(seed: int) -> None:
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
+
+
+def validate_resume_config(resume_payload: dict, config: TjongConfig) -> None:
+    observed = resume_payload.get("config") or {}
+    expected = config.__dict__
+    mismatches = {
+        key: {"expected": value, "observed": observed.get(key)}
+        for key, value in expected.items()
+        if key not in observed or observed.get(key) != value
+    }
+    if mismatches:
+        raise ValueError(f"resume checkpoint config mismatch: {json.dumps(mismatches, sort_keys=True)}")
+
+
+def configure_cuda_attention(*, force_math_sdp: bool = False) -> dict[str, bool | None]:
+    """Optionally avoid fused CUDA attention kernels for reproducible debug runs."""
+    if torch.cuda.is_available() and force_math_sdp:
+        if hasattr(torch.backends.cuda, "enable_flash_sdp"):
+            torch.backends.cuda.enable_flash_sdp(False)
+        if hasattr(torch.backends.cuda, "enable_mem_efficient_sdp"):
+            torch.backends.cuda.enable_mem_efficient_sdp(False)
+        if hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
+            torch.backends.cuda.enable_cudnn_sdp(False)
+        if hasattr(torch.backends.cuda, "enable_math_sdp"):
+            torch.backends.cuda.enable_math_sdp(True)
+
+    status: dict[str, bool | None] = {}
+    for name in ("flash", "mem_efficient", "cudnn", "math"):
+        enabled = getattr(torch.backends.cuda, f"{name}_sdp_enabled", None) if torch.cuda.is_available() else None
+        status[f"{name}_sdp_enabled"] = bool(enabled()) if callable(enabled) else None
+    return status
+
+
+def iter_named_model_parameters(model: nn.Module):
+    if isinstance(model, nn.DataParallel):
+        return model.module.named_parameters()
+    return model.named_parameters()
+
+
+def first_nonfinite_parameters(model: nn.Module, *, limit: int = 8) -> list[str]:
+    bad = []
+    for name, parameter in iter_named_model_parameters(model):
+        if not bool(torch.isfinite(parameter).all().item()):
+            bad.append(name)
+            if len(bad) >= limit:
+                break
+    return bad
+
+
+def first_nonfinite_gradients(model: nn.Module, *, limit: int = 8) -> list[str]:
+    bad = []
+    for name, parameter in iter_named_model_parameters(model):
+        if parameter.grad is None:
+            continue
+        if not bool(torch.isfinite(parameter.grad).all().item()):
+            bad.append(name)
+            if len(bad) >= limit:
+                break
+    return bad
+
+
+def safe_clip_grad_norm_(parameters: list[torch.nn.Parameter], max_norm: float) -> float:
+    """Manual non-foreach gradient clipping to avoid CUDA foreach kernel faults."""
+    grads = [parameter.grad.detach() for parameter in parameters if parameter.grad is not None]
+    if not grads:
+        return 0.0
+    total_sq = torch.zeros((), device=grads[0].device)
+    for grad in grads:
+        if not bool(torch.isfinite(grad).all().item()):
+            return float("nan")
+        total_sq = total_sq + grad.float().pow(2).sum()
+    total = torch.sqrt(total_sq)
+    total_value = float(total.detach().item())
+    if not math.isfinite(total_value):
+        return total_value
+    scale = float(max_norm) / (total_value + 1e-6)
+    if scale < 1.0:
+        for grad in grads:
+            grad.mul_(scale)
+    return total_value
+
+
+def action_count_context(action_label: torch.Tensor) -> dict[str, int]:
+    return {name: int((action_label == index).sum().item()) for index, name in enumerate(ACTION_NAMES)}
 
 
 def unpack_batch(
@@ -127,11 +255,14 @@ def batch_metric_sums(
 ) -> dict[str, float]:
     action_label, claim_label, discard_label = labels
     claim_mask, discard_mask = decision_masks(action_label)
+    action_pred = outputs["action_logits"].argmax(dim=-1)
+    claim_pred = outputs["claim_logits"].argmax(dim=-1)
+    discard_pred = outputs["discard_logits"].argmax(dim=-1)
     ce_sum = nn.CrossEntropyLoss(reduction="sum")
     metrics = {
         "action_loss_sum": float(ce_sum(outputs["action_logits"], action_label).item()),
         "action_count": float(action_label.numel()),
-        "action_correct": float((outputs["action_logits"].argmax(dim=-1) == action_label).sum().item()),
+        "action_correct": float((action_pred == action_label).sum().item()),
         "claim_loss_sum": 0.0,
         "claim_count": float(claim_mask.sum().item()),
         "claim_correct": 0.0,
@@ -139,18 +270,28 @@ def batch_metric_sums(
         "discard_count": float(discard_mask.sum().item()),
         "discard_correct": 0.0,
     }
+    for index, name in enumerate(ACTION_NAMES):
+        label_mask = action_label == index
+        metrics[f"action_breakdown:{name}:count"] = float(label_mask.sum().item())
+        metrics[f"action_breakdown:{name}:correct"] = float((action_pred[label_mask] == index).sum().item())
+        metrics[f"action_breakdown:{name}:predicted"] = float((action_pred == index).sum().item())
     if claim_mask.any():
         metrics["claim_loss_sum"] = float(ce_sum(outputs["claim_logits"][claim_mask], claim_label[claim_mask]).item())
-        metrics["claim_correct"] = float(
-            (outputs["claim_logits"][claim_mask].argmax(dim=-1) == claim_label[claim_mask]).sum().item()
-        )
+        metrics["claim_correct"] = float((claim_pred[claim_mask] == claim_label[claim_mask]).sum().item())
+    for name in CLAIM_ACTION_NAMES:
+        label_mask = action_label == ACTION_TO_INDEX[name]
+        metrics[f"claim_breakdown:{name}:count"] = float(label_mask.sum().item())
+        metrics[f"claim_breakdown:{name}:correct"] = float((claim_pred[label_mask] == claim_label[label_mask]).sum().item())
     if discard_mask.any():
         metrics["discard_loss_sum"] = float(
             ce_sum(outputs["discard_logits"][discard_mask], discard_label[discard_mask]).item()
         )
-        metrics["discard_correct"] = float(
-            (outputs["discard_logits"][discard_mask].argmax(dim=-1) == discard_label[discard_mask]).sum().item()
-        )
+        metrics["discard_correct"] = float((discard_pred[discard_mask] == discard_label[discard_mask]).sum().item())
+    for index, name in enumerate(TILE_NAMES):
+        label_mask = discard_mask & (discard_label == index)
+        metrics[f"discard_tile_breakdown:{name}:count"] = float(label_mask.sum().item())
+        metrics[f"discard_tile_breakdown:{name}:correct"] = float((discard_pred[label_mask] == index).sum().item())
+        metrics[f"discard_tile_breakdown:{name}:predicted"] = float((discard_mask & (discard_pred == index)).sum().item())
     return metrics
 
 
@@ -169,7 +310,7 @@ def finalize_metric_sums(metric_sums: dict[str, float]) -> dict[str, float | Non
         + metric_sums.get("claim_loss_sum", 0.0)
         + metric_sums.get("discard_loss_sum", 0.0)
     )
-    return {
+    metrics = {
         "decision_loss": decision_loss_sum / decision_count if decision_count else None,
         "action_loss": metric_sums.get("action_loss_sum", 0.0) / action_count if action_count else None,
         "action_accuracy": metric_sums.get("action_correct", 0.0) / action_count if action_count else None,
@@ -181,6 +322,27 @@ def finalize_metric_sums(metric_sums: dict[str, float]) -> dict[str, float | Non
         "discard_accuracy": metric_sums.get("discard_correct", 0.0) / discard_count if discard_count else None,
         "discard_count": int(discard_count),
     }
+    metrics["action_breakdown"] = _named_breakdown(metric_sums, "action_breakdown", ACTION_NAMES)
+    metrics["claim_breakdown"] = _named_breakdown(metric_sums, "claim_breakdown", CLAIM_ACTION_NAMES)
+    metrics["discard_tile_breakdown"] = _named_breakdown(metric_sums, "discard_tile_breakdown", TILE_NAMES)
+    return metrics
+
+
+def _named_breakdown(metric_sums: dict[str, float], prefix: str, names: tuple[str, ...]) -> dict[str, dict[str, float | int | None]]:
+    breakdown: dict[str, dict[str, float | int | None]] = {}
+    for name in names:
+        count = metric_sums.get(f"{prefix}:{name}:count", 0.0)
+        correct = metric_sums.get(f"{prefix}:{name}:correct", 0.0)
+        predicted = metric_sums.get(f"{prefix}:{name}:predicted", 0.0)
+        item: dict[str, float | int | None] = {
+            "count": int(count),
+            "correct": int(correct),
+            "accuracy": correct / count if count else None,
+        }
+        if f"{prefix}:{name}:predicted" in metric_sums:
+            item["predicted"] = int(predicted)
+        breakdown[name] = item
+    return breakdown
 
 
 def evaluate_model(
@@ -203,6 +365,12 @@ def evaluate_model(
 
 
 def train(args: argparse.Namespace) -> dict:
+    seed = int(getattr(args, "seed", 0) or 0)
+    configure_seed(seed)
+    grad_clip = float(getattr(args, "grad_clip", 0.0) or 0.0)
+    fail_on_nonfinite = bool(getattr(args, "fail_on_nonfinite", False))
+    force_math_sdp = bool(getattr(args, "force_math_sdp", False))
+    cuda_attention = configure_cuda_attention(force_math_sdp=force_math_sdp)
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     config = TjongConfig(
         d_model=args.d_model,
@@ -220,13 +388,21 @@ def train(args: argparse.Namespace) -> dict:
     encoding_schema = train_payload.get("encoding_schema") or tensor_encoding_schema()
     checkpoint_encoding_version = encoding_schema.get("version") or args.require_encoding_version
     dataset = tensor_dataset_from_payload(train_payload)
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    start_epoch = 1
+    global_batch = 0
     metrics = {
         "paper": "Tjong CIT2.12298",
         "optimizer": "Adam",
         "lr": args.lr,
         "batch_size": args.batch_size,
+        "seed": seed,
+        "shuffle_seed_mode": "seed_plus_epoch",
+        "grad_clip": grad_clip,
+        "fail_on_nonfinite": fail_on_nonfinite,
+        "force_math_sdp": force_math_sdp,
+        "cuda_attention": cuda_attention,
         "required_encoding_version": args.require_encoding_version,
         "paper_tensor_encoding_version": TENSOR_ENCODING_VERSION,
         "checkpoint_encoding_version": checkpoint_encoding_version,
@@ -236,46 +412,194 @@ def train(args: argparse.Namespace) -> dict:
         "device_count": torch.cuda.device_count() if device.type == "cuda" else 0,
         "epochs": [],
     }
-    for epoch in range(1, args.epochs + 1):
+    resume_checkpoint = getattr(args, "resume_checkpoint", None)
+    if resume_checkpoint:
+        resume_payload = torch.load(resume_checkpoint, map_location="cpu")
+        validate_resume_config(resume_payload, config)
+        base_model.load_state_dict(resume_payload["model"])
+        if resume_payload.get("optimizer"):
+            optimizer.load_state_dict(resume_payload["optimizer"])
+            move_optimizer_state_to_device(optimizer, device)
+        metrics = resume_payload.get("metrics") or metrics
+        metrics["resumed_from"] = str(resume_checkpoint)
+        start_epoch = int(resume_payload.get("epoch", len(metrics.get("epochs", [])))) + 1
+        if metrics.get("epochs"):
+            global_batch = int(metrics["epochs"][-1].get("global_batch", 0) or 0)
+    metrics["grad_clip"] = grad_clip
+    metrics["fail_on_nonfinite"] = fail_on_nonfinite
+    metrics["force_math_sdp"] = force_math_sdp
+    metrics["cuda_attention"] = cuda_attention
+
+    checkpoint_every_batches = int(getattr(args, "checkpoint_every_batches", 0) or 0)
+    checkpoint_at_global_batches = parse_batch_set(getattr(args, "checkpoint_at_global_batches", None))
+    checkpoint_at_epoch_batches = parse_batch_set(getattr(args, "checkpoint_at_epoch_batches", None))
+    for epoch in range(start_epoch, args.epochs + 1):
         model.train()
         total_loss = 0.0
         total = 0
+        batches = 0
+        max_grad_norm_before_clip = 0.0
         metric_sums: dict[str, float] = {}
+        generator = torch.Generator()
+        generator.manual_seed(seed + epoch)
+        loader = DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            generator=generator,
+        )
         for batch in loader:
+            batches += 1
+            global_batch += 1
             inputs, labels = unpack_batch(batch, device)
             optimizer.zero_grad(set_to_none=True)
             outputs = model(**inputs)
             loss = supervised_loss(outputs, labels)
+            if fail_on_nonfinite and not torch.isfinite(loss).item():
+                raise FloatingPointError(
+                    "non-finite supervised loss at "
+                    f"epoch={epoch} batch={batches} global_batch={global_batch} "
+                    f"loss={loss.detach().item()} action_counts={action_count_context(labels[0])}"
+                )
             loss.backward()
+            if grad_clip > 0.0:
+                grad_norm = safe_clip_grad_norm_(trainable_parameters, grad_clip)
+                if math.isfinite(grad_norm):
+                    max_grad_norm_before_clip = max(max_grad_norm_before_clip, grad_norm)
+                elif fail_on_nonfinite:
+                    bad_grads = first_nonfinite_gradients(model)
+                    raise FloatingPointError(
+                        "non-finite supervised gradients before clipping at "
+                        f"epoch={epoch} batch={batches} global_batch={global_batch} "
+                        f"grad_norm={grad_norm} bad_gradients={bad_grads} "
+                        f"action_counts={action_count_context(labels[0])}"
+                    )
+            elif fail_on_nonfinite:
+                bad_grads = first_nonfinite_gradients(model)
+                if bad_grads:
+                    raise FloatingPointError(
+                        "non-finite supervised gradients at "
+                        f"epoch={epoch} batch={batches} global_batch={global_batch} "
+                        f"bad_gradients={bad_grads} action_counts={action_count_context(labels[0])}"
+                    )
             optimizer.step()
+            if fail_on_nonfinite:
+                bad_parameters = first_nonfinite_parameters(model)
+                if bad_parameters:
+                    raise FloatingPointError(
+                        "non-finite supervised parameters after optimizer step at "
+                        f"epoch={epoch} batch={batches} global_batch={global_batch} "
+                        f"bad_parameters={bad_parameters} action_counts={action_count_context(labels[0])}"
+                    )
             batch_size = int(labels[0].numel())
             total_loss += float(loss.item()) * batch_size
             total += batch_size
             merge_metric_sums(metric_sums, batch_metric_sums(outputs, labels))
+            if (
+                (checkpoint_every_batches and global_batch % checkpoint_every_batches == 0)
+                or global_batch in checkpoint_at_global_batches
+                or batches in checkpoint_at_epoch_batches
+            ):
+                checkpoint_dir = checkpoint_directory(args)
+                save_supervised_checkpoint(
+                    model=model,
+                    config=config,
+                    optimizer=optimizer,
+                    metrics=metrics,
+                    encoding_schema=encoding_schema,
+                    checkpoint_encoding_version=checkpoint_encoding_version,
+                    epoch=epoch,
+                    path=checkpoint_dir / f"batch_{global_batch:08d}.pt",
+                    include_training_state=True,
+                )
         epoch_metrics = {
             "epoch": epoch,
+            "batches": batches,
+            "global_batch": global_batch,
             "optimization_loss": total_loss / max(1, total),
             **finalize_metric_sums(metric_sums),
         }
+        if grad_clip > 0.0:
+            epoch_metrics["max_grad_norm_before_clip"] = max_grad_norm_before_clip
         metrics["epochs"].append(epoch_metrics)
         print(json.dumps(epoch_metrics, sort_keys=True), flush=True)
+        metrics_jsonl = getattr(args, "metrics_jsonl", None)
+        if metrics_jsonl:
+            metrics_jsonl_path = Path(metrics_jsonl)
+            metrics_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            with metrics_jsonl_path.open("a", encoding="utf-8") as dst:
+                dst.write(json.dumps(epoch_metrics, sort_keys=True) + "\n")
+        if args.metrics_out:
+            write_metrics_file(Path(args.metrics_out), metrics)
+        checkpoint_every_epochs = int(getattr(args, "checkpoint_every_epochs", 0) or 0)
+        if checkpoint_every_epochs and epoch % checkpoint_every_epochs == 0:
+            checkpoint_dir = checkpoint_directory(args)
+            save_supervised_checkpoint(
+                model=model,
+                config=config,
+                optimizer=optimizer,
+                metrics=metrics,
+                encoding_schema=encoding_schema,
+                checkpoint_encoding_version=checkpoint_encoding_version,
+                epoch=epoch,
+                path=checkpoint_dir / f"epoch_{epoch:04d}.pt",
+                include_training_state=True,
+            )
+            save_supervised_checkpoint(
+                model=model,
+                config=config,
+                optimizer=optimizer,
+                metrics=metrics,
+                encoding_schema=encoding_schema,
+                checkpoint_encoding_version=checkpoint_encoding_version,
+                epoch=epoch,
+                path=checkpoint_dir / "latest.pt",
+                include_training_state=True,
+            )
     if args.checkpoint_out:
         Path(args.checkpoint_out).parent.mkdir(parents=True, exist_ok=True)
-        state_dict = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
-        torch.save(
-            {
-                "model": state_dict,
-                "config": config.__dict__,
-                "metrics": metrics,
-                "encoding_schema": encoding_schema,
-                "tensor_encoding_version": checkpoint_encoding_version,
-            },
-            args.checkpoint_out,
+        save_supervised_checkpoint(
+            model=model,
+            config=config,
+            optimizer=optimizer,
+            metrics=metrics,
+            encoding_schema=encoding_schema,
+            checkpoint_encoding_version=checkpoint_encoding_version,
+            epoch=args.epochs,
+            path=Path(args.checkpoint_out),
+            include_training_state=False,
         )
     if args.metrics_out:
-        Path(args.metrics_out).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.metrics_out).write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+        write_metrics_file(Path(args.metrics_out), metrics)
     return metrics
+
+
+def save_supervised_checkpoint(
+    *,
+    model: nn.Module,
+    config: TjongConfig,
+    optimizer: torch.optim.Optimizer,
+    metrics: dict,
+    encoding_schema: dict,
+    checkpoint_encoding_version: str | None,
+    epoch: int,
+    path: Path,
+    include_training_state: bool,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    state_dict = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
+    payload = {
+        "model": state_dict,
+        "config": config.__dict__,
+        "metrics": metrics,
+        "encoding_schema": encoding_schema,
+        "tensor_encoding_version": checkpoint_encoding_version,
+    }
+    if include_training_state:
+        payload["optimizer"] = optimizer.state_dict()
+        payload["epoch"] = int(epoch)
+    torch.save(payload, path)
 
 
 def main() -> int:
@@ -294,6 +618,18 @@ def main() -> int:
     parser.add_argument("--device", default=None)
     parser.add_argument("--data-parallel", action="store_true")
     parser.add_argument("--require-encoding-version", default=None)
+    parser.add_argument("--require-paper-config", action="store_true")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--checkpoint-every-epochs", type=int, default=0)
+    parser.add_argument("--checkpoint-dir", default=None)
+    parser.add_argument("--resume-checkpoint", default=None)
+    parser.add_argument("--metrics-jsonl", default=None)
+    parser.add_argument("--checkpoint-every-batches", type=int, default=0)
+    parser.add_argument("--checkpoint-at-global-batches", default=None)
+    parser.add_argument("--checkpoint-at-epoch-batches", default=None)
+    parser.add_argument("--grad-clip", type=float, default=0.0)
+    parser.add_argument("--force-math-sdp", action="store_true")
+    parser.add_argument("--fail-on-nonfinite", action="store_true")
     args = parser.parse_args()
     train(args)
     return 0

@@ -1,0 +1,242 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tjong-hu-restore-prep-cpu-20260606b
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: hu-restore-prep
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 86400
+  template:
+    metadata:
+      labels:
+        app: tjong-replication
+        task: hu-restore-prep
+    spec:
+      restartPolicy: Never
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - k8s-haosu-22.sdsc.optiputer.net
+      containers:
+        - name: hu-restore-prep
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              export PYTHONPATH="${PWD}/papers/tjong_cit2_12298/src:${PYTHONPATH:-}"
+              python - <<'PY'
+              from pathlib import Path
+              converter = Path("scripts/tziakcha_records.py").read_text(encoding="utf-8")
+              trainer = Path("papers/tjong_cit2_12298/src/tjong_replication/train_supervised.py").read_text(encoding="utf-8")
+              assert "baseFanCnt" in converter and "can_hu_vector" in converter
+              assert "action_breakdown" in trainer and "metrics_jsonl" in trainer
+              print("source_hu_restore_ready", True, flush=True)
+              PY
+
+              TAG=20260606b
+              MAIN_RAW=data/raw/tziakcha_all_plus_live_elo2300_session_audit_raw.jsonl
+              HUMAN32_RAW=data/raw/tziakcha_human_records_32.jsonl
+              HUMAN256_RAW=data/raw/tziakcha_human_records_256.jsonl
+              HUMAN512_RAW=data/raw/tziakcha_human_records_512.jsonl
+              CHAGA_RAW=data/raw/tziakcha_chaga0208_records.jsonl
+
+              MAIN_BOTZONE=data/raw/tziakcha_all_plus_live_elo2300_botzone_hu_${TAG}.jsonl
+              HUMAN32_BOTZONE=data/raw/tziakcha_human_botzone_raw_32_hu_${TAG}.jsonl
+              HUMAN256_BOTZONE=data/raw/tziakcha_human_botzone_raw_256_hu_${TAG}.jsonl
+              HUMAN512_BOTZONE=data/raw/tziakcha_human_botzone_raw_512_hu_${TAG}.jsonl
+              HUMAN517_BOTZONE=data/raw/tziakcha_human_botzone_raw_517_hu_${TAG}.jsonl
+              CHAGA_BOTZONE=data/raw/tziakcha_chaga0208_botzone_raw_hu_${TAG}.jsonl
+              ALL_BOTZONE=data/raw/tziakcha_all_sources_botzone_hu_${TAG}.jsonl
+
+              MERGE_SUMMARY=runs/tjong_tziakcha_all_sources_botzone_hu_${TAG}_summary.json
+              VALIDATION=runs/tjong_validate_tziakcha_all_sources_botzone_hu_${TAG}.json
+              HU_AUDIT=runs/tjong_hu_restore_audit_${TAG}.json
+              TRAIN_PT=data/processed/tjong/tziakcha_all_sources_botzone_hu_${TAG}_tensorized.pt
+              TENSORIZE_SUMMARY=runs/tjong_tensorize_all_sources_hu_${TAG}_summary.json
+              RAW_INITDATA=data/processed/tjong/tziakcha_all_sources_botzone_hu_${TAG}_initdata.jsonl
+              INITDATA_SUMMARY=runs/tjong_tziakcha_all_sources_initdata_hu_${TAG}_summary.json
+              INITDATA_VALIDATION=runs/tjong_validate_tziakcha_all_sources_initdata_hu_${TAG}.json
+
+              test -s "${MAIN_RAW}"
+              test -s "${HUMAN32_RAW}"
+              test -s "${HUMAN256_RAW}"
+              test -s "${HUMAN512_RAW}"
+              test -s "${CHAGA_RAW}"
+
+              python -m tjong_replication.convert_tziakcha_to_botzone \
+                --in "${MAIN_RAW}" \
+                --out "${MAIN_BOTZONE}" \
+                --summary-out runs/tjong_tziakcha_to_botzone_main_hu_${TAG}_summary.json \
+                --min-written 763358 \
+                --fail-on-error
+              python -m tjong_replication.convert_tziakcha_to_botzone \
+                --in "${HUMAN32_RAW}" \
+                --out "${HUMAN32_BOTZONE}" \
+                --summary-out runs/tjong_tziakcha_to_botzone_human32_hu_${TAG}_summary.json \
+                --min-written 32 \
+                --fail-on-error
+              python -m tjong_replication.convert_tziakcha_to_botzone \
+                --in "${HUMAN256_RAW}" \
+                --out "${HUMAN256_BOTZONE}" \
+                --summary-out runs/tjong_tziakcha_to_botzone_human256_hu_${TAG}_summary.json \
+                --min-written 1 \
+                --fail-on-error
+              python -m tjong_replication.convert_tziakcha_to_botzone \
+                --in "${HUMAN512_RAW}" \
+                --out "${HUMAN512_BOTZONE}" \
+                --summary-out runs/tjong_tziakcha_to_botzone_human512_hu_${TAG}_summary.json \
+                --min-written 1 \
+                --fail-on-error
+              python -m tjong_replication.merge_botzone_corpora \
+                --in "${HUMAN256_BOTZONE}" \
+                --in "${HUMAN512_BOTZONE}" \
+                --out "${HUMAN517_BOTZONE}" \
+                --summary-out runs/tjong_tziakcha_to_botzone_human517_hu_${TAG}_summary.json \
+                --min-written 517 \
+                --overwrite \
+                --fail-on-error
+              python -m tjong_replication.convert_tziakcha_to_botzone \
+                --in "${CHAGA_RAW}" \
+                --out "${CHAGA_BOTZONE}" \
+                --summary-out runs/tjong_tziakcha_to_botzone_chaga_hu_${TAG}_summary.json \
+                --min-written 76 \
+                --fail-on-error
+
+              python -m tjong_replication.merge_botzone_corpora \
+                --in "${MAIN_BOTZONE}" \
+                --in "${HUMAN32_BOTZONE}" \
+                --in "${HUMAN517_BOTZONE}" \
+                --in "${CHAGA_BOTZONE}" \
+                --out "${ALL_BOTZONE}" \
+                --summary-out "${MERGE_SUMMARY}" \
+                --min-written 763471 \
+                --overwrite \
+                --fail-on-error
+              EXPECTED_RECORDS="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["records_written"])' "${MERGE_SUMMARY}")"
+              export ALL_BOTZONE EXPECTED_RECORDS HU_AUDIT
+              python -m tjong_replication.validate_paper_corpus \
+                --in "${ALL_BOTZONE}" \
+                --expected-records "${EXPECTED_RECORDS}" \
+                --summary-out "${VALIDATION}"
+
+              python - <<'PY'
+              import json
+              import os
+              from pathlib import Path
+
+              path = Path(os.environ["ALL_BOTZONE"])
+              hu_count = 0
+              bad = []
+              for line_no, line in enumerate(path.open(encoding="utf-8"), start=1):
+                  if not line.strip():
+                      continue
+                  record = json.loads(line)
+                  logs = record.get("logs") or []
+                  for index in range(1, len(logs), 2):
+                      request_log = logs[index - 1].get("output") or {}
+                      display = request_log.get("display") or {}
+                      response_log = logs[index]
+                      for player_text, item in response_log.items():
+                          response = str((item or {}).get("response") or (item or {}).get("raw") or "").strip().upper()
+                          if response != "HU":
+                              continue
+                          hu_count += 1
+                          try:
+                              player = int(player_text)
+                              can_hu = display.get("canHu") or []
+                              can_hu_value = int(can_hu[player])
+                              base_fan = int(display.get("baseFanCnt", can_hu_value))
+                              fan_cnt = int(display.get("fanCnt", base_fan))
+                          except Exception as exc:
+                              bad.append({"line": line_no, "match_id": record.get("match_id"), "player": player_text, "error": str(exc)})
+                              continue
+                          if can_hu_value < 8 or base_fan < 8 or fan_cnt != base_fan:
+                              bad.append(
+                                  {
+                                      "line": line_no,
+                                      "match_id": record.get("match_id"),
+                                      "player": player,
+                                      "canHu": can_hu,
+                                      "baseFanCnt": display.get("baseFanCnt"),
+                                      "fanCnt": display.get("fanCnt"),
+                                  }
+                              )
+                          if len(bad) >= 20:
+                              break
+                      if len(bad) >= 20:
+                          break
+                  if len(bad) >= 20:
+                      break
+              summary = {
+                  "format": "tjong_hu_restore_audit_v1",
+                  "path": str(path),
+                  "hu_response_count": hu_count,
+                  "bad_hu_count": len(bad),
+                  "bad_examples": bad,
+                  "legal_definition": "HU response is retained only when source base fan excluding flowers is >= 8; fanCnt equals baseFanCnt in converted displays.",
+              }
+              Path(os.environ["HU_AUDIT"]).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+              print(json.dumps(summary, sort_keys=True), flush=True)
+              if hu_count <= 0 or bad:
+                  raise SystemExit(1)
+              PY
+
+              python -m tjong_replication.tensorize_botzone \
+                --in "${ALL_BOTZONE}" \
+                --out "${TRAIN_PT}" \
+                --summary-out "${TENSORIZE_SUMMARY}" \
+                --corpus-validation "${VALIDATION}"
+              python - <<'PY'
+              import json
+              import os
+              from pathlib import Path
+              summary = json.loads(Path(os.environ.get("TENSORIZE_SUMMARY", "runs/tjong_tensorize_all_sources_hu_20260606b_summary.json")).read_text())
+              stats = summary.get("stats") or {}
+              assert int(stats.get("action:HU", 0)) > 0, summary
+              assert int(stats.get("label_outside_mask:HU", 0)) == 0, summary
+              print("tensor_hu_gate", {"action_HU": int(stats.get("action:HU", 0)), "label_outside_mask_HU": int(stats.get("label_outside_mask:HU", 0))}, flush=True)
+              PY
+
+              python -m tjong_replication.convert_tziakcha_to_initdata \
+                --in "${ALL_BOTZONE}" \
+                --out "${RAW_INITDATA}" \
+                --summary-out "${INITDATA_SUMMARY}" \
+                --min-written "${EXPECTED_RECORDS}" \
+                --allow-random-fallback \
+                --fail-on-error
+              python -m tjong_replication.validate_initdata_corpus \
+                --in "${RAW_INITDATA}" \
+                --expected-records "${EXPECTED_RECORDS}" \
+                --summary-out "${INITDATA_VALIDATION}"
+          resources:
+            requests:
+              cpu: "8"
+              memory: 96Gi
+              ephemeral-storage: 160Gi
+            limits:
+              cpu: "8"
+              memory: 96Gi
+              ephemeral-storage: 240Gi
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

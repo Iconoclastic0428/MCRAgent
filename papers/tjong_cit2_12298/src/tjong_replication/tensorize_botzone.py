@@ -317,7 +317,23 @@ def tensorize_file(
     max_matches: int | None = None,
     memory_len: int = 4,
     include_single_action: bool = False,
+    streaming: bool = False,
+    compact_metadata: bool = False,
+    progress_every: int = 0,
 ) -> dict[str, Any]:
+    if streaming:
+        return tensorize_file_streaming(
+            in_path,
+            out_path,
+            summary_out=summary_out,
+            corpus_validation=corpus_validation,
+            max_matches=max_matches,
+            memory_len=memory_len,
+            include_single_action=include_single_action,
+            compact_metadata=compact_metadata,
+            progress_every=progress_every,
+        )
+
     examples: list[EncodedExample] = []
     stats: Counter[str] = Counter()
 
@@ -341,6 +357,19 @@ def tensorize_file(
             stats["matches"] += 1
             stats.update(record_stats)
             examples.extend(record_examples)
+            if progress_every > 0 and stats["matches"] % progress_every == 0:
+                print(
+                    json.dumps(
+                        {
+                            "stage": "tensorize_collect",
+                            "matches": int(stats["matches"]),
+                            "examples": int(len(examples)),
+                            "line": int(line_no),
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     payload = _stack_examples(examples, stats)
@@ -350,6 +379,7 @@ def tensorize_file(
     if corpus_validation is not None:
         corpus_validation_payload = json.loads(corpus_validation.read_text(encoding="utf-8"))
         payload["corpus_validation"] = corpus_validation_payload
+    _finalize_metadata(payload)
     torch.save(payload, out_path)
 
     summary = {
@@ -373,6 +403,165 @@ def tensorize_file(
         summary_out.parent.mkdir(parents=True, exist_ok=True)
         summary_out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
+
+
+def tensorize_file_streaming(
+    in_path: Path,
+    out_path: Path,
+    *,
+    summary_out: Path | None = None,
+    corpus_validation: Path | None = None,
+    max_matches: int | None = None,
+    memory_len: int = 4,
+    include_single_action: bool = False,
+    compact_metadata: bool = False,
+    progress_every: int = 0,
+) -> dict[str, Any]:
+    """Tensorize without retaining every EncodedExample object before saving.
+
+    The paper-scale corpus is large enough that the legacy list-then-stack path
+    can OOM before torch.save. This two-pass writer keeps only the final tensors
+    plus one record's examples in memory.
+    """
+
+    stats = _scan_tensorize_stats(
+        in_path,
+        max_matches=max_matches,
+        memory_len=memory_len,
+        include_single_action=include_single_action,
+        progress_every=progress_every,
+    )
+    total_examples = int(stats.get("examples", 0))
+    payload = _allocate_payload(total_examples, stats, compact_metadata=compact_metadata)
+    second_stats = Counter()
+    written = 0
+
+    with _open_text(in_path) as src:
+        for line_no, line in enumerate(src, start=1):
+            if max_matches is not None and second_stats["matches"] >= max_matches:
+                break
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+                record_examples, record_stats = tensorize_record(
+                    record,
+                    memory_len=memory_len,
+                    include_single_action=include_single_action,
+                )
+            except Exception as exc:
+                second_stats[f"record_error:{type(exc).__name__}"] += 1
+                second_stats["record_error_lines"] += 1
+                continue
+            second_stats["matches"] += 1
+            second_stats.update(record_stats)
+            for example in record_examples:
+                _write_example(payload, written, example)
+                written += 1
+            if progress_every > 0 and second_stats["matches"] % progress_every == 0:
+                print(
+                    json.dumps(
+                        {
+                            "stage": "tensorize_write",
+                            "matches": int(second_stats["matches"]),
+                            "examples_written": int(written),
+                            "line": int(line_no),
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+
+    if written != total_examples:
+        raise RuntimeError(f"streaming tensorized {written} examples, expected {total_examples}")
+    if int(second_stats.get("examples", 0)) != total_examples:
+        raise RuntimeError(
+            f"streaming stats mismatch: second pass examples={second_stats.get('examples', 0)}, "
+            f"first pass examples={total_examples}"
+        )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    encoding_schema = tensor_encoding_schema()
+    payload["encoding_schema"] = encoding_schema
+    corpus_validation_payload = None
+    if corpus_validation is not None:
+        corpus_validation_payload = json.loads(corpus_validation.read_text(encoding="utf-8"))
+        payload["corpus_validation"] = corpus_validation_payload
+    _finalize_metadata(payload)
+    torch.save(payload, out_path)
+
+    summary = {
+        "input": str(in_path),
+        "output": str(out_path),
+        "corpus_validation": corpus_validation_payload,
+        "examples": total_examples,
+        "stats": dict(sorted(stats.items())),
+        "encoding_schema": encoding_schema,
+        "memory_len": memory_len,
+        "include_single_action": include_single_action,
+        "streaming": True,
+        "compact_metadata": bool(compact_metadata),
+        "assumptions": [
+            "Chow claim indices use suit * 21 + (middle_rank - 2) * 3 + (offer_position - 1), matching the public Lawlorentz/Botzone action layout.",
+            "The policy-visible remaining-tile rows are live tile counts from the acting player's visible perspective.",
+            "The value hidden matrix stores three opponent hands, concealed Kong tile counts, and remaining wall tiles to match the paper's 5 x 34 hidden/global feature shape.",
+            "Tile-decision heads receive sub-state tensors whose past frames match the action-decision memory and whose current frame is conditioned on the chosen action.",
+            "Claim responses with forced discards produce one claim-family example plus one post-claim discard example; the post-claim discard sub-state uses the replayed state after the meld.",
+        ],
+    }
+    if summary_out is not None:
+        summary_out.parent.mkdir(parents=True, exist_ok=True)
+        summary_out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return summary
+
+
+def _scan_tensorize_stats(
+    in_path: Path,
+    *,
+    max_matches: int | None,
+    memory_len: int,
+    include_single_action: bool,
+    progress_every: int,
+) -> Counter[str]:
+    stats: Counter[str] = Counter()
+    with _open_text(in_path) as src:
+        for line_no, line in enumerate(src, start=1):
+            if max_matches is not None and stats["matches"] >= max_matches:
+                break
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+                record_examples, record_stats = tensorize_record(
+                    record,
+                    memory_len=memory_len,
+                    include_single_action=include_single_action,
+                )
+            except Exception as exc:
+                stats[f"record_error:{type(exc).__name__}"] += 1
+                stats["record_error_lines"] += 1
+                continue
+            stats["matches"] += 1
+            stats.update(record_stats)
+            if len(record_examples) != int(record_stats.get("examples", len(record_examples))):
+                raise RuntimeError(
+                    f"record example count mismatch at line {line_no}: "
+                    f"len={len(record_examples)} stats={record_stats.get('examples')}"
+                )
+            if progress_every > 0 and stats["matches"] % progress_every == 0:
+                print(
+                    json.dumps(
+                        {
+                            "stage": "tensorize_scan",
+                            "matches": int(stats["matches"]),
+                            "examples": int(stats.get("examples", 0)),
+                            "line": int(line_no),
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+    return stats
 
 
 def tensorize_record(
@@ -809,6 +998,108 @@ def _stack_examples(examples: list[EncodedExample], stats: Counter[str]) -> dict
     }
 
 
+def _allocate_payload(total_examples: int, stats: Counter[str], *, compact_metadata: bool) -> dict[str, Any]:
+    payload = {
+        "visible_tiles": torch.empty(total_examples, 4, 22, 34, dtype=torch.float32),
+        "game_features": torch.empty(total_examples, 4, 24, dtype=torch.float32),
+        "rewards": torch.empty(total_examples, 4, dtype=torch.float32),
+        "previous_actions": torch.empty(total_examples, 4, dtype=torch.long),
+        "sub_visible_tiles": torch.empty(total_examples, 4, 22, 34, dtype=torch.float32),
+        "sub_game_features": torch.empty(total_examples, 4, 24, dtype=torch.float32),
+        "sub_rewards": torch.empty(total_examples, 4, dtype=torch.float32),
+        "sub_previous_actions": torch.empty(total_examples, 4, dtype=torch.long),
+        "hidden_tiles": torch.empty(total_examples, 5, 34, dtype=torch.float32),
+        "action_label": torch.empty(total_examples, dtype=torch.long),
+        "claim_label": torch.empty(total_examples, dtype=torch.long),
+        "discard_label": torch.empty(total_examples, dtype=torch.long),
+        "value_target": torch.empty(total_examples, dtype=torch.float32),
+        "metadata": _allocate_metadata(total_examples, compact=compact_metadata),
+        "stats": dict(sorted(stats.items())),
+    }
+    return payload
+
+
+def _allocate_metadata(total_examples: int, *, compact: bool) -> dict[str, Any]:
+    if compact:
+        return {
+            "format": "compact_v1",
+            "match_id": [],
+            "match_index": torch.empty(total_examples, dtype=torch.long),
+            "player": torch.empty(total_examples, dtype=torch.long),
+            "turn_index": torch.empty(total_examples, dtype=torch.long),
+            "kind": [],
+            "_match_id_to_index": {},
+        }
+    return {
+        "match_id": [],
+        "player": [],
+        "turn_index": [],
+        "request": [],
+        "response": [],
+        "kind": [],
+    }
+
+
+def _write_example(payload: dict[str, Any], index: int, example: EncodedExample) -> None:
+    payload["visible_tiles"][index].copy_(example.visible_tiles)
+    payload["game_features"][index].copy_(example.game_features)
+    payload["rewards"][index].copy_(example.rewards)
+    payload["previous_actions"][index].copy_(example.previous_actions)
+    payload["sub_visible_tiles"][index].copy_(example.sub_visible_tiles)
+    payload["sub_game_features"][index].copy_(example.sub_game_features)
+    payload["sub_rewards"][index].copy_(example.sub_rewards)
+    payload["sub_previous_actions"][index].copy_(example.sub_previous_actions)
+    payload["hidden_tiles"][index].copy_(example.hidden_tiles)
+    payload["action_label"][index] = int(example.action_label)
+    payload["claim_label"][index] = int(example.claim_label)
+    payload["discard_label"][index] = int(example.discard_label)
+    payload["value_target"][index] = float(example.value_target)
+    _write_metadata(payload["metadata"], index, example)
+
+
+def _write_metadata(metadata: dict[str, Any], index: int, example: EncodedExample) -> None:
+    if metadata.get("format") == "compact_v1":
+        match_id_to_index = metadata["_match_id_to_index"]
+        match_index = match_id_to_index.get(example.match_id)
+        if match_index is None:
+            match_index = len(metadata["match_id"])
+            match_id_to_index[example.match_id] = match_index
+            metadata["match_id"].append(example.match_id)
+        metadata["match_index"][index] = int(match_index)
+        metadata["player"][index] = int(example.player)
+        metadata["turn_index"][index] = int(example.turn_index)
+        return
+
+    metadata["match_id"].append(example.match_id)
+    metadata["player"].append(example.player)
+    metadata["turn_index"].append(example.turn_index)
+    metadata["request"].append(example.request)
+    metadata["response"].append(example.response)
+    metadata["kind"].append(example.kind)
+
+
+def _finalize_metadata(payload: dict[str, Any]) -> None:
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("format") == "compact_v1":
+        metadata.pop("_match_id_to_index", None)
+
+
+def metadata_column(metadata: dict[str, Any] | None, key: str) -> list[Any]:
+    if not metadata:
+        return []
+    if key == "match_id" and "match_index" in metadata:
+        match_ids = list(metadata.get("match_id") or metadata.get("match_ids") or [])
+        match_index = metadata.get("match_index")
+        indices = match_index.tolist() if torch.is_tensor(match_index) else list(match_index or [])
+        return [str(match_ids[int(index)]) for index in indices]
+    values = metadata.get(key)
+    if values is None:
+        return []
+    if torch.is_tensor(values):
+        return values.tolist()
+    return list(values)
+
+
 def tensor_encoding_schema() -> dict[str, Any]:
     return {
         "version": TENSOR_ENCODING_VERSION,
@@ -873,6 +1164,9 @@ def main() -> int:
     parser.add_argument("--max-matches", type=int, default=None)
     parser.add_argument("--memory-len", type=int, default=4)
     parser.add_argument("--include-single-action", action="store_true")
+    parser.add_argument("--streaming", action="store_true")
+    parser.add_argument("--compact-metadata", action="store_true")
+    parser.add_argument("--progress-every", type=int, default=0)
     args = parser.parse_args()
     summary = tensorize_file(
         Path(args.infile),
@@ -882,6 +1176,9 @@ def main() -> int:
         max_matches=args.max_matches,
         memory_len=args.memory_len,
         include_single_action=args.include_single_action,
+        streaming=args.streaming,
+        compact_metadata=args.compact_metadata,
+        progress_every=args.progress_every,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0

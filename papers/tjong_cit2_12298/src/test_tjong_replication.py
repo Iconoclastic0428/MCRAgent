@@ -11,7 +11,7 @@ import torch
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from tjong_replication.actions import ACTION_TO_INDEX, CLAIM_SIZE, flatten_claim, unflatten_claim  # noqa: E402
+from tjong_replication.actions import ACTION_NAMES, ACTION_TO_INDEX, CLAIM_SIZE, flatten_claim, unflatten_claim  # noqa: E402
 from tjong_replication.audit_tziakcha_botzone_coverage import audit_coverage  # noqa: E402
 from tjong_replication.build_ppo_rollouts import reward_to_go, rollout_rewards  # noqa: E402
 from tjong_replication.collect_selfplay import (  # noqa: E402
@@ -48,6 +48,7 @@ from tjong_replication.tensorize_botzone import (  # noqa: E402
     ReplayState,
     action_type_mask,
     chow_claim_index,
+    metadata_column,
     tensor_encoding_schema,
     tensorize_file,
     tensorize_record,
@@ -62,6 +63,7 @@ from tjong_replication.train_supervised import (  # noqa: E402
     batch_metric_sums,
     finalize_metric_sums,
     load_tensor_dataset,
+    safe_clip_grad_norm_,
     train as train_supervised,
 )
 from tjong_replication.validate_initdata_corpus import validate_initdata_corpus  # noqa: E402
@@ -99,6 +101,75 @@ def test_network_forward_shapes():
     assert out["claim_logits"].shape == (batch, 199)
     assert out["discard_logits"].shape == (batch, 34)
     assert out["value"].shape == (batch,)
+
+
+def test_supervised_metrics_include_epoch_breakdowns():
+    action_labels = torch.tensor(
+        [
+            ACTION_TO_INDEX["HU"],
+            ACTION_TO_INDEX["DISCARD"],
+            ACTION_TO_INDEX["CHOW"],
+            ACTION_TO_INDEX["PONG"],
+            ACTION_TO_INDEX["MINGKONG"],
+            ACTION_TO_INDEX["BUKONG"],
+            ACTION_TO_INDEX["ANKONG"],
+            ACTION_TO_INDEX["PASS"],
+        ],
+        dtype=torch.long,
+    )
+    claim_labels = torch.tensor(
+        [
+            0,
+            0,
+            flatten_claim("CHOW", 0),
+            flatten_claim("PONG", 0),
+            flatten_claim("MINGKONG", 0),
+            flatten_claim("BUKONG", 0),
+            flatten_claim("ANKONG", 0),
+            0,
+        ],
+        dtype=torch.long,
+    )
+    discard_labels = torch.zeros(len(action_labels), dtype=torch.long)
+    action_logits = torch.full((len(action_labels), len(ACTION_NAMES)), -10.0)
+    claim_logits = torch.full((len(action_labels), CLAIM_SIZE), -10.0)
+    discard_logits = torch.full((len(action_labels), 34), -10.0)
+    for row, label in enumerate(action_labels.tolist()):
+        action_logits[row, label] = 10.0
+    for row, label in enumerate(claim_labels.tolist()):
+        claim_logits[row, label] = 10.0
+    discard_logits[:, 0] = 10.0
+
+    metrics = finalize_metric_sums(
+        batch_metric_sums(
+            {
+                "action_logits": action_logits,
+                "claim_logits": claim_logits,
+                "discard_logits": discard_logits,
+            },
+            (action_labels, claim_labels, discard_labels),
+        )
+    )
+
+    assert metrics["action_breakdown"]["HU"]["count"] == 1
+    assert metrics["action_breakdown"]["HU"]["accuracy"] == 1.0
+    assert metrics["action_breakdown"]["DISCARD"]["count"] == 1
+    assert metrics["claim_breakdown"]["CHOW"]["accuracy"] == 1.0
+    assert metrics["claim_breakdown"]["PONG"]["accuracy"] == 1.0
+    assert metrics["claim_breakdown"]["MINGKONG"]["accuracy"] == 1.0
+    assert metrics["claim_breakdown"]["BUKONG"]["accuracy"] == 1.0
+    assert metrics["claim_breakdown"]["ANKONG"]["accuracy"] == 1.0
+    assert metrics["discard_tile_breakdown"]["W1"]["accuracy"] == 1.0
+
+
+def test_supervised_safe_grad_clip_uses_manual_norm():
+    parameter = torch.nn.Parameter(torch.tensor([0.0, 0.0]))
+    parameter.grad = torch.tensor([3.0, 4.0])
+
+    total_norm = safe_clip_grad_norm_([parameter], 0.5)
+
+    assert abs(total_norm - 5.0) < 1e-6
+    assert abs(float(parameter.grad.norm().item()) - 0.5) < 1e-6
 
 
 def test_policy_outer_transformer_uses_causal_memory_mask():
@@ -542,6 +613,83 @@ def test_tensorize_file_embeds_corpus_validation_summary():
         assert tensor["corpus_validation"]["records"] == 1
         assert tensor["encoding_schema"]["hidden_tile_rows"] == list(HIDDEN_TILE_ROW_NAMES)
         assert len(load_tensor_dataset(tensor_path, expected_encoding_version=TENSOR_ENCODING_VERSION)) == 0
+
+
+def test_streaming_tensorize_compacts_metadata_and_keeps_hu_labels():
+    record = {
+        "match_id": "streaming-hu",
+        "scores": {"0": 24, "1": -8, "2": -8, "3": -8},
+        "initdata": {"quan": 0, "walltiles": " ".join(TILE_NAMES * 4)},
+        "logs": [
+            {
+                "output": {
+                    "content": {"0": "0 0 0", "1": "0 1 0", "2": "0 2 0", "3": "0 3 0"},
+                    "display": {"action": "INIT", "quan": 0, "tileCnt": [21, 21, 21, 21]},
+                }
+            },
+            {"0": {"raw": "PASS"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+            {
+                "output": {
+                    "content": {
+                        "0": "1 0 0 0 0 W1 W2 W3 W4 W5 W6 W7 W8 W9 T1 T2 T3 T4",
+                        "1": "1 0 0 0 0 W1 W2 W3 W4 W5 W6 W7 W8 W9 T1 T2 T3 T4",
+                        "2": "1 0 0 0 0 W1 W2 W3 W4 W5 W6 W7 W8 W9 T1 T2 T3 T4",
+                        "3": "1 0 0 0 0 W1 W2 W3 W4 W5 W6 W7 W8 W9 T1 T2 T3 T4",
+                    },
+                    "display": {
+                        "action": "DEAL",
+                        "hand": [
+                            ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+                            ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+                            ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+                            ["W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "T1", "T2", "T3", "T4"],
+                        ],
+                        "tileCnt": [21, 21, 21, 21],
+                    },
+                }
+            },
+            {"0": {"raw": "PASS"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+            {
+                "output": {
+                    "content": {"0": "2 W1", "1": "3 0 DRAW W1", "2": "3 0 DRAW W1", "3": "3 0 DRAW W1"},
+                    "display": {
+                        "action": "DRAW",
+                        "player": 0,
+                        "tile": "W1",
+                        "canHu": [8, -4, -4, -4],
+                        "baseFanCnt": 8,
+                        "fanCnt": 8,
+                        "tileCnt": [20, 21, 21, 21],
+                    },
+                }
+            },
+            {"0": {"raw": "HU"}, "1": {"raw": "PASS"}, "2": {"raw": "PASS"}, "3": {"raw": "PASS"}},
+            {
+                "output": {
+                    "content": {"0": 24, "1": -8, "2": -8, "3": -8},
+                    "display": {"action": "HU", "player": 0, "score": [24, -8, -8, -8], "fanCnt": 8},
+                }
+            },
+        ],
+    }
+    with tempfile.TemporaryDirectory(dir=ROOT) as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        raw_path = tmp_path / "raw.jsonl"
+        tensor_path = tmp_path / "tensor.pt"
+        raw_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+        summary = tensorize_file(raw_path, tensor_path, streaming=True, compact_metadata=True)
+        tensor = torch.load(tensor_path, map_location="cpu")
+
+        assert summary["streaming"] is True
+        assert summary["compact_metadata"] is True
+        assert summary["stats"]["action:HU"] == 1
+        assert "label_outside_mask:HU" not in summary["stats"]
+        assert int(tensor["action_label"][0]) == ACTION_TO_INDEX["HU"]
+        assert tensor["metadata"]["format"] == "compact_v1"
+        assert metadata_column(tensor["metadata"], "match_id") == ["streaming-hu"]
+        returns = reward_to_go(torch.tensor([3.0]), metadata=tensor["metadata"], gamma=1.0)
+        assert torch.equal(returns, torch.tensor([3.0]))
 
 
 def test_tensor_loader_rejects_missing_paper_encoding_version():

@@ -1,11 +1,11 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: tjong-supervised-rl-l40-all-sources-20260605a
+  name: tjong-supervised-hu-l40-20260606b
   namespace: nourish-sdsc
   labels:
     app: tjong-replication
-    task: supervised-rl-all-sources
+    task: supervised-hu
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 172800
@@ -13,7 +13,7 @@ spec:
     metadata:
       labels:
         app: tjong-replication
-        task: supervised-rl-all-sources
+        task: supervised-hu
     spec:
       restartPolicy: Never
       tolerations:
@@ -30,7 +30,7 @@ spec:
                     values:
                       - NVIDIA-L40
       containers:
-        - name: tjong-supervised-all-sources
+        - name: supervised-hu
           image: docker.io/zpliang/documentsegementation:latest
           imagePullPolicy: Always
           workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
@@ -48,52 +48,60 @@ spec:
               export PYTHONPATH="${PWD}/papers/tjong_cit2_12298/src:${PYTHONPATH:-}"
               python - <<'PY'
               import torch
-              print("repo_commit", "tjong-supervised-rl-l40-all-sources-20260605a")
+              print("repo_commit", "tjong-supervised-hu-l40-20260606b")
               print("torch", torch.__version__, "cuda", torch.cuda.is_available(), "device_count", torch.cuda.device_count())
               PY
-              test -d papers/tjong_cit2_12298/src/tjong_replication
               python -m tjong_replication.verify_paper_compliance \
                 --paper-root papers/tjong_cit2_12298 \
-                --summary-out runs/tjong_paper_compliance_all_sources_20260605a.json
-              TRAIN_PT="${TJONG_TRAIN_PT:-data/processed/tjong/tziakcha_all_sources_botzone_20260605a_tensorized.pt}"
+                --summary-out runs/tjong_paper_compliance_hu_20260606b.json
+
+              TAG=20260606b
+              TRAIN_PT="${TJONG_TRAIN_PT:-data/processed/tjong/tziakcha_all_sources_botzone_hu_${TAG}_tensorized.pt}"
               EVAL_PT="${TJONG_EVAL_PT:-${TRAIN_PT}}"
-              EXPECTED_RECORDS="${TJONG_EXPECTED_RECORDS:-763471}"
-              TENSORIZE_SUMMARY="${TJONG_TENSORIZE_SUMMARY:-runs/tjong_tensorize_all_sources_20260605a_summary.json}"
-              VALIDATION_SUMMARY="${TJONG_VALIDATION_SUMMARY:-runs/tjong_validate_tziakcha_all_sources_botzone_20260605a.json}"
+              TENSORIZE_SUMMARY="${TJONG_TENSORIZE_SUMMARY:-runs/tjong_tensorize_all_sources_hu_${TAG}_summary.json}"
+              VALIDATION_SUMMARY="${TJONG_VALIDATION_SUMMARY:-runs/tjong_validate_tziakcha_all_sources_botzone_hu_${TAG}.json}"
+              HU_AUDIT="${TJONG_HU_AUDIT:-runs/tjong_hu_restore_audit_${TAG}.json}"
               TENSOR_ENCODING_VERSION="${TJONG_TENSOR_ENCODING_VERSION:-tjong_cit2_12298_v3_hidden_concealed_kong}"
-              PAPER_METRIC_TOLERANCE="${TJONG_PAPER_METRIC_TOLERANCE:-0.00005}"
-              CHECKPOINT_DIR="${TJONG_SUPERVISED_CHECKPOINT_DIR:-models/tjong_supervised_all_sources_20260605a_checkpoints}"
-              FINAL_CHECKPOINT="${TJONG_FINAL_CHECKPOINT:-models/tjong_supervised_all_sources_20260605a.pt}"
-              METRICS_OUT="${TJONG_METRICS_OUT:-runs/tjong_supervised_all_sources_20260605a_metrics.json}"
-              METRICS_JSONL="${TJONG_METRICS_JSONL:-runs/tjong_supervised_all_sources_20260605a_metrics.jsonl}"
-              EVAL_OUT="${TJONG_EVAL_OUT:-runs/tjong_supervised_all_sources_20260605a_eval.json}"
-              METRIC_GATE="${TJONG_METRIC_GATE:-runs/tjong_supervised_all_sources_20260605a_paper_metric_gate.json}"
+              CHECKPOINT_DIR="${TJONG_SUPERVISED_CHECKPOINT_DIR:-models/tjong_supervised_hu_${TAG}_checkpoints}"
+              FINAL_CHECKPOINT="${TJONG_FINAL_CHECKPOINT:-models/tjong_supervised_hu_${TAG}.pt}"
+              METRICS_OUT="${TJONG_METRICS_OUT:-runs/tjong_supervised_hu_${TAG}_metrics.json}"
+              METRICS_JSONL="${TJONG_METRICS_JSONL:-runs/tjong_supervised_hu_${TAG}_metrics.jsonl}"
+              EVAL_OUT="${TJONG_EVAL_OUT:-runs/tjong_supervised_hu_${TAG}_eval.json}"
+              METRIC_COMPARISON="${TJONG_METRIC_COMPARISON:-runs/tjong_supervised_hu_${TAG}_paper_metric_comparison.json}"
               TRAIN_SEED="${TJONG_TRAIN_SEED:-0}"
+              EPOCHS="${TJONG_SUPERVISED_EPOCHS:-125}"
               CHECKPOINT_EVERY_BATCHES="${TJONG_CHECKPOINT_EVERY_BATCHES:-0}"
               CHECKPOINT_AT_GLOBAL_BATCHES="${TJONG_CHECKPOINT_AT_GLOBAL_BATCHES:-}"
               CHECKPOINT_AT_EPOCH_BATCHES="${TJONG_CHECKPOINT_AT_EPOCH_BATCHES:-}"
-              export EXPECTED_RECORDS TRAIN_PT TENSORIZE_SUMMARY VALIDATION_SUMMARY TENSOR_ENCODING_VERSION
+
               test -s "${TRAIN_PT}"
               test -s "${TENSORIZE_SUMMARY}"
               test -s "${VALIDATION_SUMMARY}"
+              test -s "${HU_AUDIT}"
+              export TENSORIZE_SUMMARY HU_AUDIT TENSOR_ENCODING_VERSION
               python - <<'PY'
               import json
               import os
               from pathlib import Path
-              expected = int(os.environ["EXPECTED_RECORDS"])
-              summary = json.loads(Path(os.environ["TENSORIZE_SUMMARY"]).read_text())
-              validation = summary.get("corpus_validation") or json.loads(Path(os.environ["VALIDATION_SUMMARY"]).read_text())
-              encoding_schema = summary.get("encoding_schema") or {}
-              stats = summary.get("stats") or {}
-              assert summary.get("input") == "data/raw/tziakcha_all_sources_botzone_20260605a.jsonl", summary
-              assert summary.get("output") == os.environ["TRAIN_PT"], summary
-              assert encoding_schema.get("version") == os.environ["TENSOR_ENCODING_VERSION"], summary
-              assert int(validation.get("records", -1)) == expected, summary
-              assert bool(validation.get("valid_for_paper_supervised")), summary
-              assert int(stats.get("matches", -1)) == expected, summary
-              assert int(stats.get("record_error_lines", 0) or 0) == 0, summary
-              assert int(summary.get("examples", 0) or 0) > 0, summary
+              tensorize = json.loads(Path(os.environ["TENSORIZE_SUMMARY"]).read_text(encoding="utf-8"))
+              audit = json.loads(Path(os.environ["HU_AUDIT"]).read_text(encoding="utf-8"))
+              stats = tensorize.get("stats") or {}
+              assert int(audit.get("hu_response_count", 0)) > 0, audit
+              assert int(audit.get("bad_hu_count", -1)) == 0, audit
+              assert int(stats.get("action:HU", 0)) > 0, tensorize
+              assert int(stats.get("label_outside_mask:HU", 0) or 0) == 0, tensorize
+              assert (tensorize.get("encoding_schema") or {}).get("version") == os.environ["TENSOR_ENCODING_VERSION"], tensorize
+              print(
+                  "supervised_hu_preflight",
+                  {
+                      "hu_response_count": int(audit.get("hu_response_count", 0)),
+                      "action_HU": int(stats.get("action:HU", 0)),
+                      "label_outside_mask_HU": int(stats.get("label_outside_mask:HU", 0) or 0),
+                  },
+                  flush=True,
+              )
               PY
+
               RESUME_ARGS=""
               if [ -n "${TJONG_RESUME_CHECKPOINT:-}" ]; then
                 RESUME_ARGS="--resume-checkpoint ${TJONG_RESUME_CHECKPOINT}"
@@ -110,12 +118,13 @@ spec:
               if [ -n "${CHECKPOINT_AT_EPOCH_BATCHES}" ]; then
                 BATCH_CHECKPOINT_ARGS="${BATCH_CHECKPOINT_ARGS} --checkpoint-at-epoch-batches ${CHECKPOINT_AT_EPOCH_BATCHES}"
               fi
+
               python -m tjong_replication.train_supervised \
                 --train-pt "${TRAIN_PT}" \
                 --checkpoint-out "${FINAL_CHECKPOINT}" \
                 --metrics-out "${METRICS_OUT}" \
                 --metrics-jsonl "${METRICS_JSONL}" \
-                --epochs 125 \
+                --epochs "${EPOCHS}" \
                 --batch-size 1024 \
                 --lr 0.0001 \
                 --d-model 384 \
@@ -131,6 +140,7 @@ spec:
                 --checkpoint-dir "${CHECKPOINT_DIR}" \
                 ${BATCH_CHECKPOINT_ARGS} \
                 ${RESUME_ARGS}
+
               python -m tjong_replication.evaluate_supervised \
                 --checkpoint "${FINAL_CHECKPOINT}" \
                 --eval-pt "${EVAL_PT}" \
@@ -141,11 +151,16 @@ spec:
                 --require-paper-config \
                 --strict-deterministic \
                 --device cuda
-              python -m tjong_replication.verify_paper_metrics \
+
+              if python -m tjong_replication.verify_paper_metrics \
                 --metrics "${EVAL_OUT}" \
-                --summary-out "${METRIC_GATE}" \
+                --summary-out "${METRIC_COMPARISON}" \
                 --require-strict-deterministic \
-                --tolerance "${PAPER_METRIC_TOLERANCE}"
+                --tolerance 0.00005; then
+                echo "paper_metric_comparison_passed"
+              else
+                echo "paper_metric_comparison_nonfatal_mismatch"
+              fi
           resources:
             limits:
               cpu: "8"

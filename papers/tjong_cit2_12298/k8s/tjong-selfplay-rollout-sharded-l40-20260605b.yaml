@@ -1,4 +1,4 @@
-﻿apiVersion: batch/v1
+apiVersion: batch/v1
 kind: Job
 metadata:
   name: tjong-selfplay-rollout-sharded-l40-20260605b
@@ -23,9 +23,6 @@ spec:
         - key: nvidia.com/gpu
           operator: Exists
           effect: PreferNoSchedule
-        - key: nautilus.io/reservation
-          operator: Equal
-          value: csu-tide
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:

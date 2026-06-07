@@ -1,0 +1,176 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tjong-hu-nan-debug-l40s-20260607d
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: hu-nan-debug
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        app: tjong-replication
+        task: hu-nan-debug
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-L40
+                      - NVIDIA-L40S
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - rci-tide-gpu-01.sdsu.edu
+                      - rci-tide-gpu-02.sdsu.edu
+                      - rci-tide-gpu-03.sdsu.edu
+                      - rci-tide-gpu-04.sdsu.edu
+                      - rci-tide-gpu-05.sdsu.edu
+                      - rci-tide-gpu-06.sdsu.edu
+                      - rci-tide-gpu-07.sdsu.edu
+                      - rci-tide-gpu-08.sdsu.edu
+                      - rci-tide-gpu-09.sdsu.edu
+                      - rci-tide-gpu-10.sdsu.edu
+                      - rci-tide-gpu-11.sdsu.edu
+                      - rci-tide-gpu-12.sdsu.edu
+                      - rci-tide-gpu-13.sdsu.edu
+                      - rci-tide-gpu-14.sdsu.edu
+                      - rci-tide-gpu-15.sdsu.edu
+                      - rci-tide-gpu-16.sdsu.edu
+                      - rci-tide-gpu-17.sdsu.edu
+      containers:
+        - name: nan-debug
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: CUBLAS_WORKSPACE_CONFIG
+              value: ":4096:8"
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              export PYTHONPATH="${PWD}/papers/tjong_cit2_12298/src:${PYTHONPATH:-}"
+              python - <<'PY'
+              import json
+              import torch
+              from torch.nn.utils import clip_grad_norm_
+              from torch.utils.data import DataLoader
+              from tjong_replication.actions import ACTION_NAMES
+              from tjong_replication.model import TjongConfig, TjongNetwork
+              from tjong_replication.train_supervised import (
+                  configure_seed,
+                  supervised_loss,
+                  tensor_dataset_from_payload,
+                  unpack_batch,
+              )
+
+              def force_math_sdp():
+                  if torch.cuda.is_available():
+                      if hasattr(torch.backends.cuda, "enable_flash_sdp"):
+                          torch.backends.cuda.enable_flash_sdp(False)
+                      if hasattr(torch.backends.cuda, "enable_mem_efficient_sdp"):
+                          torch.backends.cuda.enable_mem_efficient_sdp(False)
+                      if hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
+                          torch.backends.cuda.enable_cudnn_sdp(False)
+                      if hasattr(torch.backends.cuda, "enable_math_sdp"):
+                          torch.backends.cuda.enable_math_sdp(True)
+
+              def iter_named_parameters(model):
+                  return model.module.named_parameters() if isinstance(model, torch.nn.DataParallel) else model.named_parameters()
+
+              def first_bad_parameters(model, limit=8):
+                  bad = []
+                  for name, parameter in iter_named_parameters(model):
+                      if not torch.isfinite(parameter).all():
+                          bad.append(name)
+                          if len(bad) >= limit:
+                              break
+                  return bad
+
+              force_math_sdp()
+              print(json.dumps({"stage": "start", "torch": torch.__version__, "cuda": torch.cuda.is_available(), "device_count": torch.cuda.device_count()}), flush=True)
+              payload = torch.load("data/processed/tjong/tziakcha_all_sources_botzone_hu_20260606c_tensorized.pt", map_location="cpu")
+              print(json.dumps({"stage": "loaded", "examples": int(payload["action_label"].numel()), "hu": int((payload["action_label"] == 1).sum().item())}), flush=True)
+              dataset = tensor_dataset_from_payload(payload)
+              configure_seed(0)
+              base = TjongNetwork(TjongConfig(d_model=384, n_heads=6, ffn_dim=1536, dropout=0.1))
+              device = torch.device("cuda")
+              model = torch.nn.DataParallel(base).to(device)
+              optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+              generator = torch.Generator()
+              generator.manual_seed(1)
+              loader = DataLoader(dataset, batch_size=1024, shuffle=True, num_workers=0, generator=generator)
+              model.train()
+              for batch_index, batch in enumerate(loader, start=1):
+                  inputs, labels = unpack_batch(batch, device)
+                  optimizer.zero_grad(set_to_none=True)
+                  outputs = model(**inputs)
+                  loss = supervised_loss(outputs, labels)
+                  loss_finite = bool(torch.isfinite(loss).item())
+                  counts = {ACTION_NAMES[i]: int((labels[0] == i).sum().item()) for i in range(len(ACTION_NAMES))}
+                  if batch_index <= 5 or batch_index % 10 == 0:
+                      print(json.dumps({"batch": batch_index, "loss": float(loss.detach().item()) if loss_finite else str(loss.detach().item()), "loss_finite": loss_finite, "action_counts": counts}, sort_keys=True), flush=True)
+                  if not loss_finite:
+                      raise SystemExit(10)
+                  loss.backward()
+                  total_norm = clip_grad_norm_(model.parameters(), max_norm=0.5, error_if_nonfinite=True)
+                  grad_bad = []
+                  grad_max = 0.0
+                  for name, parameter in iter_named_parameters(model):
+                      if parameter.grad is None:
+                          continue
+                      if not torch.isfinite(parameter.grad).all():
+                          grad_bad.append(name)
+                          if len(grad_bad) >= 8:
+                              break
+                      grad_max = max(
+                          grad_max,
+                          float(torch.nan_to_num(parameter.grad.detach().float().abs(), nan=0.0, posinf=0.0).max().item()),
+                      )
+                  if batch_index <= 5 or batch_index % 10 == 0 or grad_bad:
+                      print(json.dumps({"batch": batch_index, "grad_bad": grad_bad, "grad_max_after_clip": grad_max, "total_norm_before_clip": float(total_norm.detach().item())}, sort_keys=True), flush=True)
+                  if grad_bad:
+                      raise SystemExit(11)
+                  optimizer.step()
+                  param_bad = first_bad_parameters(model)
+                  if batch_index <= 5 or batch_index % 10 == 0 or param_bad:
+                      print(json.dumps({"batch": batch_index, "param_bad": param_bad}, sort_keys=True), flush=True)
+                  if param_bad:
+                      raise SystemExit(12)
+                  if batch_index >= 80:
+                      break
+              print(json.dumps({"stage": "finished_without_nonfinite", "batches": min(batch_index, 80)}), flush=True)
+              PY
+          resources:
+            limits:
+              cpu: "8"
+              memory: 96Gi
+              ephemeral-storage: 180Gi
+              nvidia.com/gpu: 2
+            requests:
+              cpu: "8"
+              memory: 96Gi
+              ephemeral-storage: 120Gi
+              nvidia.com/gpu: 2
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

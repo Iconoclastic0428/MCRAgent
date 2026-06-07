@@ -20,10 +20,6 @@ spec:
         - key: nvidia.com/gpu
           operator: Exists
           effect: PreferNoSchedule
-        - key: nautilus.io/reservation
-          operator: Equal
-          value: csu-tide
-          effect: NoSchedule
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
