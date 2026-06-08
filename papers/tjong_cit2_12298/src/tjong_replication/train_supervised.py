@@ -12,12 +12,22 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 
-from .actions import ACTION_NAMES, ACTION_TO_INDEX, CLAIM_ACTION_NAMES, CLAIM_SIZE, DISCARD_SIZE
+from .actions import (
+    ACTION_NAMES,
+    ACTION_TO_INDEX,
+    CLAIM_ACTION_NAMES,
+    CLAIM_GROUP_SIZES,
+    CLAIM_OFFSETS,
+    CLAIM_SIZE,
+    DISCARD_SIZE,
+)
 from .model import TjongConfig, TjongNetwork
 from .tensorize_botzone import SHARD_INDEX_FORMAT, TENSOR_ENCODING_VERSION, tensor_encoding_schema
 from .tiles import TILE_NAMES
 
 CLAIM_ACTION_INDICES = tuple(ACTION_TO_INDEX[name] for name in ("CHOW", "PONG", "MINGKONG", "BUKONG", "ANKONG"))
+ACTION_MASK_OFFSET = 16
+HAND_SELF_VISIBLE_ROW = 0
 PAPER_SUPERVISED_EPOCHS = 125
 PAPER_SUPERVISED_BATCH_SIZE = 1024
 PAPER_SUPERVISED_LR = 1e-4
@@ -397,6 +407,340 @@ def validate_supervised_labels(labels: tuple[torch.Tensor, torch.Tensor, torch.T
         raise ValueError(f"supervised label outside head range: {json.dumps(invalid, sort_keys=True)}")
 
 
+def _tensor_minmax(tensor: torch.Tensor) -> list[int | None]:
+    if tensor.numel() == 0:
+        return [None, None]
+    return [int(tensor.min().item()), int(tensor.max().item())]
+
+
+def _append_contract_issue(
+    issues: list[dict[str, object]],
+    issue_counts: dict[str, int],
+    kind: str,
+    mask: torch.Tensor | None = None,
+    *,
+    count: int | None = None,
+    shard_index: int | None = None,
+    path: Path | None = None,
+    details: dict[str, object] | None = None,
+    row_limit: int = 16,
+) -> None:
+    if count is None:
+        if mask is None:
+            raise ValueError("contract issue count requires mask or explicit count")
+        count = int(mask.sum().item())
+    if count <= 0:
+        return
+    issue_counts[kind] = int(issue_counts.get(kind, 0)) + int(count)
+    if len(issues) >= 64:
+        return
+    issue: dict[str, object] = {"kind": kind, "count": int(count)}
+    if shard_index is not None:
+        issue["shard_index"] = int(shard_index)
+    if path is not None:
+        issue["path"] = str(path)
+    if mask is not None and mask.ndim >= 1:
+        rows = torch.nonzero(mask.detach().cpu(), as_tuple=False)
+        if rows.numel():
+            issue["first_rows"] = rows[:, 0].flatten()[:row_limit].tolist()
+    if details:
+        issue.update(details)
+    issues.append(issue)
+
+
+def _validate_supervised_payload_contract(
+    data: dict,
+    *,
+    shard_index: int | None = None,
+    path: Path | None = None,
+    row_limit: int = 16,
+) -> tuple[dict[str, int], list[dict[str, object]]]:
+    issues: list[dict[str, object]] = []
+    issue_counts: dict[str, int] = {}
+    required = [
+        "visible_tiles",
+        "game_features",
+        "previous_actions",
+        "sub_visible_tiles",
+        "sub_game_features",
+        "sub_previous_actions",
+        "hidden_tiles",
+        "action_label",
+        "claim_label",
+        "discard_label",
+    ]
+    missing = [key for key in required if key not in data]
+    if missing:
+        _append_contract_issue(
+            issues,
+            issue_counts,
+            "missing_keys",
+            count=1,
+            shard_index=shard_index,
+            path=path,
+            details={"missing": missing},
+            row_limit=row_limit,
+        )
+        return issue_counts, issues
+
+    action = data["action_label"].long().reshape(-1)
+    claim = data["claim_label"].long().reshape(-1)
+    discard = data["discard_label"].long().reshape(-1)
+    n = int(action.numel())
+    length_mismatch = False
+    for key, tensor in (("claim_label", claim), ("discard_label", discard)):
+        if int(tensor.numel()) != n:
+            length_mismatch = True
+            _append_contract_issue(
+                issues,
+                issue_counts,
+                f"{key}_length_mismatch",
+                count=1,
+                shard_index=shard_index,
+                path=path,
+                details={"action_label": n, key: int(tensor.numel())},
+                row_limit=row_limit,
+            )
+    if length_mismatch:
+        return issue_counts, issues
+
+    bad_action = (action < 0) | (action >= len(ACTION_NAMES))
+    _append_contract_issue(
+        issues,
+        issue_counts,
+        "bad_action_range",
+        bad_action,
+        shard_index=shard_index,
+        path=path,
+        details={"action_minmax": _tensor_minmax(action)},
+        row_limit=row_limit,
+    )
+
+    claim_mask, discard_mask = decision_masks(action)
+    bad_active_claim = claim_mask & ((claim < 0) | (claim >= CLAIM_SIZE))
+    _append_contract_issue(
+        issues,
+        issue_counts,
+        "bad_active_claim_range",
+        bad_active_claim,
+        shard_index=shard_index,
+        path=path,
+        details={"claim_minmax": _tensor_minmax(claim)},
+        row_limit=row_limit,
+    )
+    bad_active_discard = discard_mask & ((discard < 0) | (discard >= DISCARD_SIZE))
+    _append_contract_issue(
+        issues,
+        issue_counts,
+        "bad_active_discard_range",
+        bad_active_discard,
+        shard_index=shard_index,
+        path=path,
+        details={"discard_minmax": _tensor_minmax(discard)},
+        row_limit=row_limit,
+    )
+    _append_contract_issue(
+        issues,
+        issue_counts,
+        "nonclaim_nonzero_claim_label",
+        (~claim_mask) & (claim != 0),
+        shard_index=shard_index,
+        path=path,
+        row_limit=row_limit,
+    )
+    _append_contract_issue(
+        issues,
+        issue_counts,
+        "nondiscard_nonzero_discard_label",
+        (~discard_mask) & (discard != 0),
+        shard_index=shard_index,
+        path=path,
+        row_limit=row_limit,
+    )
+    for name in CLAIM_ACTION_NAMES:
+        lower = CLAIM_OFFSETS[name]
+        upper = lower + CLAIM_GROUP_SIZES[name]
+        family_bad = (action == ACTION_TO_INDEX[name]) & ((claim < lower) | (claim >= upper))
+        _append_contract_issue(
+            issues,
+            issue_counts,
+            f"claim_family_mismatch:{name}",
+            family_bad,
+            shard_index=shard_index,
+            path=path,
+            details={"expected_range": [lower, upper]},
+            row_limit=row_limit,
+        )
+
+    for key in ("previous_actions", "sub_previous_actions"):
+        tensor = data[key].long()
+        if tensor.shape[0:1] != (n,):
+            _append_contract_issue(
+                issues,
+                issue_counts,
+                f"{key}_shape_mismatch",
+                count=1,
+                shard_index=shard_index,
+                path=path,
+                details={"expected_rows": n, "shape": list(tensor.shape)},
+                row_limit=row_limit,
+            )
+            continue
+        if n:
+            row_bad = ((tensor < 0) | (tensor >= len(ACTION_NAMES))).reshape(n, -1).any(dim=1)
+        else:
+            row_bad = torch.zeros(0, dtype=torch.bool, device=tensor.device)
+        _append_contract_issue(
+            issues,
+            issue_counts,
+            f"bad_{key}_range",
+            row_bad,
+            shard_index=shard_index,
+            path=path,
+            details={f"{key}_minmax": _tensor_minmax(tensor)},
+            row_limit=row_limit,
+        )
+
+    for key in ("visible_tiles", "game_features", "sub_visible_tiles", "sub_game_features", "hidden_tiles"):
+        tensor = data[key].float()
+        if tensor.shape[0:1] != (n,):
+            _append_contract_issue(
+                issues,
+                issue_counts,
+                f"{key}_shape_mismatch",
+                count=1,
+                shard_index=shard_index,
+                path=path,
+                details={"expected_rows": n, "shape": list(tensor.shape)},
+                row_limit=row_limit,
+            )
+            continue
+        if n:
+            finite_rows = torch.isfinite(tensor.reshape(n, -1)).all(dim=1)
+        else:
+            finite_rows = torch.zeros(0, dtype=torch.bool, device=tensor.device)
+        _append_contract_issue(
+            issues,
+            issue_counts,
+            f"nonfinite_feature:{key}",
+            ~finite_rows,
+            shard_index=shard_index,
+            path=path,
+            row_limit=row_limit,
+        )
+
+    valid_action = ~bad_action
+    for key, issue_name in (
+        ("game_features", "label_outside_action_mask_any"),
+        ("sub_game_features", "label_outside_sub_action_mask_any"),
+    ):
+        game = data[key].float()
+        if game.ndim != 3 or game.shape[0] != n or game.shape[1] < 1 or game.shape[-1] < ACTION_MASK_OFFSET + len(ACTION_NAMES):
+            _append_contract_issue(
+                issues,
+                issue_counts,
+                f"{key}_action_mask_shape_mismatch",
+                count=1,
+                shard_index=shard_index,
+                path=path,
+                details={"shape": list(game.shape)},
+                row_limit=row_limit,
+            )
+            continue
+        action_mask = game[:, -1, ACTION_MASK_OFFSET : ACTION_MASK_OFFSET + len(ACTION_NAMES)] > 0
+        safe_action = action.clamp(0, len(ACTION_NAMES) - 1)
+        outside_mask = valid_action & ~action_mask.gather(1, safe_action[:, None]).squeeze(1)
+        _append_contract_issue(
+            issues,
+            issue_counts,
+            issue_name,
+            outside_mask,
+            shard_index=shard_index,
+            path=path,
+            row_limit=row_limit,
+        )
+
+    sub_visible = data["sub_visible_tiles"].float()
+    if sub_visible.ndim != 4 or sub_visible.shape[0] != n or sub_visible.shape[1] < 1 or sub_visible.shape[2] <= HAND_SELF_VISIBLE_ROW or sub_visible.shape[3] < DISCARD_SIZE:
+        _append_contract_issue(
+            issues,
+            issue_counts,
+            "sub_visible_tiles_hand_shape_mismatch",
+            count=1,
+            shard_index=shard_index,
+            path=path,
+            details={"shape": list(sub_visible.shape)},
+            row_limit=row_limit,
+        )
+    else:
+        sub_hand = sub_visible[:, -1, HAND_SELF_VISIBLE_ROW, :DISCARD_SIZE]
+        safe_discard = discard.clamp(0, DISCARD_SIZE - 1)
+        discard_in_sub_hand = sub_hand.gather(1, safe_discard[:, None]).squeeze(1) > 0
+        missing_discard = discard_mask & (bad_active_discard | ~discard_in_sub_hand)
+        _append_contract_issue(
+            issues,
+            issue_counts,
+            "active_discard_not_in_sub_hand",
+            missing_discard,
+            shard_index=shard_index,
+            path=path,
+            details={"discard_minmax": _tensor_minmax(discard)},
+            row_limit=row_limit,
+        )
+
+    return issue_counts, issues
+
+
+def validate_supervised_dataset_contract(
+    payload: dict,
+    *,
+    row_limit: int = 16,
+) -> dict[str, object]:
+    """Validate the full hierarchical supervised-label contract before training."""
+
+    summary: dict[str, object] = {
+        "format": payload.get("format", "monolithic"),
+        "examples": int(payload.get("examples", 0) or 0),
+        "sharded": bool(payload.get("format") == SHARD_INDEX_FORMAT),
+        "shards": 0,
+        "issue_counts": {},
+        "issues": [],
+    }
+    total_issue_counts: dict[str, int] = {}
+    sample_issues: list[dict[str, object]] = []
+
+    if payload.get("format") == SHARD_INDEX_FORMAT:
+        index_path = Path(str(payload.get("_index_path") or ".")).resolve()
+        dataset = ShardedTensorDataset(payload, index_path=index_path)
+        summary["examples"] = len(dataset)
+        summary["shards"] = dataset.shard_count
+        for shard_index in range(dataset.shard_count):
+            shard_path = dataset.shard_path(shard_index)
+            shard_counts, shard_issues = _validate_supervised_payload_contract(
+                dataset.load_shard_payload(shard_index),
+                shard_index=shard_index,
+                path=shard_path,
+                row_limit=row_limit,
+            )
+            for key, value in shard_counts.items():
+                total_issue_counts[key] = total_issue_counts.get(key, 0) + int(value)
+            if len(sample_issues) < 64:
+                sample_issues.extend(shard_issues[: max(0, 64 - len(sample_issues))])
+    else:
+        counts, issues = _validate_supervised_payload_contract(payload, row_limit=row_limit)
+        total_issue_counts.update(counts)
+        sample_issues.extend(issues)
+        if "action_label" in payload:
+            summary["examples"] = int(payload["action_label"].numel())
+
+    summary["issue_counts"] = dict(sorted(total_issue_counts.items()))
+    summary["issues"] = sample_issues
+    summary["passed"] = not total_issue_counts
+    if total_issue_counts:
+        raise ValueError("supervised dataset contract failed: " + json.dumps(summary, sort_keys=True))
+    return summary
+
+
 def first_nonfinite_parameter_names(model: nn.Module, *, limit: int = 8) -> list[str]:
     named_parameters = model.module.named_parameters() if isinstance(model, nn.DataParallel) else model.named_parameters()
     bad: list[str] = []
@@ -661,16 +1005,20 @@ def train(args: argparse.Namespace) -> dict:
         dropout=args.dropout,
     )
     validate_paper_supervised_args(args, config)
+    train_payload = load_tensor_payload(Path(args.train_pt), expected_encoding_version=args.require_encoding_version)
+    preflight_summary: dict[str, object] | None = None
+    if bool(getattr(args, "preflight_supervised_contract", False)):
+        preflight_summary = validate_supervised_dataset_contract(train_payload)
+        print("supervised_contract_preflight " + json.dumps(preflight_summary, sort_keys=True), flush=True)
+    encoding_schema = train_payload.get("encoding_schema") or tensor_encoding_schema()
+    checkpoint_encoding_version = encoding_schema.get("version") or args.require_encoding_version
+    dataset = tensor_dataset_from_payload(train_payload)
+    train_data_format = dataset_data_format(dataset)
     base_model = TjongNetwork(config)
     if bool(getattr(args, "data_parallel", False)) and device.type == "cuda" and torch.cuda.device_count() > 1:
         model: nn.Module = nn.DataParallel(base_model).to(device)
     else:
         model = base_model.to(device)
-    train_payload = load_tensor_payload(Path(args.train_pt), expected_encoding_version=args.require_encoding_version)
-    encoding_schema = train_payload.get("encoding_schema") or tensor_encoding_schema()
-    checkpoint_encoding_version = encoding_schema.get("version") or args.require_encoding_version
-    dataset = tensor_dataset_from_payload(train_payload)
-    train_data_format = dataset_data_format(dataset)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     start_epoch = 1
@@ -684,6 +1032,7 @@ def train(args: argparse.Namespace) -> dict:
         "shuffle_seed_mode": "seed_plus_epoch",
         "grad_clip": grad_clip,
         "fail_on_nonfinite": fail_on_nonfinite,
+        "check_param_finiteness": bool(getattr(args, "check_param_finiteness", False)),
         "cuda_sync_debug": sync_debug,
         "max_steps": max_steps,
         "force_math_sdp": force_math_sdp,
@@ -695,6 +1044,7 @@ def train(args: argparse.Namespace) -> dict:
         "train_examples": len(dataset),
         "train_data_format": train_data_format,
         "train_shard_count": dataset.shard_count if isinstance(dataset, ShardedTensorDataset) else 0,
+        "preflight_supervised_contract": preflight_summary,
         "model_parameters": base_model.parameter_count(),
         "data_parallel": isinstance(model, nn.DataParallel),
         "device_count": torch.cuda.device_count() if device.type == "cuda" else 0,
@@ -715,6 +1065,7 @@ def train(args: argparse.Namespace) -> dict:
             global_batch = int(metrics["epochs"][-1].get("global_batch", 0) or 0)
     metrics["grad_clip"] = grad_clip
     metrics["fail_on_nonfinite"] = fail_on_nonfinite
+    metrics["check_param_finiteness"] = bool(getattr(args, "check_param_finiteness", False))
     metrics["cuda_sync_debug"] = sync_debug
     metrics["max_steps"] = max_steps
     metrics["force_math_sdp"] = force_math_sdp
@@ -722,6 +1073,8 @@ def train(args: argparse.Namespace) -> dict:
     metrics["train_examples"] = len(dataset)
     metrics["train_data_format"] = train_data_format
     metrics["train_shard_count"] = dataset.shard_count if isinstance(dataset, ShardedTensorDataset) else 0
+    if preflight_summary is not None:
+        metrics["preflight_supervised_contract"] = preflight_summary
 
     checkpoint_every_batches = int(getattr(args, "checkpoint_every_batches", 0) or 0)
     checkpoint_at_global_batches = parse_batch_set(getattr(args, "checkpoint_at_global_batches", None))
@@ -746,8 +1099,29 @@ def train(args: argparse.Namespace) -> dict:
             global_batch += 1
             inputs, labels = unpack_batch(batch, device, include_hidden_tiles=False)
             optimizer.zero_grad(set_to_none=True)
+            if fail_on_nonfinite and bool(getattr(args, "check_param_finiteness", False)):
+                bad_parameters = first_nonfinite_parameter_names(model)
+                if bad_parameters:
+                    raise FloatingPointError(
+                        "non-finite supervised parameters before forward at "
+                        f"epoch={epoch} batch={batches} global_batch={global_batch} "
+                        f"parameters={bad_parameters}"
+                    )
             outputs = model(**inputs)
             cuda_sync_debug(args, device)
+            if fail_on_nonfinite:
+                bad_outputs = {
+                    name: tensor_finite_context(tensor)
+                    for name, tensor in outputs.items()
+                    if name in {"action_logits", "claim_logits", "discard_logits"} and not torch.isfinite(tensor).all().item()
+                }
+                if bad_outputs:
+                    raise FloatingPointError(
+                        "non-finite supervised logits before CE at "
+                        f"epoch={epoch} batch={batches} global_batch={global_batch} "
+                        f"action_counts={action_count_context(labels[0])} "
+                        f"context={json.dumps(bad_outputs, sort_keys=True)}"
+                    )
             loss_components = supervised_loss_components(outputs, labels)
             loss = loss_components["total"]
             assert loss is not None
@@ -917,6 +1291,8 @@ def main() -> int:
     parser.add_argument("--grad-clip", type=float, default=SUPERVISED_GRAD_CLIP)
     parser.add_argument("--force-math-sdp", action="store_true")
     parser.add_argument("--fail-on-nonfinite", action="store_true")
+    parser.add_argument("--preflight-supervised-contract", action="store_true")
+    parser.add_argument("--check-param-finiteness", action="store_true")
     parser.add_argument("--cuda-sync-debug", action="store_true")
     parser.add_argument("--max-steps", type=int, default=0)
     args = parser.parse_args()

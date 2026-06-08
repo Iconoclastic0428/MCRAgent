@@ -226,6 +226,7 @@ spec:
                 --force-math-sdp \
                 --grad-clip 0.5 \
                 --fail-on-nonfinite \
+                --preflight-supervised-contract \
                 --max-steps "${MAX_STEPS}" \
                 ${BATCH_CHECKPOINT_ARGS} \
                 ${DEBUG_ARGS} \

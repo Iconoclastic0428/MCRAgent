@@ -282,6 +282,7 @@ def verify_paper_compliance(paper_root: Path | None = None) -> dict:
             "--lr 0.0001",
             "--data-parallel",
             "--grad-clip 0.5",
+            "--preflight-supervised-contract",
             "nvidia.com/gpu: 2",
             "rci-tide-gpu-17.sdsu.edu",
         ],
@@ -292,7 +293,8 @@ def verify_paper_compliance(paper_root: Path | None = None) -> dict:
             "current_hu_supervised_manifest_matches_paper_hierarchy",
             hu_supervised_ok
             and "nautilus.io/reservation=csu-tide" not in hu_supervised_text
-            and "--grad-clip 0.5" in hu_supervised_text,
+            and "--grad-clip 0.5" in hu_supervised_text
+            and "--preflight-supervised-contract" in hu_supervised_text,
             observed="k8s/tjong-supervised-hu-l40-20260607f.yaml",
             expected="verified HU shard index, 2-GPU hierarchical CE supervised training, paper lr/batch/epochs, supervised grad clipping, no CSU-TIDE toleration",
             detail=f"missing: {hu_supervised_missing}" if hu_supervised_missing else None,

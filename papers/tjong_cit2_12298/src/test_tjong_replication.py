@@ -72,6 +72,7 @@ from tjong_replication.train_supervised import (  # noqa: E402
     safe_clip_grad_norm_,
     supervised_loss_components,
     train as train_supervised,
+    validate_supervised_dataset_contract,
     validate_supervised_labels,
     validate_paper_supervised_args,
 )
@@ -217,6 +218,93 @@ def test_supervised_nonfinite_context_pinpoints_head():
     assert context["loss_components"]["discard"]["finite"] is False
     assert context["output_tensors"]["discard_logits"]["nan_count"] == 1
     assert context["label_ranges"]["discard_selected"]["invalid_count"] == 0
+
+
+def _supervised_contract_payload(
+    action_labels: list[int],
+    claim_labels: list[int],
+    discard_labels: list[int],
+) -> dict:
+    n = len(action_labels)
+    game = torch.zeros(n, 4, 24)
+    sub_game = torch.zeros(n, 4, 24)
+    sub_visible = torch.zeros(n, 4, 22, 34)
+    for row, action in enumerate(action_labels):
+        game[row, -1, 16 + action] = 1.0
+        sub_game[row, -1, 16 + action] = 1.0
+        if action == ACTION_TO_INDEX["DISCARD"]:
+            sub_visible[row, -1, 0, discard_labels[row]] = 1.0
+    return {
+        "visible_tiles": torch.zeros(n, 4, 22, 34),
+        "game_features": game,
+        "previous_actions": torch.zeros(n, 4, dtype=torch.long),
+        "sub_visible_tiles": sub_visible,
+        "sub_game_features": sub_game,
+        "sub_previous_actions": torch.zeros(n, 4, dtype=torch.long),
+        "hidden_tiles": torch.zeros(n, 5, 34),
+        "action_label": torch.tensor(action_labels, dtype=torch.long),
+        "claim_label": torch.tensor(claim_labels, dtype=torch.long),
+        "discard_label": torch.tensor(discard_labels, dtype=torch.long),
+        "encoding_schema": tensor_encoding_schema(),
+    }
+
+
+def test_supervised_dataset_contract_accepts_valid_hierarchical_labels():
+    payload = _supervised_contract_payload(
+        [
+            ACTION_TO_INDEX["DISCARD"],
+            ACTION_TO_INDEX["CHOW"],
+            ACTION_TO_INDEX["PONG"],
+            ACTION_TO_INDEX["MINGKONG"],
+            ACTION_TO_INDEX["BUKONG"],
+            ACTION_TO_INDEX["ANKONG"],
+        ],
+        [
+            0,
+            flatten_claim("CHOW", 0),
+            flatten_claim("PONG", 0),
+            flatten_claim("MINGKONG", 0),
+            flatten_claim("BUKONG", 0),
+            flatten_claim("ANKONG", 0),
+        ],
+        [tile_id("W1"), 0, 0, 0, 0, 0],
+    )
+
+    summary = validate_supervised_dataset_contract(payload)
+
+    assert summary["passed"] is True
+    assert summary["issue_counts"] == {}
+
+
+def test_supervised_dataset_contract_rejects_claim_family_mismatch():
+    payload = _supervised_contract_payload(
+        [ACTION_TO_INDEX["PONG"]],
+        [flatten_claim("CHOW", 0)],
+        [0],
+    )
+
+    try:
+        validate_supervised_dataset_contract(payload)
+    except ValueError as exc:
+        assert "claim_family_mismatch:PONG" in str(exc)
+    else:
+        raise AssertionError("expected PONG row with CHOW claim label to fail preflight")
+
+
+def test_supervised_dataset_contract_rejects_discard_missing_from_sub_hand():
+    payload = _supervised_contract_payload(
+        [ACTION_TO_INDEX["DISCARD"]],
+        [0],
+        [tile_id("W1")],
+    )
+    payload["sub_visible_tiles"].zero_()
+
+    try:
+        validate_supervised_dataset_contract(payload)
+    except ValueError as exc:
+        assert "active_discard_not_in_sub_hand" in str(exc)
+    else:
+        raise AssertionError("expected discard target absent from sub-hand to fail preflight")
 
 
 def test_supervised_paths_skip_value_hidden_tiles(monkeypatch):
