@@ -1161,13 +1161,24 @@ def train(args: argparse.Namespace) -> dict:
             total += batch_size
             merge_metric_sums(metric_sums, batch_metric_sums(outputs, labels))
             if log_every_batches and batches % log_every_batches == 0:
+                finalized = finalize_metric_sums(metric_sums)
                 batch_metrics = {
                     "event": "batch",
                     "epoch": epoch,
                     "batch": batches,
                     "global_batch": global_batch,
                     "optimization_loss": total_loss / max(1, total),
-                    **finalize_metric_sums(metric_sums),
+                    "decision_loss": finalized["decision_loss"],
+                    "action_loss": finalized["action_loss"],
+                    "action_accuracy": finalized["action_accuracy"],
+                    "action_count": finalized["action_count"],
+                    "claim_loss": finalized["claim_loss"],
+                    "claim_accuracy": finalized["claim_accuracy"],
+                    "claim_count": finalized["claim_count"],
+                    "discard_loss": finalized["discard_loss"],
+                    "discard_accuracy": finalized["discard_accuracy"],
+                    "discard_count": finalized["discard_count"],
+                    "action_breakdown": finalized["action_breakdown"],
                 }
                 if grad_clip > 0.0:
                     batch_metrics["max_grad_norm_before_clip"] = max_grad_norm_before_clip
