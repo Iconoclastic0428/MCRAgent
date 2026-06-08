@@ -29,14 +29,7 @@ spec:
                   - key: nvidia.com/gpu.product
                     operator: In
                     values:
-                      - NVIDIA-A40
-                      - NVIDIA-L40S
-                      - NVIDIA-RTX-A6000
-                      - NVIDIA-GeForce-RTX-3090
                       - NVIDIA-GeForce-RTX-4090
-                      - NVIDIA-RTX-PRO-6000-Blackwell-Max-Q-Workstation-Edition
-                      - Quadro-RTX-6000
-                      - Quadro-RTX-8000
                   - key: kubernetes.io/hostname
                     operator: NotIn
                     values:
