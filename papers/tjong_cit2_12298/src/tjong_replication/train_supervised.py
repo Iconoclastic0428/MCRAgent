@@ -913,6 +913,17 @@ def first_nonfinite_parameter_names(model: nn.Module, *, limit: int = 8) -> list
     return bad
 
 
+def freeze_supervised_value_parameters(model: TjongNetwork) -> int:
+    """Supervised CE trains the hierarchical policy heads; PPO trains the value branch."""
+
+    frozen = 0
+    for name, parameter in model.named_parameters():
+        if name.startswith("value_inner.") or name.startswith("value_head."):
+            parameter.requires_grad_(False)
+            frozen += 1
+    return frozen
+
+
 def unpack_batch(
     batch: tuple[torch.Tensor, ...],
     device: torch.device,
@@ -1247,6 +1258,7 @@ def train(args: argparse.Namespace) -> dict:
     if optimized_sharded_loader and not isinstance(dataset, ShardedTensorDataset):
         raise ValueError("--optimized-sharded-loader requires a sharded tensor dataset index")
     base_model = TjongNetwork(config).to(device)
+    frozen_value_parameters = freeze_supervised_value_parameters(base_model)
     if distributed:
         model = DistributedDataParallel(
             base_model,
@@ -1286,6 +1298,7 @@ def train(args: argparse.Namespace) -> dict:
         "train_shard_count": dataset.shard_count if isinstance(dataset, ShardedTensorDataset) else 0,
         "preflight_supervised_contract": preflight_summary,
         "model_parameters": base_model.parameter_count(),
+        "supervised_frozen_value_parameters": frozen_value_parameters,
         "data_parallel": isinstance(model, nn.DataParallel),
         "distributed": distributed,
         "distributed_rank": rank,
@@ -1321,6 +1334,7 @@ def train(args: argparse.Namespace) -> dict:
     metrics["train_examples"] = len(dataset)
     metrics["train_data_format"] = train_data_format
     metrics["train_shard_count"] = dataset.shard_count if isinstance(dataset, ShardedTensorDataset) else 0
+    metrics["supervised_frozen_value_parameters"] = frozen_value_parameters
     metrics["data_parallel"] = isinstance(model, nn.DataParallel)
     metrics["distributed"] = distributed
     metrics["distributed_world_size"] = world_size

@@ -67,6 +67,7 @@ from tjong_replication.train_supervised import (  # noqa: E402
     batch_metric_sums,
     evaluate_model,
     finalize_metric_sums,
+    freeze_supervised_value_parameters,
     iter_optimized_sharded_batches,
     load_tensor_dataset,
     nonfinite_supervised_context,
@@ -219,6 +220,24 @@ def test_supervised_nonfinite_context_pinpoints_head():
     assert context["loss_components"]["discard"]["finite"] is False
     assert context["output_tensors"]["discard_logits"]["nan_count"] == 1
     assert context["label_ranges"]["discard_selected"]["invalid_count"] == 0
+
+
+def test_supervised_training_freezes_value_branch_for_policy_ce():
+    model = TjongNetwork(TjongConfig(d_model=32, n_heads=4, ffn_dim=64, dropout=0.0))
+
+    frozen = freeze_supervised_value_parameters(model)
+
+    assert frozen > 0
+    assert all(
+        not parameter.requires_grad
+        for name, parameter in model.named_parameters()
+        if name.startswith("value_inner.") or name.startswith("value_head.")
+    )
+    assert all(
+        parameter.requires_grad
+        for name, parameter in model.named_parameters()
+        if not (name.startswith("value_inner.") or name.startswith("value_head."))
+    )
 
 
 def _supervised_contract_payload(
