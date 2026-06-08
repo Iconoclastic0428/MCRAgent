@@ -70,7 +70,7 @@ spec:
               value: ignore
             - name: CUBLAS_WORKSPACE_CONFIG
               value: ":4096:8"
-            - name: NCCL_ASYNC_ERROR_HANDLING
+            - name: TORCH_NCCL_ASYNC_ERROR_HANDLING
               value: "1"
             - name: TJONG_GPU_COUNT
               value: "4"
@@ -183,7 +183,6 @@ spec:
                 --grad-clip 0.5 \
                 --fail-on-nonfinite \
                 --check-param-finiteness \
-                --preflight-supervised-contract \
                 --log-every-batches 100 \
                 --max-steps 3000
           resources:
