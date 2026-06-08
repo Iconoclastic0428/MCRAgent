@@ -216,6 +216,12 @@ def write_metrics_file(path: Path, metrics: dict) -> None:
     temp_path.replace(path)
 
 
+def append_jsonl(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as dst:
+        dst.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
 def move_optimizer_state_to_device(optimizer: torch.optim.Optimizer, device: torch.device) -> None:
     for state in optimizer.state.values():
         for key, value in list(state.items()):
@@ -1079,6 +1085,8 @@ def train(args: argparse.Namespace) -> dict:
     checkpoint_every_batches = int(getattr(args, "checkpoint_every_batches", 0) or 0)
     checkpoint_at_global_batches = parse_batch_set(getattr(args, "checkpoint_at_global_batches", None))
     checkpoint_at_epoch_batches = parse_batch_set(getattr(args, "checkpoint_at_epoch_batches", None))
+    log_every_batches = int(getattr(args, "log_every_batches", 0) or 0)
+    batch_metrics_jsonl = getattr(args, "batch_metrics_jsonl", None)
     stop_after_epoch = False
     for epoch in range(start_epoch, args.epochs + 1):
         model.train()
@@ -1152,6 +1160,20 @@ def train(args: argparse.Namespace) -> dict:
             total_loss += float(loss.item()) * batch_size
             total += batch_size
             merge_metric_sums(metric_sums, batch_metric_sums(outputs, labels))
+            if log_every_batches and batches % log_every_batches == 0:
+                batch_metrics = {
+                    "event": "batch",
+                    "epoch": epoch,
+                    "batch": batches,
+                    "global_batch": global_batch,
+                    "optimization_loss": total_loss / max(1, total),
+                    **finalize_metric_sums(metric_sums),
+                }
+                if grad_clip > 0.0:
+                    batch_metrics["max_grad_norm_before_clip"] = max_grad_norm_before_clip
+                print(json.dumps(batch_metrics, sort_keys=True), flush=True)
+                if batch_metrics_jsonl:
+                    append_jsonl(Path(batch_metrics_jsonl), batch_metrics)
             if (
                 (checkpoint_every_batches and global_batch % checkpoint_every_batches == 0)
                 or global_batch in checkpoint_at_global_batches
@@ -1185,10 +1207,7 @@ def train(args: argparse.Namespace) -> dict:
         print(json.dumps(epoch_metrics, sort_keys=True), flush=True)
         metrics_jsonl = getattr(args, "metrics_jsonl", None)
         if metrics_jsonl:
-            metrics_jsonl_path = Path(metrics_jsonl)
-            metrics_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-            with metrics_jsonl_path.open("a", encoding="utf-8") as dst:
-                dst.write(json.dumps(epoch_metrics, sort_keys=True) + "\n")
+            append_jsonl(Path(metrics_jsonl), epoch_metrics)
         if args.metrics_out:
             write_metrics_file(Path(args.metrics_out), metrics)
         checkpoint_every_epochs = int(getattr(args, "checkpoint_every_epochs", 0) or 0)
@@ -1285,9 +1304,11 @@ def main() -> int:
     parser.add_argument("--checkpoint-dir", default=None)
     parser.add_argument("--resume-checkpoint", default=None)
     parser.add_argument("--metrics-jsonl", default=None)
+    parser.add_argument("--batch-metrics-jsonl", default=None)
     parser.add_argument("--checkpoint-every-batches", type=int, default=0)
     parser.add_argument("--checkpoint-at-global-batches", default=None)
     parser.add_argument("--checkpoint-at-epoch-batches", default=None)
+    parser.add_argument("--log-every-batches", type=int, default=0)
     parser.add_argument("--grad-clip", type=float, default=SUPERVISED_GRAD_CLIP)
     parser.add_argument("--force-math-sdp", action="store_true")
     parser.add_argument("--fail-on-nonfinite", action="store_true")
