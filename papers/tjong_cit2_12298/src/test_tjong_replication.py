@@ -67,6 +67,7 @@ from tjong_replication.train_supervised import (  # noqa: E402
     batch_metric_sums,
     evaluate_model,
     finalize_metric_sums,
+    iter_optimized_sharded_batches,
     load_tensor_dataset,
     nonfinite_supervised_context,
     safe_clip_grad_norm_,
@@ -2138,6 +2139,76 @@ def test_sharded_tensorizer_keeps_all_discards_and_trains_from_index():
         assert metrics["train_shard_count"] == 2
         assert metrics["epochs"][-1]["batches"] == 1
         assert metrics["epochs"][-1]["action_count"] == 2
+
+
+def test_optimized_sharded_loader_preserves_global_batches_across_ranks():
+    with tempfile.TemporaryDirectory(dir=ROOT) as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        shard_dir = tmp_path / "shards"
+        shard_dir.mkdir()
+        schema = tensor_encoding_schema()
+        shard_specs = [(0, 5), (5, 5)]
+        shards = []
+        for shard_index, (start, count) in enumerate(shard_specs):
+            ids = torch.arange(start, start + count)
+            visible_tiles = torch.zeros(count, 4, 22, 34)
+            visible_tiles[:, 0, 0, 0] = ids.float()
+            payload = {
+                "visible_tiles": visible_tiles,
+                "game_features": torch.zeros(count, 4, 24),
+                "rewards": torch.zeros(count, 4),
+                "previous_actions": torch.zeros(count, 4, dtype=torch.long),
+                "sub_visible_tiles": visible_tiles.clone(),
+                "sub_game_features": torch.zeros(count, 4, 24),
+                "sub_rewards": torch.zeros(count, 4),
+                "sub_previous_actions": torch.zeros(count, 4, dtype=torch.long),
+                "hidden_tiles": torch.zeros(count, 5, 34),
+                "action_label": torch.full((count,), ACTION_TO_INDEX["DISCARD"], dtype=torch.long),
+                "claim_label": torch.zeros(count, dtype=torch.long),
+                "discard_label": ids.remainder(34).long(),
+                "encoding_schema": schema,
+                "examples": count,
+            }
+            path = shard_dir / f"shard_{shard_index}.pt"
+            torch.save(payload, path)
+            shards.append({"path": path.name, "examples": count})
+        index_path = shard_dir / "index.json"
+        index_path.write_text(
+            json.dumps(
+                {
+                    "format": SHARD_INDEX_FORMAT,
+                    "encoding_schema": schema,
+                    "examples": 10,
+                    "shards": shards,
+                }
+            ),
+            encoding="utf-8",
+        )
+        dataset = load_tensor_dataset(index_path, expected_encoding_version=TENSOR_ENCODING_VERSION)
+        assert isinstance(dataset, ShardedTensorDataset)
+
+        rank_batches = [
+            list(
+                iter_optimized_sharded_batches(
+                    dataset,
+                    batch_size=4,
+                    shuffle=False,
+                    rank=rank,
+                    world_size=2,
+                    prefetch_shards=2,
+                )
+            )
+            for rank in range(2)
+        ]
+
+        assert [batch[0].shape[0] for batch in rank_batches[0]] == [2, 2, 1]
+        assert [batch[0].shape[0] for batch in rank_batches[1]] == [2, 2, 1]
+        recovered = []
+        for rank in range(2):
+            for batch in rank_batches[rank]:
+                recovered.extend(int(value.item()) for value in batch[0][:, 0, 0, 0])
+        assert sorted(recovered) == list(range(10))
+        assert len(recovered) == len(set(recovered)) == 10
 
 
 def test_parallel_sharded_tensorizer_matches_single_worker_stats():

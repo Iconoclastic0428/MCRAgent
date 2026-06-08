@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import argparse
 import bisect
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import math
+import os
+import time
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 from torch import nn
+from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 from .actions import (
@@ -129,6 +134,10 @@ def tensor_dataset_from_payload(data: dict) -> Dataset:
     if data.get("format") == SHARD_INDEX_FORMAT:
         index_path = Path(str(data.get("_index_path") or ".")).resolve()
         return ShardedTensorDataset(data, index_path=index_path)
+    return TensorDataset(*tensor_tuple_from_payload(data))
+
+
+def tensor_tuple_from_payload(data: dict) -> tuple[torch.Tensor, ...]:
     required = ["visible_tiles", "game_features", "action_label", "claim_label", "discard_label"]
     missing = [key for key in required if key not in data]
     if missing:
@@ -143,7 +152,7 @@ def tensor_dataset_from_payload(data: dict) -> Dataset:
         "hidden_tiles",
         torch.zeros(data["visible_tiles"].shape[0], TjongConfig.hidden_tile_rows, TjongConfig.tile_types),
     )
-    return TensorDataset(
+    return (
         data["visible_tiles"],
         data["game_features"],
         rewards,
@@ -157,6 +166,26 @@ def tensor_dataset_from_payload(data: dict) -> Dataset:
         data["claim_label"],
         data["discard_label"],
     )
+
+
+def _slice_tensor_tuple(batch: tuple[torch.Tensor, ...], start: int, end: int) -> tuple[torch.Tensor, ...]:
+    return tuple(tensor[start:end] for tensor in batch)
+
+
+def _index_tensor_tuple(batch: tuple[torch.Tensor, ...], index: torch.Tensor) -> tuple[torch.Tensor, ...]:
+    return tuple(tensor.index_select(0, index) for tensor in batch)
+
+
+def _concat_tensor_tuples(left: tuple[torch.Tensor, ...], right: tuple[torch.Tensor, ...]) -> tuple[torch.Tensor, ...]:
+    return tuple(torch.cat((left_tensor, right_tensor), dim=0) for left_tensor, right_tensor in zip(left, right))
+
+
+def _pin_tensor_tuple(batch: tuple[torch.Tensor, ...]) -> tuple[torch.Tensor, ...]:
+    return tuple(tensor.pin_memory() if torch.is_tensor(tensor) else tensor for tensor in batch)
+
+
+def _tensor_tuple_size(batch: tuple[torch.Tensor, ...]) -> int:
+    return int(batch[-3].shape[0])
 
 
 def load_tensor_dataset(path: Path, *, expected_encoding_version: str | None = None) -> Dataset:
@@ -209,6 +238,103 @@ def iter_supervised_batches(
     )
 
 
+def _shard_order_for_epoch(dataset: ShardedTensorDataset, *, shuffle: bool, seed: int | None) -> list[int]:
+    shard_order = list(range(dataset.shard_count))
+    if shuffle and shard_order:
+        generator = torch.Generator()
+        generator.manual_seed(int(seed or 0))
+        shard_order = torch.randperm(len(shard_order), generator=generator).tolist()
+    return shard_order
+
+
+def _load_shard_tensor_tuple(dataset: ShardedTensorDataset, shard_index: int) -> tuple[torch.Tensor, ...]:
+    return tensor_tuple_from_payload(dataset.load_shard_payload(shard_index))
+
+
+def _split_global_batch_for_rank(
+    batch: tuple[torch.Tensor, ...],
+    *,
+    rank: int,
+    world_size: int,
+) -> tuple[torch.Tensor, ...]:
+    if world_size <= 1:
+        return batch
+    n = _tensor_tuple_size(batch)
+    start = (n * rank) // world_size
+    end = (n * (rank + 1)) // world_size
+    return _slice_tensor_tuple(batch, start, end)
+
+
+def iter_optimized_sharded_batches(
+    dataset: ShardedTensorDataset,
+    *,
+    batch_size: int,
+    shuffle: bool,
+    seed: int | None = None,
+    rank: int = 0,
+    world_size: int = 1,
+    prefetch_shards: int = 1,
+    pin_memory: bool = False,
+):
+    """Iterate sharded tensors by direct tensor slicing instead of per-sample collation.
+
+    The stream carries shard tails forward before forming global batches. That keeps the
+    global batch size at the paper value except for the final epoch tail, while preserving
+    every sample exactly once per epoch.
+    """
+
+    shard_order = _shard_order_for_epoch(dataset, shuffle=shuffle, seed=seed)
+    if not shard_order:
+        return
+
+    def prepare_shard(order_position: int, shard_index: int) -> tuple[torch.Tensor, ...]:
+        shard = _load_shard_tensor_tuple(dataset, shard_index)
+        n = _tensor_tuple_size(shard)
+        if shuffle and n:
+            generator = torch.Generator()
+            generator.manual_seed(int(seed or 0) + int(shard_index) + order_position * 1009)
+            index = torch.randperm(n, generator=generator)
+            shard = _index_tensor_tuple(shard, index)
+        return shard
+
+    max_workers = max(1, int(prefetch_shards or 1))
+    pending: tuple[torch.Tensor, ...] | None = None
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures: dict[int, Future[tuple[torch.Tensor, ...]]] = {}
+        next_submit = 0
+        for _ in range(min(max_workers, len(shard_order))):
+            futures[next_submit] = executor.submit(prepare_shard, next_submit, int(shard_order[next_submit]))
+            next_submit += 1
+
+        for order_position in range(len(shard_order)):
+            shard = futures.pop(order_position).result()
+            if next_submit < len(shard_order):
+                futures[next_submit] = executor.submit(prepare_shard, next_submit, int(shard_order[next_submit]))
+                next_submit += 1
+
+            current = _concat_tensor_tuples(pending, shard) if pending is not None else shard
+            offset = 0
+            current_size = _tensor_tuple_size(current)
+            while current_size - offset >= batch_size:
+                global_batch = _slice_tensor_tuple(current, offset, offset + batch_size)
+                local_batch = _split_global_batch_for_rank(global_batch, rank=rank, world_size=world_size)
+                if _tensor_tuple_size(local_batch) == 0:
+                    raise ValueError(
+                        f"rank {rank}/{world_size} received an empty local batch from global batch size {batch_size}"
+                    )
+                yield _pin_tensor_tuple(local_batch) if pin_memory else local_batch
+                offset += batch_size
+            pending = _slice_tensor_tuple(current, offset, current_size) if offset < current_size else None
+
+    if pending is not None and _tensor_tuple_size(pending):
+        local_batch = _split_global_batch_for_rank(pending, rank=rank, world_size=world_size)
+        if _tensor_tuple_size(local_batch) == 0:
+            raise ValueError(
+                f"rank {rank}/{world_size} received an empty final local batch of size {_tensor_tuple_size(pending)}"
+            )
+        yield _pin_tensor_tuple(local_batch) if pin_memory else local_batch
+
+
 def write_metrics_file(path: Path, metrics: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(path.name + ".tmp")
@@ -255,6 +381,35 @@ def configure_seed(seed: int) -> None:
     torch.manual_seed(int(seed))
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(int(seed))
+
+
+def distributed_is_initialized() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+
+def distributed_rank() -> int:
+    return dist.get_rank() if distributed_is_initialized() else 0
+
+
+def distributed_world_size() -> int:
+    return dist.get_world_size() if distributed_is_initialized() else 1
+
+
+def is_rank0() -> bool:
+    return distributed_rank() == 0
+
+
+def initialize_distributed(args: argparse.Namespace) -> tuple[bool, int, int, int]:
+    if not bool(getattr(args, "distributed", False)):
+        return False, 0, 0, 1
+    if distributed_is_initialized():
+        return True, int(os.environ.get("LOCAL_RANK", "0")), dist.get_rank(), dist.get_world_size()
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    backend = "nccl" if torch.cuda.is_available() else "gloo"
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+    dist.init_process_group(backend=backend, init_method="env://")
+    return True, local_rank, dist.get_rank(), dist.get_world_size()
 
 
 def configure_cuda_device(device_arg: str | None) -> None:
@@ -748,7 +903,7 @@ def validate_supervised_dataset_contract(
 
 
 def first_nonfinite_parameter_names(model: nn.Module, *, limit: int = 8) -> list[str]:
-    named_parameters = model.module.named_parameters() if isinstance(model, nn.DataParallel) else model.named_parameters()
+    named_parameters = model.module.named_parameters() if hasattr(model, "module") else model.named_parameters()
     bad: list[str] = []
     for name, parameter in named_parameters:
         if not torch.isfinite(parameter.detach()).all().item():
@@ -818,21 +973,54 @@ def decision_masks(action_label: torch.Tensor) -> tuple[torch.Tensor, torch.Tens
 def supervised_loss_components(
     outputs: dict[str, torch.Tensor],
     labels: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    *,
+    distributed: bool = False,
 ) -> dict[str, torch.Tensor | None]:
     action_label, claim_label, discard_label = labels
     validate_supervised_labels(labels)
-    ce = nn.CrossEntropyLoss()
-    action_loss = ce(outputs["action_logits"], action_label)
-    total = action_loss
     claim_mask, discard_mask = decision_masks(action_label)
-    claim_loss = None
-    if claim_mask.any():
-        claim_loss = ce(outputs["claim_logits"][claim_mask], claim_label[claim_mask])
-        total = total + claim_loss
-    discard_loss = None
-    if discard_mask.any():
-        discard_loss = ce(outputs["discard_logits"][discard_mask], discard_label[discard_mask])
-        total = total + discard_loss
+    if distributed and distributed_is_initialized():
+        ce_sum = nn.CrossEntropyLoss(reduction="sum")
+        action_sum = ce_sum(outputs["action_logits"], action_label)
+        claim_sum = (
+            ce_sum(outputs["claim_logits"][claim_mask], claim_label[claim_mask])
+            if claim_mask.any()
+            else outputs["claim_logits"].sum() * 0.0
+        )
+        discard_sum = (
+            ce_sum(outputs["discard_logits"][discard_mask], discard_label[discard_mask])
+            if discard_mask.any()
+            else outputs["discard_logits"].sum() * 0.0
+        )
+        local_counts = torch.tensor(
+            [action_label.numel(), int(claim_mask.sum().item()), int(discard_mask.sum().item())],
+            dtype=torch.float32,
+            device=action_sum.device,
+        )
+        global_counts = local_counts.clone()
+        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM)
+        local_sums = torch.stack([action_sum, claim_sum, discard_sum])
+        world_size = float(dist.get_world_size())
+        per_head = world_size * local_sums / global_counts.clamp_min(1.0)
+        zero = local_sums.sum() * 0.0
+        action_loss = per_head[0] if bool((global_counts[0] > 0).item()) else zero
+        claim_loss = per_head[1] if bool((global_counts[1] > 0).item()) else None
+        discard_loss = per_head[2] if bool((global_counts[2] > 0).item()) else None
+        total = action_loss
+        total = total + (claim_loss if claim_loss is not None else outputs["claim_logits"].sum() * 0.0)
+        total = total + (discard_loss if discard_loss is not None else outputs["discard_logits"].sum() * 0.0)
+    else:
+        ce = nn.CrossEntropyLoss()
+        action_loss = ce(outputs["action_logits"], action_label)
+        total = action_loss
+        claim_loss = None
+        if claim_mask.any():
+            claim_loss = ce(outputs["claim_logits"][claim_mask], claim_label[claim_mask])
+            total = total + claim_loss
+        discard_loss = None
+        if discard_mask.any():
+            discard_loss = ce(outputs["discard_logits"][discard_mask], discard_label[discard_mask])
+            total = total + discard_loss
     return {
         "action": action_loss,
         "claim": claim_loss,
@@ -953,6 +1141,27 @@ def finalize_metric_sums(metric_sums: dict[str, float]) -> dict[str, float | Non
     return metrics
 
 
+def reduce_metric_sums(metric_sums: dict[str, float], device: torch.device) -> dict[str, float]:
+    if not distributed_is_initialized():
+        return dict(metric_sums)
+    keys = sorted(metric_sums)
+    if not keys:
+        return {}
+    values = torch.tensor([metric_sums[key] for key in keys], dtype=torch.float64, device=device)
+    dist.all_reduce(values, op=dist.ReduceOp.SUM)
+    return {key: float(value.item()) for key, value in zip(keys, values)}
+
+
+def optimization_loss_from_finalized(finalized: dict[str, float | int | None]) -> float | None:
+    values = [
+        finalized.get("action_loss"),
+        finalized.get("claim_loss"),
+        finalized.get("discard_loss"),
+    ]
+    present = [float(value) for value in values if value is not None]
+    return sum(present) if present else None
+
+
 def _named_breakdown(metric_sums: dict[str, float], prefix: str, names: tuple[str, ...]) -> dict[str, dict[str, float | int | None]]:
     breakdown: dict[str, dict[str, float | int | None]] = {}
     for name in names:
@@ -995,15 +1204,24 @@ def evaluate_model(
 
 def train(args: argparse.Namespace) -> dict:
     seed = int(getattr(args, "seed", 0) or 0)
+    distributed, local_rank, rank, world_size = initialize_distributed(args)
     configure_seed(seed)
-    configure_cuda_device(getattr(args, "device", None))
+    if distributed:
+        requested_device = getattr(args, "device", None)
+        if torch.cuda.is_available() and (requested_device is None or str(requested_device).startswith("cuda")):
+            device = torch.device(f"cuda:{local_rank}")
+        else:
+            device = torch.device(requested_device or "cpu")
+    else:
+        configure_cuda_device(getattr(args, "device", None))
+        requested_device = getattr(args, "device", None)
+        device = torch.device(requested_device or ("cuda" if torch.cuda.is_available() else "cpu"))
     grad_clip = float(getattr(args, "grad_clip", 0.0) or 0.0)
     fail_on_nonfinite = bool(getattr(args, "fail_on_nonfinite", False))
     force_math_sdp = bool(getattr(args, "force_math_sdp", False))
     max_steps = int(getattr(args, "max_steps", 0) or 0)
     sync_debug = bool(getattr(args, "cuda_sync_debug", False))
     cuda_attention = configure_cuda_attention(force_math_sdp=force_math_sdp)
-    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     config = TjongConfig(
         d_model=args.d_model,
         n_heads=args.n_heads,
@@ -1011,20 +1229,36 @@ def train(args: argparse.Namespace) -> dict:
         dropout=args.dropout,
     )
     validate_paper_supervised_args(args, config)
+    optimized_sharded_loader = bool(getattr(args, "optimized_sharded_loader", False))
+    if distributed and not optimized_sharded_loader:
+        raise ValueError("--distributed requires --optimized-sharded-loader so each rank receives one slice of every global batch")
     train_payload = load_tensor_payload(Path(args.train_pt), expected_encoding_version=args.require_encoding_version)
     preflight_summary: dict[str, object] | None = None
     if bool(getattr(args, "preflight_supervised_contract", False)):
-        preflight_summary = validate_supervised_dataset_contract(train_payload)
-        print("supervised_contract_preflight " + json.dumps(preflight_summary, sort_keys=True), flush=True)
+        if is_rank0():
+            preflight_summary = validate_supervised_dataset_contract(train_payload)
+            print("supervised_contract_preflight " + json.dumps(preflight_summary, sort_keys=True), flush=True)
+        if distributed:
+            dist.barrier()
     encoding_schema = train_payload.get("encoding_schema") or tensor_encoding_schema()
     checkpoint_encoding_version = encoding_schema.get("version") or args.require_encoding_version
     dataset = tensor_dataset_from_payload(train_payload)
     train_data_format = dataset_data_format(dataset)
-    base_model = TjongNetwork(config)
-    if bool(getattr(args, "data_parallel", False)) and device.type == "cuda" and torch.cuda.device_count() > 1:
-        model: nn.Module = nn.DataParallel(base_model).to(device)
+    if optimized_sharded_loader and not isinstance(dataset, ShardedTensorDataset):
+        raise ValueError("--optimized-sharded-loader requires a sharded tensor dataset index")
+    base_model = TjongNetwork(config).to(device)
+    if distributed:
+        model = DistributedDataParallel(
+            base_model,
+            device_ids=[local_rank] if device.type == "cuda" else None,
+            output_device=local_rank if device.type == "cuda" else None,
+            find_unused_parameters=False,
+            gradient_as_bucket_view=True,
+        )
+    elif bool(getattr(args, "data_parallel", False)) and device.type == "cuda" and torch.cuda.device_count() > 1:
+        model = nn.DataParallel(base_model).to(device)
     else:
-        model = base_model.to(device)
+        model = base_model
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     start_epoch = 1
@@ -1053,6 +1287,14 @@ def train(args: argparse.Namespace) -> dict:
         "preflight_supervised_contract": preflight_summary,
         "model_parameters": base_model.parameter_count(),
         "data_parallel": isinstance(model, nn.DataParallel),
+        "distributed": distributed,
+        "distributed_rank": rank,
+        "distributed_world_size": world_size,
+        "local_rank": local_rank,
+        "optimized_sharded_loader": optimized_sharded_loader,
+        "shard_prefetch": int(getattr(args, "shard_prefetch", 1) or 1),
+        "pin_memory": bool(getattr(args, "pin_memory", False)),
+        "device": str(device),
         "device_count": torch.cuda.device_count() if device.type == "cuda" else 0,
         "epochs": [],
     }
@@ -1079,6 +1321,12 @@ def train(args: argparse.Namespace) -> dict:
     metrics["train_examples"] = len(dataset)
     metrics["train_data_format"] = train_data_format
     metrics["train_shard_count"] = dataset.shard_count if isinstance(dataset, ShardedTensorDataset) else 0
+    metrics["data_parallel"] = isinstance(model, nn.DataParallel)
+    metrics["distributed"] = distributed
+    metrics["distributed_world_size"] = world_size
+    metrics["optimized_sharded_loader"] = optimized_sharded_loader
+    metrics["shard_prefetch"] = int(getattr(args, "shard_prefetch", 1) or 1)
+    metrics["pin_memory"] = bool(getattr(args, "pin_memory", False))
     if preflight_summary is not None:
         metrics["preflight_supervised_contract"] = preflight_summary
 
@@ -1090,18 +1338,34 @@ def train(args: argparse.Namespace) -> dict:
     stop_after_epoch = False
     for epoch in range(start_epoch, args.epochs + 1):
         model.train()
+        epoch_wall_start = time.perf_counter()
+        log_wall_start = epoch_wall_start
+        log_batch_start = 0
         total_loss = 0.0
         total = 0
         batches = 0
         max_grad_norm_before_clip = 0.0
         metric_sums: dict[str, float] = {}
-        loader = iter_supervised_batches(
-            dataset,
-            batch_size=args.batch_size,
-            shuffle=True,
-            num_workers=args.num_workers,
-            seed=seed + epoch,
-        )
+        if optimized_sharded_loader:
+            assert isinstance(dataset, ShardedTensorDataset)
+            loader = iter_optimized_sharded_batches(
+                dataset,
+                batch_size=args.batch_size,
+                shuffle=True,
+                seed=seed + epoch,
+                rank=rank,
+                world_size=world_size,
+                prefetch_shards=int(getattr(args, "shard_prefetch", 1) or 1),
+                pin_memory=bool(getattr(args, "pin_memory", False)) and device.type == "cuda",
+            )
+        else:
+            loader = iter_supervised_batches(
+                dataset,
+                batch_size=args.batch_size,
+                shuffle=True,
+                num_workers=args.num_workers,
+                seed=seed + epoch,
+            )
         for batch in loader:
             batches += 1
             global_batch += 1
@@ -1130,7 +1394,7 @@ def train(args: argparse.Namespace) -> dict:
                         f"action_counts={action_count_context(labels[0])} "
                         f"context={json.dumps(bad_outputs, sort_keys=True)}"
                     )
-            loss_components = supervised_loss_components(outputs, labels)
+            loss_components = supervised_loss_components(outputs, labels, distributed=distributed)
             loss = loss_components["total"]
             assert loss is not None
             cuda_sync_debug(args, device)
@@ -1161,35 +1425,106 @@ def train(args: argparse.Namespace) -> dict:
             total += batch_size
             merge_metric_sums(metric_sums, batch_metric_sums(outputs, labels))
             if log_every_batches and batches % log_every_batches == 0:
-                finalized = finalize_metric_sums(metric_sums)
-                batch_metrics = {
-                    "event": "batch",
-                    "epoch": epoch,
-                    "batch": batches,
-                    "global_batch": global_batch,
-                    "optimization_loss": total_loss / max(1, total),
-                    "decision_loss": finalized["decision_loss"],
-                    "action_loss": finalized["action_loss"],
-                    "action_accuracy": finalized["action_accuracy"],
-                    "action_count": finalized["action_count"],
-                    "claim_loss": finalized["claim_loss"],
-                    "claim_accuracy": finalized["claim_accuracy"],
-                    "claim_count": finalized["claim_count"],
-                    "discard_loss": finalized["discard_loss"],
-                    "discard_accuracy": finalized["discard_accuracy"],
-                    "discard_count": finalized["discard_count"],
-                    "action_breakdown": finalized["action_breakdown"],
-                }
-                if grad_clip > 0.0:
-                    batch_metrics["max_grad_norm_before_clip"] = max_grad_norm_before_clip
-                print(json.dumps(batch_metrics, sort_keys=True), flush=True)
-                if batch_metrics_jsonl:
-                    append_jsonl(Path(batch_metrics_jsonl), batch_metrics)
+                display_metric_sums = reduce_metric_sums(metric_sums, device)
+                display_grad_norm = max_grad_norm_before_clip
+                if distributed:
+                    grad_tensor = torch.tensor([display_grad_norm], dtype=torch.float64, device=device)
+                    dist.all_reduce(grad_tensor, op=dist.ReduceOp.MAX)
+                    display_grad_norm = float(grad_tensor.item())
+                if is_rank0():
+                    now = time.perf_counter()
+                    finalized = finalize_metric_sums(display_metric_sums)
+                    optimization_loss = (
+                        optimization_loss_from_finalized(finalized)
+                        if distributed
+                        else total_loss / max(1, total)
+                    )
+                    recent_elapsed = max(now - log_wall_start, 1e-9)
+                    epoch_elapsed = max(now - epoch_wall_start, 1e-9)
+                    batch_metrics = {
+                        "event": "batch",
+                        "epoch": epoch,
+                        "batch": batches,
+                        "global_batch": global_batch,
+                        "optimization_loss": optimization_loss,
+                        "decision_loss": finalized["decision_loss"],
+                        "action_loss": finalized["action_loss"],
+                        "action_accuracy": finalized["action_accuracy"],
+                        "action_count": finalized["action_count"],
+                        "claim_loss": finalized["claim_loss"],
+                        "claim_accuracy": finalized["claim_accuracy"],
+                        "claim_count": finalized["claim_count"],
+                        "discard_loss": finalized["discard_loss"],
+                        "discard_accuracy": finalized["discard_accuracy"],
+                        "discard_count": finalized["discard_count"],
+                        "action_breakdown": finalized["action_breakdown"],
+                        "elapsed_seconds": epoch_elapsed,
+                        "batches_per_second": batches / epoch_elapsed,
+                        "recent_batches_per_second": (batches - log_batch_start) / recent_elapsed,
+                    }
+                    if grad_clip > 0.0:
+                        batch_metrics["max_grad_norm_before_clip"] = display_grad_norm
+                    print(json.dumps(batch_metrics, sort_keys=True), flush=True)
+                    if batch_metrics_jsonl:
+                        append_jsonl(Path(batch_metrics_jsonl), batch_metrics)
+                    log_wall_start = now
+                    log_batch_start = batches
             if (
                 (checkpoint_every_batches and global_batch % checkpoint_every_batches == 0)
                 or global_batch in checkpoint_at_global_batches
                 or batches in checkpoint_at_epoch_batches
             ):
+                if is_rank0():
+                    checkpoint_dir = checkpoint_directory(args)
+                    save_supervised_checkpoint(
+                        model=model,
+                        config=config,
+                        optimizer=optimizer,
+                        metrics=metrics,
+                        encoding_schema=encoding_schema,
+                        checkpoint_encoding_version=checkpoint_encoding_version,
+                        epoch=epoch,
+                        path=checkpoint_dir / f"batch_{global_batch:08d}.pt",
+                        include_training_state=True,
+                    )
+                if distributed:
+                    dist.barrier()
+            if max_steps and global_batch >= max_steps:
+                stop_after_epoch = True
+                break
+        display_metric_sums = reduce_metric_sums(metric_sums, device)
+        display_grad_norm = max_grad_norm_before_clip
+        if distributed:
+            grad_tensor = torch.tensor([display_grad_norm], dtype=torch.float64, device=device)
+            dist.all_reduce(grad_tensor, op=dist.ReduceOp.MAX)
+            display_grad_norm = float(grad_tensor.item())
+        finalized = finalize_metric_sums(display_metric_sums)
+        epoch_elapsed = max(time.perf_counter() - epoch_wall_start, 1e-9)
+        epoch_metrics = {
+            "epoch": epoch,
+            "batches": batches,
+            "global_batch": global_batch,
+            "optimization_loss": (
+                optimization_loss_from_finalized(finalized)
+                if distributed
+                else total_loss / max(1, total)
+            ),
+            "elapsed_seconds": epoch_elapsed,
+            "batches_per_second": batches / epoch_elapsed,
+            **finalized,
+        }
+        if grad_clip > 0.0:
+            epoch_metrics["max_grad_norm_before_clip"] = display_grad_norm
+        if is_rank0():
+            metrics["epochs"].append(epoch_metrics)
+            print(json.dumps(epoch_metrics, sort_keys=True), flush=True)
+            metrics_jsonl = getattr(args, "metrics_jsonl", None)
+            if metrics_jsonl:
+                append_jsonl(Path(metrics_jsonl), epoch_metrics)
+            if args.metrics_out:
+                write_metrics_file(Path(args.metrics_out), metrics)
+            checkpoint_every_epochs = int(getattr(args, "checkpoint_every_epochs", 0) or 0)
+            if checkpoint_every_epochs and epoch % checkpoint_every_epochs == 0:
                 checkpoint_dir = checkpoint_directory(args)
                 save_supervised_checkpoint(
                     model=model,
@@ -1199,57 +1534,27 @@ def train(args: argparse.Namespace) -> dict:
                     encoding_schema=encoding_schema,
                     checkpoint_encoding_version=checkpoint_encoding_version,
                     epoch=epoch,
-                    path=checkpoint_dir / f"batch_{global_batch:08d}.pt",
+                    path=checkpoint_dir / f"epoch_{epoch:04d}.pt",
                     include_training_state=True,
                 )
-            if max_steps and global_batch >= max_steps:
-                stop_after_epoch = True
-                break
-        epoch_metrics = {
-            "epoch": epoch,
-            "batches": batches,
-            "global_batch": global_batch,
-            "optimization_loss": total_loss / max(1, total),
-            **finalize_metric_sums(metric_sums),
-        }
-        if grad_clip > 0.0:
-            epoch_metrics["max_grad_norm_before_clip"] = max_grad_norm_before_clip
-        metrics["epochs"].append(epoch_metrics)
-        print(json.dumps(epoch_metrics, sort_keys=True), flush=True)
-        metrics_jsonl = getattr(args, "metrics_jsonl", None)
-        if metrics_jsonl:
-            append_jsonl(Path(metrics_jsonl), epoch_metrics)
-        if args.metrics_out:
-            write_metrics_file(Path(args.metrics_out), metrics)
-        checkpoint_every_epochs = int(getattr(args, "checkpoint_every_epochs", 0) or 0)
-        if checkpoint_every_epochs and epoch % checkpoint_every_epochs == 0:
-            checkpoint_dir = checkpoint_directory(args)
-            save_supervised_checkpoint(
-                model=model,
-                config=config,
-                optimizer=optimizer,
-                metrics=metrics,
-                encoding_schema=encoding_schema,
-                checkpoint_encoding_version=checkpoint_encoding_version,
-                epoch=epoch,
-                path=checkpoint_dir / f"epoch_{epoch:04d}.pt",
-                include_training_state=True,
-            )
-            save_supervised_checkpoint(
-                model=model,
-                config=config,
-                optimizer=optimizer,
-                metrics=metrics,
-                encoding_schema=encoding_schema,
-                checkpoint_encoding_version=checkpoint_encoding_version,
-                epoch=epoch,
-                path=checkpoint_dir / "latest.pt",
-                include_training_state=True,
-            )
+                save_supervised_checkpoint(
+                    model=model,
+                    config=config,
+                    optimizer=optimizer,
+                    metrics=metrics,
+                    encoding_schema=encoding_schema,
+                    checkpoint_encoding_version=checkpoint_encoding_version,
+                    epoch=epoch,
+                    path=checkpoint_dir / "latest.pt",
+                    include_training_state=True,
+                )
+        if distributed:
+            dist.barrier()
         if stop_after_epoch:
             break
-    if args.checkpoint_out:
+    if args.checkpoint_out and is_rank0():
         Path(args.checkpoint_out).parent.mkdir(parents=True, exist_ok=True)
+        final_epoch = int(metrics["epochs"][-1]["epoch"]) if metrics.get("epochs") else args.epochs
         save_supervised_checkpoint(
             model=model,
             config=config,
@@ -1257,12 +1562,15 @@ def train(args: argparse.Namespace) -> dict:
             metrics=metrics,
             encoding_schema=encoding_schema,
             checkpoint_encoding_version=checkpoint_encoding_version,
-            epoch=args.epochs,
+            epoch=final_epoch,
             path=Path(args.checkpoint_out),
             include_training_state=False,
         )
-    if args.metrics_out:
+    if args.metrics_out and is_rank0():
         write_metrics_file(Path(args.metrics_out), metrics)
+    if distributed:
+        dist.barrier()
+        dist.destroy_process_group()
     return metrics
 
 
@@ -1279,7 +1587,7 @@ def save_supervised_checkpoint(
     include_training_state: bool,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    state_dict = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
+    state_dict = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
     payload = {
         "model": state_dict,
         "config": config.__dict__,
@@ -1308,6 +1616,10 @@ def main() -> int:
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--device", default=None)
     parser.add_argument("--data-parallel", action="store_true")
+    parser.add_argument("--distributed", action="store_true")
+    parser.add_argument("--optimized-sharded-loader", action="store_true")
+    parser.add_argument("--shard-prefetch", type=int, default=1)
+    parser.add_argument("--pin-memory", action="store_true")
     parser.add_argument("--require-encoding-version", default=None)
     parser.add_argument("--require-paper-config", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
