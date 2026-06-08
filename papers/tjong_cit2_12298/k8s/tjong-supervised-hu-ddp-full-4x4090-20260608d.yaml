@@ -150,9 +150,33 @@ spec:
                 --summary-out "${DATA_ROOT}/runs/${TJONG_RUN}_paper_compliance.json"
               CHECKPOINT_DIR="${DATA_ROOT}/models/${TJONG_RUN}_checkpoints"
               RESUME_ARGS=""
+              RESUME_CHECKPOINT=""
               if [ -s "${CHECKPOINT_DIR}/latest.pt" ]; then
-                RESUME_ARGS="--resume-checkpoint ${CHECKPOINT_DIR}/latest.pt"
-                echo "auto_resume_checkpoint ${CHECKPOINT_DIR}/latest.pt"
+                RESUME_CHECKPOINT="${CHECKPOINT_DIR}/latest.pt"
+              elif [ -d "${CHECKPOINT_DIR}" ]; then
+                RESUME_CHECKPOINT=$(python - "${CHECKPOINT_DIR}" <<'PY'
+              from pathlib import Path
+              import sys
+
+              checkpoint_dir = Path(sys.argv[1])
+              candidates = []
+              if checkpoint_dir.exists():
+                  candidates.extend(
+                      p for p in checkpoint_dir.glob("batch_*.pt")
+                      if p.is_file() and p.stat().st_size > 0
+                  )
+                  candidates.extend(
+                      p for p in checkpoint_dir.glob("epoch_*.pt")
+                      if p.is_file() and p.stat().st_size > 0
+                  )
+              if candidates:
+                  print(max(candidates, key=lambda p: p.stat().st_mtime))
+              PY
+                )
+              fi
+              if [ -n "${RESUME_CHECKPOINT}" ]; then
+                RESUME_ARGS="--resume-checkpoint ${RESUME_CHECKPOINT}"
+                echo "auto_resume_checkpoint ${RESUME_CHECKPOINT}"
               fi
               python -m torch.distributed.run --standalone --nproc_per_node="${TJONG_GPU_COUNT}" \
                 -m tjong_replication.train_supervised \
