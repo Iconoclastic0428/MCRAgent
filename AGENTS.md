@@ -9,3 +9,4 @@
 - Do not repeatedly rerun CPU conversion or all-sources prep after the required paper artifacts already exist and have been validated. Use existing validated artifacts as inputs.
 - Preserve GPU hours. Before taking any action that can consume, reset, or waste GPU time, verify it is required by the paper path and confirm it will not discard current progress.
 - If there is any ambiguity between paper replication and older unrelated requests, stop and ask before acting.
+- When consulting GPT Pro or another external reasoning assistant, do not press `Answer now` or otherwise force an early response. Wait for the full response naturally unless the user explicitly instructs otherwise.

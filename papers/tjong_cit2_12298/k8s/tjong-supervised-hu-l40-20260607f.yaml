@@ -224,6 +224,7 @@ spec:
                 --checkpoint-every-epochs 1 \
                 --checkpoint-dir "${CHECKPOINT_DIR}" \
                 --force-math-sdp \
+                --grad-clip 0.5 \
                 --fail-on-nonfinite \
                 --max-steps "${MAX_STEPS}" \
                 ${BATCH_CHECKPOINT_ARGS} \

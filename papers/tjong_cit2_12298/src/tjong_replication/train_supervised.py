@@ -12,7 +12,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 
-from .actions import ACTION_NAMES, ACTION_TO_INDEX, CLAIM_ACTION_NAMES
+from .actions import ACTION_NAMES, ACTION_TO_INDEX, CLAIM_ACTION_NAMES, CLAIM_SIZE, DISCARD_SIZE
 from .model import TjongConfig, TjongNetwork
 from .tensorize_botzone import SHARD_INDEX_FORMAT, TENSOR_ENCODING_VERSION, tensor_encoding_schema
 from .tiles import TILE_NAMES
@@ -21,6 +21,7 @@ CLAIM_ACTION_INDICES = tuple(ACTION_TO_INDEX[name] for name in ("CHOW", "PONG", 
 PAPER_SUPERVISED_EPOCHS = 125
 PAPER_SUPERVISED_BATCH_SIZE = 1024
 PAPER_SUPERVISED_LR = 1e-4
+SUPERVISED_GRAD_CLIP = 0.5
 
 
 def validate_tensor_encoding(data: dict, *, expected_version: str | None = None, path: Path | None = None) -> None:
@@ -335,6 +336,78 @@ def action_count_context(action_label: torch.Tensor) -> dict[str, int]:
     return {name: int((action_label == index).sum().item()) for index, name in enumerate(ACTION_NAMES)}
 
 
+def tensor_finite_context(tensor: torch.Tensor) -> dict[str, object]:
+    detached = tensor.detach()
+    finite = torch.isfinite(detached)
+    finite_count = int(finite.sum().item())
+    context: dict[str, object] = {
+        "shape": list(detached.shape),
+        "dtype": str(detached.dtype),
+        "finite": finite_count == detached.numel(),
+        "finite_count": finite_count,
+        "nan_count": int(torch.isnan(detached).sum().item()),
+        "posinf_count": int(torch.isposinf(detached).sum().item()),
+        "neginf_count": int(torch.isneginf(detached).sum().item()),
+    }
+    if finite_count:
+        finite_values = detached[finite].float()
+        context["finite_min"] = float(finite_values.min().item())
+        context["finite_max"] = float(finite_values.max().item())
+        context["finite_abs_max"] = float(finite_values.abs().max().item())
+    return context
+
+
+def label_range_context(labels: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> dict[str, object]:
+    action_label, claim_label, discard_label = labels
+    claim_mask, discard_mask = decision_masks(action_label)
+    context: dict[str, object] = {
+        "action": _label_range_stats(action_label, len(ACTION_NAMES)),
+        "claim_selected": _label_range_stats(claim_label[claim_mask], CLAIM_SIZE),
+        "discard_selected": _label_range_stats(discard_label[discard_mask], DISCARD_SIZE),
+        "claim_selected_count": int(claim_mask.sum().item()),
+        "discard_selected_count": int(discard_mask.sum().item()),
+    }
+    return context
+
+
+def _label_range_stats(label: torch.Tensor, size: int) -> dict[str, int | None]:
+    if label.numel() == 0:
+        return {"count": 0, "min": None, "max": None, "invalid_count": 0}
+    invalid = (label < 0) | (label >= size)
+    return {
+        "count": int(label.numel()),
+        "min": int(label.min().item()),
+        "max": int(label.max().item()),
+        "invalid_count": int(invalid.sum().item()),
+    }
+
+
+def validate_supervised_labels(labels: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> None:
+    context = label_range_context(labels)
+    invalid = {
+        name: stats
+        for name, stats in (
+            ("action", context["action"]),
+            ("claim_selected", context["claim_selected"]),
+            ("discard_selected", context["discard_selected"]),
+        )
+        if int(stats["invalid_count"]) > 0
+    }
+    if invalid:
+        raise ValueError(f"supervised label outside head range: {json.dumps(invalid, sort_keys=True)}")
+
+
+def first_nonfinite_parameter_names(model: nn.Module, *, limit: int = 8) -> list[str]:
+    named_parameters = model.module.named_parameters() if isinstance(model, nn.DataParallel) else model.named_parameters()
+    bad: list[str] = []
+    for name, parameter in named_parameters:
+        if not torch.isfinite(parameter.detach()).all().item():
+            bad.append(name)
+            if len(bad) >= limit:
+                break
+    return bad
+
+
 def unpack_batch(
     batch: tuple[torch.Tensor, ...],
     device: torch.device,
@@ -392,16 +465,63 @@ def decision_masks(action_label: torch.Tensor) -> tuple[torch.Tensor, torch.Tens
     return claim_mask, discard_mask
 
 
-def supervised_loss(outputs: dict[str, torch.Tensor], labels: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> torch.Tensor:
+def supervised_loss_components(
+    outputs: dict[str, torch.Tensor],
+    labels: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+) -> dict[str, torch.Tensor | None]:
     action_label, claim_label, discard_label = labels
+    validate_supervised_labels(labels)
     ce = nn.CrossEntropyLoss()
-    loss = ce(outputs["action_logits"], action_label)
+    action_loss = ce(outputs["action_logits"], action_label)
+    total = action_loss
     claim_mask, discard_mask = decision_masks(action_label)
+    claim_loss = None
     if claim_mask.any():
-        loss = loss + ce(outputs["claim_logits"][claim_mask], claim_label[claim_mask])
+        claim_loss = ce(outputs["claim_logits"][claim_mask], claim_label[claim_mask])
+        total = total + claim_loss
+    discard_loss = None
     if discard_mask.any():
-        loss = loss + ce(outputs["discard_logits"][discard_mask], discard_label[discard_mask])
+        discard_loss = ce(outputs["discard_logits"][discard_mask], discard_label[discard_mask])
+        total = total + discard_loss
+    return {
+        "action": action_loss,
+        "claim": claim_loss,
+        "discard": discard_loss,
+        "total": total,
+    }
+
+
+def supervised_loss(outputs: dict[str, torch.Tensor], labels: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> torch.Tensor:
+    loss = supervised_loss_components(outputs, labels)["total"]
+    assert loss is not None
     return loss
+
+
+def nonfinite_supervised_context(
+    outputs: dict[str, torch.Tensor],
+    labels: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    loss_components: dict[str, torch.Tensor | None],
+    model: nn.Module | None = None,
+) -> dict[str, object]:
+    component_context: dict[str, object] = {}
+    for name, value in loss_components.items():
+        if value is None:
+            component_context[name] = None
+        else:
+            component_context[name] = tensor_finite_context(value)
+            component_context[name]["value"] = float(value.detach().item()) if torch.isfinite(value).item() else str(value.detach().item())
+    context: dict[str, object] = {
+        "loss_components": component_context,
+        "label_ranges": label_range_context(labels),
+        "output_tensors": {
+            name: tensor_finite_context(tensor)
+            for name, tensor in outputs.items()
+            if name in {"action_logits", "claim_logits", "discard_logits"}
+        },
+    }
+    if model is not None:
+        context["nonfinite_parameters"] = first_nonfinite_parameter_names(model)
+    return context
 
 
 def batch_metric_sums(
@@ -628,13 +748,17 @@ def train(args: argparse.Namespace) -> dict:
             optimizer.zero_grad(set_to_none=True)
             outputs = model(**inputs)
             cuda_sync_debug(args, device)
-            loss = supervised_loss(outputs, labels)
+            loss_components = supervised_loss_components(outputs, labels)
+            loss = loss_components["total"]
+            assert loss is not None
             cuda_sync_debug(args, device)
             if fail_on_nonfinite and not torch.isfinite(loss).item():
+                context = nonfinite_supervised_context(outputs, labels, loss_components, model)
                 raise FloatingPointError(
                     "non-finite supervised loss at "
                     f"epoch={epoch} batch={batches} global_batch={global_batch} "
-                    f"loss={loss.detach().item()} action_counts={action_count_context(labels[0])}"
+                    f"loss={loss.detach().item()} action_counts={action_count_context(labels[0])} "
+                    f"context={json.dumps(context, sort_keys=True)}"
                 )
             loss.backward()
             cuda_sync_debug(args, device)
@@ -790,7 +914,7 @@ def main() -> int:
     parser.add_argument("--checkpoint-every-batches", type=int, default=0)
     parser.add_argument("--checkpoint-at-global-batches", default=None)
     parser.add_argument("--checkpoint-at-epoch-batches", default=None)
-    parser.add_argument("--grad-clip", type=float, default=0.0)
+    parser.add_argument("--grad-clip", type=float, default=SUPERVISED_GRAD_CLIP)
     parser.add_argument("--force-math-sdp", action="store_true")
     parser.add_argument("--fail-on-nonfinite", action="store_true")
     parser.add_argument("--cuda-sync-debug", action="store_true")

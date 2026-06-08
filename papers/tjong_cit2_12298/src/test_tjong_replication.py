@@ -68,8 +68,11 @@ from tjong_replication.train_supervised import (  # noqa: E402
     evaluate_model,
     finalize_metric_sums,
     load_tensor_dataset,
+    nonfinite_supervised_context,
     safe_clip_grad_norm_,
+    supervised_loss_components,
     train as train_supervised,
+    validate_supervised_labels,
     validate_paper_supervised_args,
 )
 from tjong_replication.validate_initdata_corpus import validate_initdata_corpus  # noqa: E402
@@ -176,6 +179,44 @@ def test_supervised_safe_grad_clip_uses_manual_norm():
 
     assert abs(total_norm - 5.0) < 1e-6
     assert abs(float(parameter.grad.norm().item()) - 0.5) < 1e-6
+
+
+def test_supervised_label_validation_rejects_selected_sentinel():
+    labels = (
+        torch.tensor([ACTION_TO_INDEX["DISCARD"]]),
+        torch.tensor([0]),
+        torch.tensor([255]),
+    )
+
+    try:
+        validate_supervised_labels(labels)
+    except ValueError as exc:
+        assert "discard_selected" in str(exc)
+        assert "invalid_count" in str(exc)
+    else:
+        raise AssertionError("expected selected discard sentinel to be rejected before CE")
+
+
+def test_supervised_nonfinite_context_pinpoints_head():
+    labels = (
+        torch.tensor([ACTION_TO_INDEX["DISCARD"]]),
+        torch.tensor([0]),
+        torch.tensor([tile_id("W1")]),
+    )
+    outputs = {
+        "action_logits": torch.zeros(1, len(ACTION_NAMES)),
+        "claim_logits": torch.zeros(1, CLAIM_SIZE),
+        "discard_logits": torch.zeros(1, 34),
+    }
+    outputs["discard_logits"][0, 0] = float("nan")
+
+    components = supervised_loss_components(outputs, labels)
+    context = nonfinite_supervised_context(outputs, labels, components)
+
+    assert not torch.isfinite(components["total"]).item()
+    assert context["loss_components"]["discard"]["finite"] is False
+    assert context["output_tensors"]["discard_logits"]["nan_count"] == 1
+    assert context["label_ranges"]["discard_selected"]["invalid_count"] == 0
 
 
 def test_supervised_paths_skip_value_hidden_tiles(monkeypatch):
