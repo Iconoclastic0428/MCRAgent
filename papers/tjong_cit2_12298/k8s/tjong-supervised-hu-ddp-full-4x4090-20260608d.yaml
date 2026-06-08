@@ -202,7 +202,6 @@ spec:
                 --pin-memory \
                 --checkpoint-every-epochs 1 \
                 --checkpoint-every-batches 5000 \
-                --checkpoint-at-global-batches 100,500,1000 \
                 --checkpoint-dir "${CHECKPOINT_DIR}" \
                 --grad-clip 0.5 \
                 --fail-on-nonfinite \
