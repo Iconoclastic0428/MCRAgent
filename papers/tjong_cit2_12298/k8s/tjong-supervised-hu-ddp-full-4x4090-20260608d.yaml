@@ -199,6 +199,7 @@ spec:
                 --distributed \
                 --optimized-sharded-loader \
                 --shard-prefetch 2 \
+                --drop-shard-file-cache \
                 --pin-memory \
                 --checkpoint-every-epochs 1 \
                 --checkpoint-every-batches 5000 \

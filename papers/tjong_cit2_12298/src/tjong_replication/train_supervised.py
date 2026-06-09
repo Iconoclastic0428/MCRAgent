@@ -64,10 +64,26 @@ def load_tensor_payload(path: Path, *, expected_encoding_version: str | None = N
     return data
 
 
+def _drop_file_cache_for_path(path: Path) -> bool:
+    posix_fadvise = getattr(os, "posix_fadvise", None)
+    dontneed = getattr(os, "POSIX_FADV_DONTNEED", None)
+    if posix_fadvise is None or dontneed is None:
+        return False
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        posix_fadvise(fd, 0, 0, dontneed)
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
 class ShardedTensorDataset(Dataset):
-    def __init__(self, index: dict, *, index_path: Path):
+    def __init__(self, index: dict, *, index_path: Path, drop_file_cache: bool = False):
         self.index = index
         self.index_path = Path(index_path)
+        self.drop_file_cache = bool(drop_file_cache)
         self.shards = list(index.get("shards") or [])
         self.cumulative_examples: list[int] = []
         total = 0
@@ -102,6 +118,8 @@ class ShardedTensorDataset(Dataset):
     def load_shard_payload(self, shard_index: int) -> dict:
         path = self.shard_path(shard_index)
         payload = torch.load(path, map_location="cpu")
+        if self.drop_file_cache:
+            _drop_file_cache_for_path(path)
         validate_tensor_encoding(payload, expected_version=(self.index.get("encoding_schema") or {}).get("version"), path=path)
         expected_examples = int(self.shards[shard_index].get("examples", 0))
         observed_examples = int(payload.get("examples", payload["visible_tiles"].shape[0]))
@@ -130,10 +148,10 @@ class ShardedTensorDataset(Dataset):
         return shard_dataset[index - previous_total]
 
 
-def tensor_dataset_from_payload(data: dict) -> Dataset:
+def tensor_dataset_from_payload(data: dict, *, drop_shard_file_cache: bool = False) -> Dataset:
     if data.get("format") == SHARD_INDEX_FORMAT:
         index_path = Path(str(data.get("_index_path") or ".")).resolve()
-        return ShardedTensorDataset(data, index_path=index_path)
+        return ShardedTensorDataset(data, index_path=index_path, drop_file_cache=drop_shard_file_cache)
     return TensorDataset(*tensor_tuple_from_payload(data))
 
 
@@ -188,8 +206,16 @@ def _tensor_tuple_size(batch: tuple[torch.Tensor, ...]) -> int:
     return int(batch[-3].shape[0])
 
 
-def load_tensor_dataset(path: Path, *, expected_encoding_version: str | None = None) -> Dataset:
-    return tensor_dataset_from_payload(load_tensor_payload(path, expected_encoding_version=expected_encoding_version))
+def load_tensor_dataset(
+    path: Path,
+    *,
+    expected_encoding_version: str | None = None,
+    drop_shard_file_cache: bool = False,
+) -> Dataset:
+    return tensor_dataset_from_payload(
+        load_tensor_payload(path, expected_encoding_version=expected_encoding_version),
+        drop_shard_file_cache=drop_shard_file_cache,
+    )
 
 
 def dataset_data_format(dataset: Dataset) -> str:
@@ -1253,7 +1279,8 @@ def train(args: argparse.Namespace) -> dict:
             dist.barrier()
     encoding_schema = train_payload.get("encoding_schema") or tensor_encoding_schema()
     checkpoint_encoding_version = encoding_schema.get("version") or args.require_encoding_version
-    dataset = tensor_dataset_from_payload(train_payload)
+    drop_shard_file_cache = bool(getattr(args, "drop_shard_file_cache", False))
+    dataset = tensor_dataset_from_payload(train_payload, drop_shard_file_cache=drop_shard_file_cache)
     train_data_format = dataset_data_format(dataset)
     if optimized_sharded_loader and not isinstance(dataset, ShardedTensorDataset):
         raise ValueError("--optimized-sharded-loader requires a sharded tensor dataset index")
@@ -1306,6 +1333,7 @@ def train(args: argparse.Namespace) -> dict:
         "local_rank": local_rank,
         "optimized_sharded_loader": optimized_sharded_loader,
         "shard_prefetch": int(getattr(args, "shard_prefetch", 1) or 1),
+        "drop_shard_file_cache": drop_shard_file_cache,
         "pin_memory": bool(getattr(args, "pin_memory", False)),
         "device": str(device),
         "device_count": torch.cuda.device_count() if device.type == "cuda" else 0,
@@ -1633,6 +1661,7 @@ def main() -> int:
     parser.add_argument("--distributed", action="store_true")
     parser.add_argument("--optimized-sharded-loader", action="store_true")
     parser.add_argument("--shard-prefetch", type=int, default=1)
+    parser.add_argument("--drop-shard-file-cache", action="store_true")
     parser.add_argument("--pin-memory", action="store_true")
     parser.add_argument("--require-encoding-version", default=None)
     parser.add_argument("--require-paper-config", action="store_true")

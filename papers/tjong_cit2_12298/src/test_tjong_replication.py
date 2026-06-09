@@ -11,6 +11,7 @@ import torch
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
+import tjong_replication.train_supervised as train_supervised_module  # noqa: E402
 from tjong_replication.actions import ACTION_NAMES, ACTION_TO_INDEX, CLAIM_SIZE, flatten_claim, unflatten_claim  # noqa: E402
 from tjong_replication.audit_tziakcha_botzone_coverage import audit_coverage  # noqa: E402
 from tjong_replication.build_ppo_rollouts import reward_to_go, rollout_rewards  # noqa: E402
@@ -2228,6 +2229,63 @@ def test_optimized_sharded_loader_preserves_global_batches_across_ranks():
                 recovered.extend(int(value.item()) for value in batch[0][:, 0, 0, 0])
         assert sorted(recovered) == list(range(10))
         assert len(recovered) == len(set(recovered)) == 10
+
+
+def test_sharded_dataset_can_drop_file_cache_after_loading_shard(monkeypatch):
+    with tempfile.TemporaryDirectory(dir=ROOT) as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        shard_dir = tmp_path / "shards"
+        shard_dir.mkdir()
+        schema = tensor_encoding_schema()
+        count = 2
+        payload = {
+            "visible_tiles": torch.zeros(count, 4, 22, 34),
+            "game_features": torch.zeros(count, 4, 24),
+            "rewards": torch.zeros(count, 4),
+            "previous_actions": torch.zeros(count, 4, dtype=torch.long),
+            "sub_visible_tiles": torch.zeros(count, 4, 22, 34),
+            "sub_game_features": torch.zeros(count, 4, 24),
+            "sub_rewards": torch.zeros(count, 4),
+            "sub_previous_actions": torch.zeros(count, 4, dtype=torch.long),
+            "hidden_tiles": torch.zeros(count, 5, 34),
+            "action_label": torch.full((count,), ACTION_TO_INDEX["DISCARD"], dtype=torch.long),
+            "claim_label": torch.zeros(count, dtype=torch.long),
+            "discard_label": torch.zeros(count, dtype=torch.long),
+            "encoding_schema": schema,
+            "examples": count,
+        }
+        shard_path = shard_dir / "shard_0.pt"
+        torch.save(payload, shard_path)
+        index_path = shard_dir / "index.json"
+        index_path.write_text(
+            json.dumps(
+                {
+                    "format": SHARD_INDEX_FORMAT,
+                    "encoding_schema": schema,
+                    "examples": count,
+                    "shards": [{"path": shard_path.name, "examples": count}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        dropped_paths = []
+
+        def fake_drop_file_cache(path):
+            dropped_paths.append(Path(path))
+            return True
+
+        monkeypatch.setattr(train_supervised_module, "_drop_file_cache_for_path", fake_drop_file_cache)
+        dataset = load_tensor_dataset(
+            index_path,
+            expected_encoding_version=TENSOR_ENCODING_VERSION,
+            drop_shard_file_cache=True,
+        )
+
+        assert isinstance(dataset, ShardedTensorDataset)
+        assert dataset.drop_file_cache is True
+        loaded = dataset.load_shard_payload(0)
+        assert loaded["examples"] == count
+        assert dropped_paths == [shard_path]
 
 
 def test_parallel_sharded_tensorizer_matches_single_worker_stats():
