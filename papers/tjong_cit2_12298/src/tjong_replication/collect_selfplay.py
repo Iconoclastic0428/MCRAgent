@@ -59,8 +59,23 @@ def collect(args: argparse.Namespace) -> dict:
             }
             raw_file.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
             fan_file.write(json.dumps(extract_fan_items(record), ensure_ascii=False, separators=(",", ":")) + "\n")
+            raw_file.flush()
+            fan_file.flush()
             accumulator.add(record)
             games += 1
+            if games == 1 or games % 10 == 0:
+                print(
+                    json.dumps(
+                        {
+                            "event": "selfplay_progress",
+                            "games": games,
+                            "requested_games": args.games,
+                            "offset": args.offset,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
     summary = accumulator.to_summary()
     summary.update(
         {
