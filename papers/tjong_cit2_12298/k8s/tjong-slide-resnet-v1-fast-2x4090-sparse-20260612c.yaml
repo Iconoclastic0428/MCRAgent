@@ -159,6 +159,7 @@ spec:
                 --cudnn-benchmark \
                 --metric-sample-every-batches 1000 \
                 --finite-check-every-batches 1000 \
+                --local-loss-normalization \
                 --num-workers 0 \
                 --device cuda \
                 --distributed \
@@ -171,14 +172,14 @@ spec:
                 ${HIDDEN_ARGS}
           resources:
             limits:
-              cpu: "4"
-              memory: 32Gi
-              ephemeral-storage: 120Gi
+              cpu: "2"
+              memory: 16Gi
+              ephemeral-storage: 40Gi
               nvidia.com/gpu: 2
             requests:
-              cpu: "4"
-              memory: 32Gi
-              ephemeral-storage: 80Gi
+              cpu: "2"
+              memory: 16Gi
+              ephemeral-storage: 30Gi
               nvidia.com/gpu: 2
           volumeMounts:
             - name: idl-data

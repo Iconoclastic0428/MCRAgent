@@ -10,8 +10,10 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
+from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
 
+from .actions import ACTION_TO_INDEX
 from .slide_resnet import (
     SLIDE_SYMMETRY_TRANSFORMS,
     SlideMahjongResNetDueling,
@@ -42,6 +44,8 @@ from .train_supervised import (
 )
 
 IDENTITY_TRANSFORM = (SUIT_ORDER, False)
+CLAIM_ACTION_INDICES = tuple(ACTION_TO_INDEX[name] for name in ("CHOW", "PONG", "MINGKONG", "BUKONG", "ANKONG"))
+DISCARD_ACTION_INDEX = ACTION_TO_INDEX["DISCARD"]
 
 
 def elastic_net_penalty(
@@ -61,6 +65,38 @@ def elastic_net_penalty(
         l1 = l1 + parameter.abs().sum()
         l2 = l2 + parameter.square().sum()
     return float(l1_lambda) * l1, float(l2_lambda) * l2
+
+
+def fast_local_supervised_loss_components(
+    outputs: dict[str, torch.Tensor],
+    labels: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    action_label, claim_label, discard_label = labels
+    claim_mask = (
+        (action_label == CLAIM_ACTION_INDICES[0])
+        | (action_label == CLAIM_ACTION_INDICES[1])
+        | (action_label == CLAIM_ACTION_INDICES[2])
+        | (action_label == CLAIM_ACTION_INDICES[3])
+        | (action_label == CLAIM_ACTION_INDICES[4])
+    )
+    discard_mask = action_label == DISCARD_ACTION_INDEX
+    action_loss = F.cross_entropy(outputs["action_logits"], action_label)
+    claim_sum = F.cross_entropy(outputs["claim_logits"][claim_mask], claim_label[claim_mask], reduction="sum")
+    discard_sum = F.cross_entropy(
+        outputs["discard_logits"][discard_mask],
+        discard_label[discard_mask],
+        reduction="sum",
+    )
+    claim_count = claim_mask.sum().clamp_min(1).to(dtype=claim_sum.dtype)
+    discard_count = discard_mask.sum().clamp_min(1).to(dtype=discard_sum.dtype)
+    claim_loss = claim_sum / claim_count
+    discard_loss = discard_sum / discard_count
+    return {
+        "action": action_loss,
+        "claim": claim_loss,
+        "discard": discard_loss,
+        "total": action_loss + claim_loss + discard_loss,
+    }
 
 
 def apply_slide_symmetry(
@@ -208,6 +244,7 @@ def train(args: argparse.Namespace) -> dict:
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled and amp_mode == "fp16")
     metric_sample_every_batches = int(args.metric_sample_every_batches or 1)
     finite_check_every_batches = int(args.finite_check_every_batches or 1)
+    use_local_loss_normalization = bool(args.local_loss_normalization)
     fan_checker = None
     if args.feature_version == "v2" and (args.v2_use_official_fan or args.v2_require_official_fan):
         fan_checker = load_default_official_fan_checker()
@@ -232,6 +269,7 @@ def train(args: argparse.Namespace) -> dict:
         "augmentation_transforms_per_batch": transforms_per_batch,
         "metric_sample_every_batches": metric_sample_every_batches,
         "finite_check_every_batches": finite_check_every_batches,
+        "loss_normalization": "local" if use_local_loss_normalization else ("distributed" if distributed else "local"),
         "amp": amp_mode if amp_enabled else "off",
         "allow_tf32": bool(args.allow_tf32),
         "cudnn_benchmark": bool(args.cudnn_benchmark),
@@ -295,7 +333,11 @@ def train(args: argparse.Namespace) -> dict:
                             levels=int(args.v2_search_levels),
                         )
                     outputs = model(**inputs)
-                    loss_components = supervised_loss_components(outputs, labels, distributed=distributed)
+                    loss_components = (
+                        fast_local_supervised_loss_components(outputs, labels)
+                        if use_local_loss_normalization
+                        else supervised_loss_components(outputs, labels, distributed=distributed)
+                    )
                     ce_loss = loss_components["total"]
                     assert ce_loss is not None
                     l1_penalty, l2_penalty = elastic_net_penalty(
@@ -473,6 +515,7 @@ def main() -> int:
     parser.add_argument("--cudnn-benchmark", action="store_true")
     parser.add_argument("--metric-sample-every-batches", type=int, default=1)
     parser.add_argument("--finite-check-every-batches", type=int, default=1)
+    parser.add_argument("--local-loss-normalization", action="store_true")
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--device", default=None)
     parser.add_argument("--data-parallel", action="store_true")
