@@ -179,6 +179,7 @@ def iter_training_batches(
             world_size=world_size,
             prefetch_shards=args.shard_prefetch,
             pin_memory=args.pin_memory,
+            shuffle_within_shards=not bool(getattr(args, "no_shuffle_within_shards", False)),
         )
         return
     yield from iter_supervised_batches(
@@ -209,7 +210,11 @@ def train(args: argparse.Namespace) -> dict:
         torch.backends.cudnn.benchmark = bool(args.cudnn_benchmark)
     train_payload = load_tensor_payload(Path(args.train_pt), expected_encoding_version=args.require_encoding_version)
     encoding_schema = train_payload.get("encoding_schema") or {}
-    dataset = tensor_dataset_from_payload(train_payload, drop_shard_file_cache=bool(args.drop_shard_file_cache))
+    dataset = tensor_dataset_from_payload(
+        train_payload,
+        drop_shard_file_cache=bool(args.drop_shard_file_cache),
+        mmap_shards=bool(getattr(args, "mmap_shards", False)),
+    )
     if distributed and not bool(args.optimized_sharded_loader):
         raise ValueError("--distributed requires --optimized-sharded-loader")
     config = SlideResNetConfig(
@@ -323,6 +328,8 @@ def train(args: argparse.Namespace) -> dict:
         "train_examples": len(dataset),
         "train_data_format": dataset_data_format(dataset),
         "train_shard_count": dataset.shard_count if isinstance(dataset, ShardedTensorDataset) else 0,
+        "mmap_shards": bool(getattr(args, "mmap_shards", False)),
+        "shuffle_within_shards": not bool(getattr(args, "no_shuffle_within_shards", False)),
         "required_encoding_version": args.require_encoding_version,
         "paper_tensor_encoding_version": TENSOR_ENCODING_VERSION,
         "checkpoint_encoding_version": encoding_schema.get("version") or args.require_encoding_version,
@@ -609,6 +616,8 @@ def main() -> int:
     parser.add_argument("--optimized-sharded-loader", action="store_true")
     parser.add_argument("--shard-prefetch", type=int, default=1)
     parser.add_argument("--drop-shard-file-cache", action="store_true")
+    parser.add_argument("--mmap-shards", action="store_true")
+    parser.add_argument("--no-shuffle-within-shards", action="store_true")
     parser.add_argument("--pin-memory", action="store_true")
     parser.add_argument("--log-every-batches", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=0)

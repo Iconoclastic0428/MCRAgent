@@ -51,6 +51,19 @@ def validate_tensor_encoding(data: dict, *, expected_version: str | None = None,
         )
 
 
+def _torch_load_cpu(path: Path, *, mmap: bool = False) -> dict:
+    if not mmap:
+        return torch.load(path, map_location="cpu")
+    try:
+        return torch.load(path, map_location="cpu", mmap=True)
+    except TypeError:
+        return torch.load(path, map_location="cpu")
+    except RuntimeError as exc:
+        if "mmap" not in str(exc).lower():
+            raise
+        return torch.load(path, map_location="cpu")
+
+
 def load_tensor_payload(path: Path, *, expected_encoding_version: str | None = None) -> dict:
     path = Path(path)
     if path.suffix.lower() == ".json":
@@ -59,7 +72,7 @@ def load_tensor_payload(path: Path, *, expected_encoding_version: str | None = N
             raise ValueError(f"unsupported tensor index format in {path}: {data.get('format')!r}")
         data["_index_path"] = str(path)
     else:
-        data = torch.load(path, map_location="cpu")
+        data = _torch_load_cpu(path)
     validate_tensor_encoding(data, expected_version=expected_encoding_version, path=path)
     return data
 
@@ -80,10 +93,18 @@ def _drop_file_cache_for_path(path: Path) -> bool:
 
 
 class ShardedTensorDataset(Dataset):
-    def __init__(self, index: dict, *, index_path: Path, drop_file_cache: bool = False):
+    def __init__(
+        self,
+        index: dict,
+        *,
+        index_path: Path,
+        drop_file_cache: bool = False,
+        mmap_shards: bool = False,
+    ):
         self.index = index
         self.index_path = Path(index_path)
         self.drop_file_cache = bool(drop_file_cache)
+        self.mmap_shards = bool(mmap_shards)
         self.shards = list(index.get("shards") or [])
         self.cumulative_examples: list[int] = []
         total = 0
@@ -117,7 +138,7 @@ class ShardedTensorDataset(Dataset):
 
     def load_shard_payload(self, shard_index: int) -> dict:
         path = self.shard_path(shard_index)
-        payload = torch.load(path, map_location="cpu")
+        payload = _torch_load_cpu(path, mmap=self.mmap_shards)
         if self.drop_file_cache:
             _drop_file_cache_for_path(path)
         validate_tensor_encoding(payload, expected_version=(self.index.get("encoding_schema") or {}).get("version"), path=path)
@@ -148,10 +169,20 @@ class ShardedTensorDataset(Dataset):
         return shard_dataset[index - previous_total]
 
 
-def tensor_dataset_from_payload(data: dict, *, drop_shard_file_cache: bool = False) -> Dataset:
+def tensor_dataset_from_payload(
+    data: dict,
+    *,
+    drop_shard_file_cache: bool = False,
+    mmap_shards: bool = False,
+) -> Dataset:
     if data.get("format") == SHARD_INDEX_FORMAT:
         index_path = Path(str(data.get("_index_path") or ".")).resolve()
-        return ShardedTensorDataset(data, index_path=index_path, drop_file_cache=drop_shard_file_cache)
+        return ShardedTensorDataset(
+            data,
+            index_path=index_path,
+            drop_file_cache=drop_shard_file_cache,
+            mmap_shards=mmap_shards,
+        )
     return TensorDataset(*tensor_tuple_from_payload(data))
 
 
@@ -211,10 +242,12 @@ def load_tensor_dataset(
     *,
     expected_encoding_version: str | None = None,
     drop_shard_file_cache: bool = False,
+    mmap_shards: bool = False,
 ) -> Dataset:
     return tensor_dataset_from_payload(
         load_tensor_payload(path, expected_encoding_version=expected_encoding_version),
         drop_shard_file_cache=drop_shard_file_cache,
+        mmap_shards=mmap_shards,
     )
 
 
@@ -301,6 +334,7 @@ def iter_optimized_sharded_batches(
     world_size: int = 1,
     prefetch_shards: int = 1,
     pin_memory: bool = False,
+    shuffle_within_shards: bool = True,
 ):
     """Iterate sharded tensors by direct tensor slicing instead of per-sample collation.
 
@@ -316,7 +350,7 @@ def iter_optimized_sharded_batches(
     def prepare_shard(order_position: int, shard_index: int) -> tuple[torch.Tensor, ...]:
         shard = _load_shard_tensor_tuple(dataset, shard_index)
         n = _tensor_tuple_size(shard)
-        if shuffle and n:
+        if shuffle and shuffle_within_shards and n:
             generator = torch.Generator()
             generator.manual_seed(int(seed or 0) + int(shard_index) + order_position * 1009)
             index = torch.randperm(n, generator=generator)
@@ -1280,7 +1314,13 @@ def train(args: argparse.Namespace) -> dict:
     encoding_schema = train_payload.get("encoding_schema") or tensor_encoding_schema()
     checkpoint_encoding_version = encoding_schema.get("version") or args.require_encoding_version
     drop_shard_file_cache = bool(getattr(args, "drop_shard_file_cache", False))
-    dataset = tensor_dataset_from_payload(train_payload, drop_shard_file_cache=drop_shard_file_cache)
+    mmap_shards = bool(getattr(args, "mmap_shards", False))
+    shuffle_within_shards = not bool(getattr(args, "no_shuffle_within_shards", False))
+    dataset = tensor_dataset_from_payload(
+        train_payload,
+        drop_shard_file_cache=drop_shard_file_cache,
+        mmap_shards=mmap_shards,
+    )
     train_data_format = dataset_data_format(dataset)
     if optimized_sharded_loader and not isinstance(dataset, ShardedTensorDataset):
         raise ValueError("--optimized-sharded-loader requires a sharded tensor dataset index")
@@ -1334,6 +1374,8 @@ def train(args: argparse.Namespace) -> dict:
         "optimized_sharded_loader": optimized_sharded_loader,
         "shard_prefetch": int(getattr(args, "shard_prefetch", 1) or 1),
         "drop_shard_file_cache": drop_shard_file_cache,
+        "mmap_shards": mmap_shards,
+        "shuffle_within_shards": shuffle_within_shards,
         "pin_memory": bool(getattr(args, "pin_memory", False)),
         "device": str(device),
         "device_count": torch.cuda.device_count() if device.type == "cuda" else 0,
@@ -1368,6 +1410,8 @@ def train(args: argparse.Namespace) -> dict:
     metrics["distributed_world_size"] = world_size
     metrics["optimized_sharded_loader"] = optimized_sharded_loader
     metrics["shard_prefetch"] = int(getattr(args, "shard_prefetch", 1) or 1)
+    metrics["mmap_shards"] = mmap_shards
+    metrics["shuffle_within_shards"] = shuffle_within_shards
     metrics["pin_memory"] = bool(getattr(args, "pin_memory", False))
     if preflight_summary is not None:
         metrics["preflight_supervised_contract"] = preflight_summary
@@ -1399,6 +1443,7 @@ def train(args: argparse.Namespace) -> dict:
                 world_size=world_size,
                 prefetch_shards=int(getattr(args, "shard_prefetch", 1) or 1),
                 pin_memory=bool(getattr(args, "pin_memory", False)) and device.type == "cuda",
+                shuffle_within_shards=shuffle_within_shards,
             )
         else:
             loader = iter_supervised_batches(
@@ -1662,6 +1707,8 @@ def main() -> int:
     parser.add_argument("--optimized-sharded-loader", action="store_true")
     parser.add_argument("--shard-prefetch", type=int, default=1)
     parser.add_argument("--drop-shard-file-cache", action="store_true")
+    parser.add_argument("--mmap-shards", action="store_true")
+    parser.add_argument("--no-shuffle-within-shards", action="store_true")
     parser.add_argument("--pin-memory", action="store_true")
     parser.add_argument("--require-encoding-version", default=None)
     parser.add_argument("--require-paper-config", action="store_true")

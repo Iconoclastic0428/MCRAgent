@@ -3046,6 +3046,108 @@ def test_optimized_sharded_loader_preserves_global_batches_across_ranks():
         assert len(recovered) == len(set(recovered)) == 10
 
 
+def test_optimized_sharded_loader_can_skip_within_shard_shuffle():
+    with tempfile.TemporaryDirectory(dir=ROOT) as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        shard_dir = tmp_path / "shards"
+        shard_dir.mkdir()
+        schema = tensor_encoding_schema()
+        shards = []
+        for shard_index in range(3):
+            start = shard_index * 4
+            ids = torch.arange(start, start + 4)
+            visible_tiles = torch.zeros(4, 4, 22, 34)
+            visible_tiles[:, 0, 0, 0] = ids.float()
+            payload = {
+                "visible_tiles": visible_tiles,
+                "game_features": torch.zeros(4, 4, 24),
+                "rewards": torch.zeros(4, 4),
+                "previous_actions": torch.zeros(4, 4, dtype=torch.long),
+                "sub_visible_tiles": visible_tiles.clone(),
+                "sub_game_features": torch.zeros(4, 4, 24),
+                "sub_rewards": torch.zeros(4, 4),
+                "sub_previous_actions": torch.zeros(4, 4, dtype=torch.long),
+                "hidden_tiles": torch.zeros(4, 5, 34),
+                "action_label": torch.full((4,), ACTION_TO_INDEX["DISCARD"], dtype=torch.long),
+                "claim_label": torch.zeros(4, dtype=torch.long),
+                "discard_label": ids.remainder(34).long(),
+                "encoding_schema": schema,
+                "examples": 4,
+            }
+            path = shard_dir / f"shard_{shard_index}.pt"
+            torch.save(payload, path)
+            shards.append({"path": path.name, "examples": 4})
+        index_path = shard_dir / "index.json"
+        index_path.write_text(
+            json.dumps(
+                {
+                    "format": SHARD_INDEX_FORMAT,
+                    "encoding_schema": schema,
+                    "examples": 12,
+                    "shards": shards,
+                }
+            ),
+            encoding="utf-8",
+        )
+        dataset = load_tensor_dataset(index_path, expected_encoding_version=TENSOR_ENCODING_VERSION)
+
+        batches = list(
+            iter_optimized_sharded_batches(
+                dataset,
+                batch_size=4,
+                shuffle=True,
+                seed=123,
+                prefetch_shards=2,
+                shuffle_within_shards=False,
+            )
+        )
+
+        assert len(batches) == 3
+        recovered = [[int(value.item()) for value in batch[0][:, 0, 0, 0]] for batch in batches]
+        assert sorted(value for batch in recovered for value in batch) == list(range(12))
+        assert all(batch == list(range(batch[0], batch[0] + 4)) for batch in recovered)
+
+
+def test_sharded_dataset_records_mmap_shard_preference():
+    with tempfile.TemporaryDirectory(dir=ROOT) as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        shard_dir = tmp_path / "shards"
+        shard_dir.mkdir()
+        schema = tensor_encoding_schema()
+        payload = {
+            "visible_tiles": torch.zeros(1, 4, 22, 34),
+            "game_features": torch.zeros(1, 4, 24),
+            "action_label": torch.full((1,), ACTION_TO_INDEX["DISCARD"], dtype=torch.long),
+            "claim_label": torch.zeros(1, dtype=torch.long),
+            "discard_label": torch.zeros(1, dtype=torch.long),
+            "encoding_schema": schema,
+            "examples": 1,
+        }
+        torch.save(payload, shard_dir / "shard_0.pt")
+        index_path = shard_dir / "index.json"
+        index_path.write_text(
+            json.dumps(
+                {
+                    "format": SHARD_INDEX_FORMAT,
+                    "encoding_schema": schema,
+                    "examples": 1,
+                    "shards": [{"path": "shard_0.pt", "examples": 1}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        dataset = load_tensor_dataset(
+            index_path,
+            expected_encoding_version=TENSOR_ENCODING_VERSION,
+            mmap_shards=True,
+        )
+
+        assert isinstance(dataset, ShardedTensorDataset)
+        assert dataset.mmap_shards is True
+        assert len(dataset.load_shard_payload(0)["action_label"]) == 1
+
+
 def test_sharded_dataset_can_drop_file_cache_after_loading_shard(monkeypatch):
     with tempfile.TemporaryDirectory(dir=ROOT) as tmp_dir:
         tmp_path = Path(tmp_dir)

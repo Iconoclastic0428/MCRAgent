@@ -166,19 +166,21 @@ spec:
                 --seed 0 \
                 --require-encoding-version "${TENSOR_ENCODING_VERSION}" \
                 --optimized-sharded-loader \
-                --shard-prefetch 4 \
+                --shard-prefetch 16 \
+                --mmap-shards \
+                --no-shuffle-within-shards \
                 --pin-memory \
                 --log-every-batches 100
           resources:
             limits:
-              cpu: "2"
-              memory: 16Gi
-              ephemeral-storage: 40Gi
+              cpu: "4"
+              memory: 32Gi
+              ephemeral-storage: 60Gi
               nvidia.com/gpu: 2
             requests:
-              cpu: "2"
-              memory: 16Gi
-              ephemeral-storage: 30Gi
+              cpu: "4"
+              memory: 32Gi
+              ephemeral-storage: 60Gi
               nvidia.com/gpu: 2
           volumeMounts:
             - name: idl-data
