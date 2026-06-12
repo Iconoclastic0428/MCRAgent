@@ -59,3 +59,33 @@ def test_can_complete_hand_accounts_for_exposed_melds():
 
     assert can_complete_hand(hand, "F1", meld_count=2)
     assert not can_complete_hand(hand, "F1", meld_count=0)
+
+
+def test_generate_hu_candidate_for_greater_honors_and_knitted_tiles():
+    hand = Counter("W1 W4 W7 B2 B5 B8 T3 F1 F2 F3 F4 J1 J2 J3".split())
+
+    responses = generate_legal_responses(player_id=0, request="2 J3", hand=hand)
+
+    assert "HU" in responses
+
+
+def test_generate_hu_candidate_for_lesser_honors_and_knitted_tiles():
+    hand = Counter("W1 W4 W7 B2 B5 B8 T3 T6 F1 F2 F3 F4 J1 J2".split())
+
+    responses = generate_legal_responses(player_id=0, request="2 J2", hand=hand)
+
+    assert "HU" in responses
+
+
+def test_generate_hu_candidate_for_knitted_straight():
+    hand = Counter("W1 W4 W7 B2 B5 B8 T3 T6 T9 W2 W3 W4 J1 J1".split())
+
+    responses = generate_legal_responses(player_id=0, request="2 J1", hand=hand)
+
+    assert "HU" in responses
+
+
+def test_can_complete_knitted_straight_with_one_exposed_meld():
+    hand = Counter("W1 W4 W7 B2 B5 B8 T3 T6 T9 J1".split())
+
+    assert can_complete_hand(hand, "J1", meld_count=1)

@@ -9,6 +9,18 @@ from collections import Counter
 from hand_features import TILE_ORDER, TILE_TO_INDEX, candidate_feature_text, min_shanten
 
 
+HONORS = {"F1", "F2", "F3", "F4", "J1", "J2", "J3"}
+STANDARD_KNITTED_STRAIGHTS = (
+    ("W1", "W4", "W7", "B2", "B5", "B8", "T3", "T6", "T9"),
+    ("W1", "W4", "W7", "B3", "B6", "B9", "T2", "T5", "T8"),
+    ("W2", "W5", "W8", "B1", "B4", "B7", "T3", "T6", "T9"),
+    ("W2", "W5", "W8", "B3", "B6", "B9", "T1", "T4", "T7"),
+    ("W3", "W6", "W9", "B1", "B4", "B7", "T2", "T5", "T8"),
+    ("W3", "W6", "W9", "B2", "B5", "B8", "T1", "T4", "T7"),
+)
+STANDARD_KNITTED_STRAIGHT_SETS = tuple(frozenset(seq) for seq in STANDARD_KNITTED_STRAIGHTS)
+
+
 def parse_request(request: str) -> list[str]:
     return request.strip().split()
 
@@ -31,7 +43,51 @@ def can_complete_hand(hand: Counter[str], tile: str | None = None, meld_count: i
         tiles.append(tile)
     if meld_count == 0 and min_shanten(tiles) <= -1:
         return True
+    if meld_count == 0 and can_complete_honors_and_knitted_tiles(tiles):
+        return True
+    if can_complete_knitted_straight_hand(tiles, meld_count=meld_count):
+        return True
     return can_complete_regular_hand(tiles, meld_count)
+
+
+def can_complete_honors_and_knitted_tiles(tiles: list[str]) -> bool:
+    """Return true for 全不靠 / 七星不靠 special Hu shapes."""
+    if len(tiles) != 14:
+        return False
+    counts = Counter(tiles)
+    if any(count != 1 for count in counts.values()):
+        return False
+    suited = {tile for tile in counts if is_suited(tile)}
+    honors = set(counts) - suited
+    if not honors <= HONORS:
+        return False
+    if not 7 <= len(suited) <= 9:
+        return False
+    if not any(suited <= seq for seq in STANDARD_KNITTED_STRAIGHT_SETS):
+        return False
+    if len(suited) == 7:
+        return honors == HONORS
+    return honors <= HONORS
+
+
+def can_complete_knitted_straight_hand(tiles: list[str], meld_count: int = 0) -> bool:
+    """Return true for 组合龙 plus the remaining required set/pair shape."""
+    if meld_count < 0 or meld_count > 1:
+        return False
+    expected_len = (1 - meld_count) * 3 + 2 + 9
+    if len(tiles) != expected_len:
+        return False
+    counts = Counter(tiles)
+    for seq in STANDARD_KNITTED_STRAIGHTS:
+        if all(counts[tile] > 0 for tile in seq):
+            remaining = counts.copy()
+            for tile in seq:
+                remaining[tile] -= 1
+                if remaining[tile] <= 0:
+                    del remaining[tile]
+            if can_complete_regular_hand(list(remaining.elements()), meld_count=3 + meld_count):
+                return True
+    return False
 
 
 def can_complete_regular_hand(tiles: list[str], meld_count: int = 0) -> bool:
