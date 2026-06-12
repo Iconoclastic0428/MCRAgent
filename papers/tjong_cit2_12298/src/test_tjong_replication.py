@@ -143,6 +143,51 @@ def test_network_forward_shapes():
     assert out["value"].shape == (batch,)
 
 
+def test_network_reuse_identical_substate_matches_full_eval_path():
+    config = TjongConfig(d_model=32, n_heads=4, ffn_dim=64, dropout=0.0)
+    model = TjongNetwork(config)
+    model.eval()
+    batch = 3
+    visible = torch.randn(batch, config.memory_len, 22, 34)
+    game = torch.randn(batch, config.memory_len, 24)
+    rewards = torch.randn(batch, config.memory_len)
+    previous = torch.zeros(batch, config.memory_len, dtype=torch.long)
+    sub_visible = visible.clone()
+    sub_game = game.clone()
+    sub_rewards = rewards.clone()
+    sub_previous = previous.clone()
+    sub_game[1, -1, 0] += 1.0
+    sub_previous[2, -1] = ACTION_TO_INDEX["PONG"]
+
+    with torch.no_grad():
+        model.reuse_identical_substate = False
+        full = model(
+            visible_tiles=visible,
+            game_features=game,
+            rewards=rewards,
+            previous_actions=previous,
+            sub_visible_tiles=sub_visible,
+            sub_game_features=sub_game,
+            sub_rewards=sub_rewards,
+            sub_previous_actions=sub_previous,
+        )
+        model.reuse_identical_substate = True
+        reused = model(
+            visible_tiles=visible,
+            game_features=game,
+            rewards=rewards,
+            previous_actions=previous,
+            sub_visible_tiles=sub_visible,
+            sub_game_features=sub_game,
+            sub_rewards=sub_rewards,
+            sub_previous_actions=sub_previous,
+        )
+
+    assert torch.allclose(reused["action_logits"], full["action_logits"])
+    assert torch.allclose(reused["claim_logits"], full["claim_logits"])
+    assert torch.allclose(reused["discard_logits"], full["discard_logits"])
+
+
 def test_slide_feature_planes_match_v1_and_v2_channel_counts():
     batch = 2
     visible = torch.zeros(batch, 4, 22, 34)

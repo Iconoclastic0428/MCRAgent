@@ -1368,6 +1368,7 @@ def train(args: argparse.Namespace) -> dict:
         dropout=args.dropout,
     )
     validate_paper_supervised_args(args, config)
+    reuse_identical_substate = bool(getattr(args, "reuse_identical_substate", False))
     optimized_sharded_loader = bool(getattr(args, "optimized_sharded_loader", False))
     if distributed and not optimized_sharded_loader:
         raise ValueError("--distributed requires --optimized-sharded-loader so each rank receives one slice of every global batch")
@@ -1393,6 +1394,7 @@ def train(args: argparse.Namespace) -> dict:
     if optimized_sharded_loader and not isinstance(dataset, ShardedTensorDataset):
         raise ValueError("--optimized-sharded-loader requires a sharded tensor dataset index")
     base_model = TjongNetwork(config).to(device)
+    base_model.reuse_identical_substate = reuse_identical_substate
     frozen_value_parameters = freeze_supervised_value_parameters(base_model)
     if distributed:
         ddp_kwargs = {
@@ -1461,6 +1463,7 @@ def train(args: argparse.Namespace) -> dict:
         "preflight_supervised_contract": preflight_summary,
         "model_parameters": base_model.parameter_count(),
         "supervised_frozen_value_parameters": frozen_value_parameters,
+        "reuse_identical_substate": reuse_identical_substate,
         "data_parallel": isinstance(model, nn.DataParallel),
         "distributed": distributed,
         "distributed_rank": rank,
@@ -1509,6 +1512,7 @@ def train(args: argparse.Namespace) -> dict:
     metrics["train_data_format"] = train_data_format
     metrics["train_shard_count"] = dataset.shard_count if isinstance(dataset, ShardedTensorDataset) else 0
     metrics["supervised_frozen_value_parameters"] = frozen_value_parameters
+    metrics["reuse_identical_substate"] = reuse_identical_substate
     metrics["data_parallel"] = isinstance(model, nn.DataParallel)
     metrics["distributed"] = distributed
     metrics["distributed_world_size"] = world_size
@@ -1873,6 +1877,7 @@ def main() -> int:
     parser.add_argument("--amp", choices=("off", "fp16", "bf16"), default="off")
     parser.add_argument("--fused-adam", action="store_true")
     parser.add_argument("--ddp-static-graph", action="store_true")
+    parser.add_argument("--reuse-identical-substate", action="store_true")
     parser.add_argument("--metric-sample-every-batches", type=int, default=1)
     parser.add_argument("--finite-check-every-batches", type=int, default=1)
     parser.add_argument("--fail-on-nonfinite", action="store_true")

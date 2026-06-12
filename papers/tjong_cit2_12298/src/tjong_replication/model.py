@@ -142,6 +142,7 @@ class TjongNetwork(nn.Module):
     def __init__(self, config: TjongConfig | None = None):
         super().__init__()
         self.config = config or TjongConfig()
+        self.reuse_identical_substate = False
         self.policy_backbone = TITPolicyBackbone(self.config)
         self.value_inner = InnerTransformer(self.config.hidden_tile_rows, self.config)
         self.action_head = nn.Linear(self.config.d_model, self.config.action_size)
@@ -178,12 +179,49 @@ class TjongNetwork(nn.Module):
         else:
             if sub_visible_tiles is None or sub_game_features is None:
                 raise ValueError("sub_visible_tiles and sub_game_features must be provided together")
-            tile_decision_state = self.policy_backbone(
-                visible_tiles=sub_visible_tiles,
-                game_features=sub_game_features,
-                rewards=rewards if sub_rewards is None else sub_rewards,
-                previous_actions=previous_actions if sub_previous_actions is None else sub_previous_actions,
+            base_rewards = (
+                rewards
+                if rewards is not None
+                else torch.zeros(visible_tiles.shape[:2], device=visible_tiles.device, dtype=visible_tiles.dtype)
             )
+            base_previous_actions = (
+                previous_actions
+                if previous_actions is not None
+                else torch.zeros(visible_tiles.shape[:2], device=visible_tiles.device, dtype=torch.long)
+            )
+            sub_rewards_input = base_rewards if sub_rewards is None else sub_rewards
+            sub_previous_actions_input = base_previous_actions if sub_previous_actions is None else sub_previous_actions
+            if bool(getattr(self, "reuse_identical_substate", False)):
+                same_substate = _same_sequence_rows(visible_tiles, sub_visible_tiles)
+                same_substate &= _same_sequence_rows(game_features, sub_game_features)
+                same_substate &= _same_sequence_rows(base_rewards, sub_rewards_input)
+                same_substate &= _same_sequence_rows(base_previous_actions, sub_previous_actions_input)
+                if bool(same_substate.all().item()):
+                    tile_decision_state = policy_state
+                elif bool(same_substate.any().item()):
+                    changed = ~same_substate
+                    tile_decision_state = policy_state.new_empty(policy_state.shape)
+                    tile_decision_state[same_substate] = policy_state[same_substate]
+                    tile_decision_state[changed] = self.policy_backbone(
+                        visible_tiles=sub_visible_tiles[changed],
+                        game_features=sub_game_features[changed],
+                        rewards=sub_rewards_input[changed],
+                        previous_actions=sub_previous_actions_input[changed],
+                    )
+                else:
+                    tile_decision_state = self.policy_backbone(
+                        visible_tiles=sub_visible_tiles,
+                        game_features=sub_game_features,
+                        rewards=sub_rewards_input,
+                        previous_actions=sub_previous_actions_input,
+                    )
+            else:
+                tile_decision_state = self.policy_backbone(
+                    visible_tiles=sub_visible_tiles,
+                    game_features=sub_game_features,
+                    rewards=sub_rewards_input,
+                    previous_actions=sub_previous_actions_input,
+                )
         output = {
             "action_logits": self.action_head(policy_state),
             "claim_logits": self.claim_head(tile_decision_state),
@@ -196,6 +234,16 @@ class TjongNetwork(nn.Module):
 
     def parameter_count(self) -> int:
         return sum(parameter.numel() for parameter in self.parameters())
+
+
+def _same_sequence_rows(left: torch.Tensor | None, right: torch.Tensor | None) -> torch.Tensor:
+    if left is None or right is None:
+        tensor = left if left is not None else right
+        assert tensor is not None
+        return torch.zeros(tensor.shape[0], dtype=torch.bool, device=tensor.device)
+    if left.shape != right.shape:
+        return torch.zeros(left.shape[0], dtype=torch.bool, device=left.device)
+    return (left == right).reshape(left.shape[0], -1).all(dim=1)
 
 
 def masked_argmax(logits: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
