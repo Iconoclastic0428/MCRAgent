@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+from contextlib import nullcontext
 from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import math
@@ -534,6 +535,34 @@ def configure_cuda_attention(*, force_math_sdp: bool = False) -> dict[str, bool 
     return status
 
 
+def configure_cuda_math(
+    *,
+    device: torch.device,
+    allow_tf32: bool = False,
+    cudnn_benchmark: bool = False,
+) -> dict[str, bool | str | None]:
+    """Configure CUDA math policy without changing paper-level hyperparameters."""
+
+    status: dict[str, bool | str | None] = {
+        "allow_tf32": bool(allow_tf32),
+        "cudnn_benchmark": bool(cudnn_benchmark),
+        "float32_matmul_precision": None,
+        "matmul_allow_tf32": None,
+        "cudnn_allow_tf32": None,
+    }
+    if device.type != "cuda":
+        return status
+    if allow_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
+    torch.backends.cudnn.benchmark = bool(cudnn_benchmark)
+    status["float32_matmul_precision"] = torch.get_float32_matmul_precision()
+    status["matmul_allow_tf32"] = bool(torch.backends.cuda.matmul.allow_tf32)
+    status["cudnn_allow_tf32"] = bool(torch.backends.cudnn.allow_tf32)
+    return status
+
+
 def safe_clip_grad_norm_(parameters: list[torch.nn.Parameter], max_norm: float) -> float:
     """Clip gradients without foreach kernels or CUDA-wide finite scans."""
     params = [parameter for parameter in parameters if parameter.grad is not None]
@@ -556,6 +585,34 @@ def safe_clip_grad_norm_(parameters: list[torch.nn.Parameter], max_norm: float) 
         for parameter in params:
             parameter.grad.mul_(scale)
     return total_norm
+
+
+def fast_clip_grad_norm_(
+    parameters: list[torch.nn.Parameter],
+    max_norm: float,
+    *,
+    error_if_nonfinite: bool = False,
+) -> torch.Tensor:
+    """Use PyTorch's fused/foreach gradient clipping and keep the norm on device."""
+
+    params = [parameter for parameter in parameters if parameter.grad is not None]
+    if not params:
+        device = parameters[0].device if parameters else torch.device("cpu")
+        return torch.zeros((), dtype=torch.float32, device=device)
+    try:
+        norm = torch.nn.utils.clip_grad_norm_(
+            params,
+            max_norm,
+            error_if_nonfinite=error_if_nonfinite,
+            foreach=True,
+        )
+    except TypeError:
+        norm = torch.nn.utils.clip_grad_norm_(
+            params,
+            max_norm,
+            error_if_nonfinite=error_if_nonfinite,
+        )
+    return torch.as_tensor(norm, dtype=torch.float32, device=params[0].device)
 
 
 def cuda_sync_debug(args: argparse.Namespace, device: torch.device) -> None:
@@ -1293,6 +1350,17 @@ def train(args: argparse.Namespace) -> dict:
     max_steps = int(getattr(args, "max_steps", 0) or 0)
     sync_debug = bool(getattr(args, "cuda_sync_debug", False))
     cuda_attention = configure_cuda_attention(force_math_sdp=force_math_sdp)
+    cuda_math = configure_cuda_math(
+        device=device,
+        allow_tf32=bool(getattr(args, "allow_tf32", False)),
+        cudnn_benchmark=bool(getattr(args, "cudnn_benchmark", False)),
+    )
+    amp_mode = str(getattr(args, "amp", "off") or "off").lower()
+    if amp_mode not in {"off", "fp16", "bf16"}:
+        raise ValueError(f"unsupported --amp mode: {amp_mode}")
+    amp_dtype = torch.float16 if amp_mode == "fp16" else torch.bfloat16
+    amp_enabled = device.type == "cuda" and amp_mode in {"fp16", "bf16"}
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled and amp_mode == "fp16")
     config = TjongConfig(
         d_model=args.d_model,
         n_heads=args.n_heads,
@@ -1327,29 +1395,56 @@ def train(args: argparse.Namespace) -> dict:
     base_model = TjongNetwork(config).to(device)
     frozen_value_parameters = freeze_supervised_value_parameters(base_model)
     if distributed:
-        model = DistributedDataParallel(
-            base_model,
-            device_ids=[local_rank] if device.type == "cuda" else None,
-            output_device=local_rank if device.type == "cuda" else None,
-            find_unused_parameters=False,
-            gradient_as_bucket_view=True,
-        )
+        ddp_kwargs = {
+            "device_ids": [local_rank] if device.type == "cuda" else None,
+            "output_device": local_rank if device.type == "cuda" else None,
+            "find_unused_parameters": False,
+            "gradient_as_bucket_view": True,
+        }
+        if bool(getattr(args, "ddp_static_graph", False)):
+            ddp_kwargs["static_graph"] = True
+        try:
+            model = DistributedDataParallel(base_model, **ddp_kwargs)
+        except TypeError:
+            if "static_graph" not in ddp_kwargs:
+                raise
+            ddp_kwargs.pop("static_graph")
+            model = DistributedDataParallel(base_model, **ddp_kwargs)
     elif bool(getattr(args, "data_parallel", False)) and device.type == "cuda" and torch.cuda.device_count() > 1:
         model = nn.DataParallel(base_model).to(device)
     else:
         model = base_model
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    fused_adam = bool(getattr(args, "fused_adam", False)) and device.type == "cuda"
+    try:
+        optimizer = (
+            torch.optim.Adam(model.parameters(), lr=args.lr, fused=True)
+            if fused_adam
+            else torch.optim.Adam(model.parameters(), lr=args.lr)
+        )
+    except (RuntimeError, TypeError):
+        fused_adam = False
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     start_epoch = 1
     global_batch = 0
+    metric_sample_every_batches = int(getattr(args, "metric_sample_every_batches", 1) or 1)
+    finite_check_every_batches = int(getattr(args, "finite_check_every_batches", 1) or 1)
     metrics = {
         "paper": "Tjong CIT2.12298",
         "optimizer": "Adam",
+        "fused_adam": fused_adam,
         "lr": args.lr,
         "batch_size": args.batch_size,
         "seed": seed,
+        "amp": amp_mode if amp_enabled else "off",
+        "allow_tf32": bool(getattr(args, "allow_tf32", False)),
+        "cudnn_benchmark": bool(getattr(args, "cudnn_benchmark", False)),
+        "cuda_math": cuda_math,
+        "metric_sample_every_batches": metric_sample_every_batches,
+        "finite_check_every_batches": finite_check_every_batches,
         "shuffle_seed_mode": "seed_plus_epoch",
         "grad_clip": grad_clip,
+        "grad_clip_impl": "torch.nn.utils.clip_grad_norm_",
         "fail_on_nonfinite": fail_on_nonfinite,
         "check_param_finiteness": bool(getattr(args, "check_param_finiteness", False)),
         "cuda_sync_debug": sync_debug,
@@ -1371,6 +1466,7 @@ def train(args: argparse.Namespace) -> dict:
         "distributed_rank": rank,
         "distributed_world_size": world_size,
         "local_rank": local_rank,
+        "ddp_static_graph": bool(getattr(args, "ddp_static_graph", False)),
         "optimized_sharded_loader": optimized_sharded_loader,
         "shard_prefetch": int(getattr(args, "shard_prefetch", 1) or 1),
         "drop_shard_file_cache": drop_shard_file_cache,
@@ -1395,12 +1491,20 @@ def train(args: argparse.Namespace) -> dict:
         if metrics.get("epochs"):
             global_batch = int(metrics["epochs"][-1].get("global_batch", 0) or 0)
     metrics["grad_clip"] = grad_clip
+    metrics["grad_clip_impl"] = "torch.nn.utils.clip_grad_norm_"
     metrics["fail_on_nonfinite"] = fail_on_nonfinite
     metrics["check_param_finiteness"] = bool(getattr(args, "check_param_finiteness", False))
     metrics["cuda_sync_debug"] = sync_debug
     metrics["max_steps"] = max_steps
     metrics["force_math_sdp"] = force_math_sdp
     metrics["cuda_attention"] = cuda_attention
+    metrics["cuda_math"] = cuda_math
+    metrics["amp"] = amp_mode if amp_enabled else "off"
+    metrics["allow_tf32"] = bool(getattr(args, "allow_tf32", False))
+    metrics["cudnn_benchmark"] = bool(getattr(args, "cudnn_benchmark", False))
+    metrics["fused_adam"] = fused_adam
+    metrics["metric_sample_every_batches"] = metric_sample_every_batches
+    metrics["finite_check_every_batches"] = finite_check_every_batches
     metrics["train_examples"] = len(dataset)
     metrics["train_data_format"] = train_data_format
     metrics["train_shard_count"] = dataset.shard_count if isinstance(dataset, ShardedTensorDataset) else 0
@@ -1408,6 +1512,7 @@ def train(args: argparse.Namespace) -> dict:
     metrics["data_parallel"] = isinstance(model, nn.DataParallel)
     metrics["distributed"] = distributed
     metrics["distributed_world_size"] = world_size
+    metrics["ddp_static_graph"] = bool(getattr(args, "ddp_static_graph", False))
     metrics["optimized_sharded_loader"] = optimized_sharded_loader
     metrics["shard_prefetch"] = int(getattr(args, "shard_prefetch", 1) or 1)
     metrics["mmap_shards"] = mmap_shards
@@ -1430,7 +1535,7 @@ def train(args: argparse.Namespace) -> dict:
         total_loss = 0.0
         total = 0
         batches = 0
-        max_grad_norm_before_clip = 0.0
+        max_grad_norm_before_clip = torch.zeros((), dtype=torch.float32, device=device)
         metric_sums: dict[str, float] = {}
         if optimized_sharded_loader:
             assert isinstance(dataset, ShardedTensorDataset)
@@ -1456,9 +1561,14 @@ def train(args: argparse.Namespace) -> dict:
         for batch in loader:
             batches += 1
             global_batch += 1
+            finite_check_this_batch = (
+                fail_on_nonfinite
+                and finite_check_every_batches > 0
+                and global_batch % finite_check_every_batches == 0
+            )
             inputs, labels = unpack_batch(batch, device, include_hidden_tiles=False)
             optimizer.zero_grad(set_to_none=True)
-            if fail_on_nonfinite and bool(getattr(args, "check_param_finiteness", False)):
+            if finite_check_this_batch and bool(getattr(args, "check_param_finiteness", False)):
                 bad_parameters = first_nonfinite_parameter_names(model)
                 if bad_parameters:
                     raise FloatingPointError(
@@ -1466,9 +1576,18 @@ def train(args: argparse.Namespace) -> dict:
                         f"epoch={epoch} batch={batches} global_batch={global_batch} "
                         f"parameters={bad_parameters}"
                     )
-            outputs = model(**inputs)
+            autocast_context = (
+                torch.amp.autocast(device_type=device.type, dtype=amp_dtype)
+                if amp_enabled
+                else nullcontext()
+            )
+            with autocast_context:
+                outputs = model(**inputs)
+                loss_components = supervised_loss_components(outputs, labels, distributed=distributed)
+                loss = loss_components["total"]
+                assert loss is not None
             cuda_sync_debug(args, device)
-            if fail_on_nonfinite:
+            if finite_check_this_batch:
                 bad_outputs = {
                     name: tensor_finite_context(tensor)
                     for name, tensor in outputs.items()
@@ -1481,11 +1600,8 @@ def train(args: argparse.Namespace) -> dict:
                         f"action_counts={action_count_context(labels[0])} "
                         f"context={json.dumps(bad_outputs, sort_keys=True)}"
                     )
-            loss_components = supervised_loss_components(outputs, labels, distributed=distributed)
-            loss = loss_components["total"]
-            assert loss is not None
             cuda_sync_debug(args, device)
-            if fail_on_nonfinite and not torch.isfinite(loss).item():
+            if finite_check_this_batch and not torch.isfinite(loss).item():
                 context = nonfinite_supervised_context(outputs, labels, loss_components, model)
                 raise FloatingPointError(
                     "non-finite supervised loss at "
@@ -1493,31 +1609,57 @@ def train(args: argparse.Namespace) -> dict:
                     f"loss={loss.detach().item()} action_counts={action_count_context(labels[0])} "
                     f"context={json.dumps(context, sort_keys=True)}"
                 )
-            loss.backward()
+            if scaler.is_enabled():
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
             cuda_sync_debug(args, device)
             if grad_clip > 0.0:
-                grad_norm = safe_clip_grad_norm_(trainable_parameters, grad_clip)
-                if math.isfinite(grad_norm):
-                    max_grad_norm_before_clip = max(max_grad_norm_before_clip, grad_norm)
-                elif fail_on_nonfinite:
+                if scaler.is_enabled():
+                    scaler.unscale_(optimizer)
+                grad_norm_tensor = fast_clip_grad_norm_(
+                    trainable_parameters,
+                    grad_clip,
+                    error_if_nonfinite=finite_check_this_batch,
+                )
+                if finite_check_this_batch and not torch.isfinite(grad_norm_tensor).item():
                     raise FloatingPointError(
                         "non-finite supervised gradients before clipping at "
                         f"epoch={epoch} batch={batches} global_batch={global_batch} "
-                        f"grad_norm={grad_norm} "
+                        f"grad_norm={float(grad_norm_tensor.detach().item())} "
                         f"action_counts={action_count_context(labels[0])}"
                     )
-            optimizer.step()
-            batch_size = int(labels[0].numel())
-            total_loss += float(loss.item()) * batch_size
-            total += batch_size
-            merge_metric_sums(metric_sums, batch_metric_sums(outputs, labels))
+                finite_grad_norm = torch.nan_to_num(
+                    grad_norm_tensor.detach(),
+                    nan=0.0,
+                    posinf=0.0,
+                    neginf=0.0,
+                )
+                max_grad_norm_before_clip = torch.maximum(
+                    max_grad_norm_before_clip,
+                    finite_grad_norm,
+                )
+            if scaler.is_enabled():
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+            log_this_batch = bool(log_every_batches and batches % log_every_batches == 0)
+            sample_this_batch = (
+                metric_sample_every_batches > 0
+                and (global_batch % metric_sample_every_batches == 0 or log_this_batch)
+            )
+            if sample_this_batch:
+                batch_size = int(labels[0].numel())
+                total_loss += float(loss.detach().item()) * batch_size
+                total += batch_size
+                metric_outputs = {name: tensor.detach() for name, tensor in outputs.items()}
+                merge_metric_sums(metric_sums, batch_metric_sums(metric_outputs, labels))
             if log_every_batches and batches % log_every_batches == 0:
                 display_metric_sums = reduce_metric_sums(metric_sums, device)
-                display_grad_norm = max_grad_norm_before_clip
+                display_grad_norm = max_grad_norm_before_clip.detach().clone()
                 if distributed:
-                    grad_tensor = torch.tensor([display_grad_norm], dtype=torch.float64, device=device)
-                    dist.all_reduce(grad_tensor, op=dist.ReduceOp.MAX)
-                    display_grad_norm = float(grad_tensor.item())
+                    dist.all_reduce(display_grad_norm, op=dist.ReduceOp.MAX)
                 if is_rank0():
                     now = time.perf_counter()
                     finalized = finalize_metric_sums(display_metric_sums)
@@ -1545,12 +1687,14 @@ def train(args: argparse.Namespace) -> dict:
                         "discard_accuracy": finalized["discard_accuracy"],
                         "discard_count": finalized["discard_count"],
                         "action_breakdown": finalized["action_breakdown"],
+                        "sampled_examples": finalized["action_count"],
+                        "metric_sample_every_batches": metric_sample_every_batches,
                         "elapsed_seconds": epoch_elapsed,
                         "batches_per_second": batches / epoch_elapsed,
                         "recent_batches_per_second": (batches - log_batch_start) / recent_elapsed,
                     }
                     if grad_clip > 0.0:
-                        batch_metrics["max_grad_norm_before_clip"] = display_grad_norm
+                        batch_metrics["max_grad_norm_before_clip"] = float(display_grad_norm.item())
                     print(json.dumps(batch_metrics, sort_keys=True), flush=True)
                     if batch_metrics_jsonl:
                         append_jsonl(Path(batch_metrics_jsonl), batch_metrics)
@@ -1580,11 +1724,9 @@ def train(args: argparse.Namespace) -> dict:
                 stop_after_epoch = True
                 break
         display_metric_sums = reduce_metric_sums(metric_sums, device)
-        display_grad_norm = max_grad_norm_before_clip
+        display_grad_norm = max_grad_norm_before_clip.detach().clone()
         if distributed:
-            grad_tensor = torch.tensor([display_grad_norm], dtype=torch.float64, device=device)
-            dist.all_reduce(grad_tensor, op=dist.ReduceOp.MAX)
-            display_grad_norm = float(grad_tensor.item())
+            dist.all_reduce(display_grad_norm, op=dist.ReduceOp.MAX)
         finalized = finalize_metric_sums(display_metric_sums)
         epoch_elapsed = max(time.perf_counter() - epoch_wall_start, 1e-9)
         epoch_metrics = {
@@ -1598,10 +1740,12 @@ def train(args: argparse.Namespace) -> dict:
             ),
             "elapsed_seconds": epoch_elapsed,
             "batches_per_second": batches / epoch_elapsed,
+            "sampled_examples": finalized["action_count"],
+            "metric_sample_every_batches": metric_sample_every_batches,
             **finalized,
         }
         if grad_clip > 0.0:
-            epoch_metrics["max_grad_norm_before_clip"] = display_grad_norm
+            epoch_metrics["max_grad_norm_before_clip"] = float(display_grad_norm.item())
         if is_rank0():
             metrics["epochs"].append(epoch_metrics)
             print(json.dumps(epoch_metrics, sort_keys=True), flush=True)
@@ -1724,6 +1868,13 @@ def main() -> int:
     parser.add_argument("--log-every-batches", type=int, default=0)
     parser.add_argument("--grad-clip", type=float, default=SUPERVISED_GRAD_CLIP)
     parser.add_argument("--force-math-sdp", action="store_true")
+    parser.add_argument("--allow-tf32", action="store_true")
+    parser.add_argument("--cudnn-benchmark", action="store_true")
+    parser.add_argument("--amp", choices=("off", "fp16", "bf16"), default="off")
+    parser.add_argument("--fused-adam", action="store_true")
+    parser.add_argument("--ddp-static-graph", action="store_true")
+    parser.add_argument("--metric-sample-every-batches", type=int, default=1)
+    parser.add_argument("--finite-check-every-batches", type=int, default=1)
     parser.add_argument("--fail-on-nonfinite", action="store_true")
     parser.add_argument("--preflight-supervised-contract", action="store_true")
     parser.add_argument("--check-param-finiteness", action="store_true")
