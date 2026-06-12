@@ -1,0 +1,223 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tjong-selfplay-specialhu-2000-cpu32-20260612a
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: selfplay-specialhu-2000-cpu32
+spec:
+  completionMode: Indexed
+  completions: 32
+  parallelism: 32
+  backoffLimit: 0
+  activeDeadlineSeconds: 21600
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: tjong-replication
+        task: selfplay-specialhu-2000-cpu32
+    spec:
+      restartPolicy: Never
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - rci-tide-gpu-01.sdsu.edu
+                      - rci-tide-gpu-02.sdsu.edu
+                      - rci-tide-gpu-03.sdsu.edu
+                      - rci-tide-gpu-04.sdsu.edu
+                      - rci-tide-gpu-05.sdsu.edu
+                      - rci-tide-gpu-06.sdsu.edu
+                      - rci-tide-gpu-07.sdsu.edu
+                      - rci-tide-gpu-08.sdsu.edu
+                      - rci-tide-gpu-09.sdsu.edu
+                      - rci-tide-gpu-10.sdsu.edu
+                      - rci-tide-gpu-11.sdsu.edu
+                      - rci-tide-gpu-12.sdsu.edu
+                      - rci-tide-gpu-13.sdsu.edu
+                      - rci-tide-gpu-14.sdsu.edu
+                      - rci-tide-gpu-15.sdsu.edu
+                      - rci-tide-gpu-16.sdsu.edu
+                      - rci-tide-gpu-17.sdsu.edu
+      containers:
+        - name: tjong-selfplay-shard
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: IfNotPresent
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+            - name: TJONG_REF
+              value: f76ed3dcf78b9ce3dd23570bebf37f58473520bf
+            - name: TJONG_SELFPLAY_RUN
+              value: tjong_selfplay_specialhu_2000_cpu32_20260612a
+            - name: TJONG_SELFPLAY_TOTAL_GAMES
+              value: "2000"
+            - name: TJONG_SELFPLAY_SHARDS
+              value: "32"
+            - name: TJONG_SELFPLAY_OFFSET
+              value: "272828"
+            - name: TJONG_SELFPLAY_CHECKPOINT
+              value: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527/models/tjong_supervised_hu_ddp_full_4x4090_20260608d_checkpoints/batch_01720000.pt
+            - name: TJONG_TENSOR_ENCODING_VERSION
+              value: tjong_cit2_12298_v3_hidden_concealed_kong
+            - name: OMP_NUM_THREADS
+              value: "1"
+            - name: MKL_NUM_THREADS
+              value: "1"
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              DATA_ROOT=/data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+              SHARD_INDEX="${JOB_COMPLETION_INDEX:-${HOSTNAME##*-}}"
+              TOTAL_GAMES="${TJONG_SELFPLAY_TOTAL_GAMES:-2000}"
+              SHARDS="${TJONG_SELFPLAY_SHARDS:-32}"
+              BASE_OFFSET="${TJONG_SELFPLAY_OFFSET:-0}"
+              BASE_GAMES=$((TOTAL_GAMES / SHARDS))
+              REMAINDER=$((TOTAL_GAMES % SHARDS))
+              if [ "${SHARD_INDEX}" -lt "${REMAINDER}" ]; then
+                SHARD_GAMES=$((BASE_GAMES + 1))
+                REL_OFFSET=$((SHARD_INDEX * (BASE_GAMES + 1)))
+              else
+                SHARD_GAMES="${BASE_GAMES}"
+                REL_OFFSET=$((REMAINDER * (BASE_GAMES + 1) + (SHARD_INDEX - REMAINDER) * BASE_GAMES))
+              fi
+              OFFSET=$((BASE_OFFSET + REL_OFFSET))
+              SHARD_TAG="$(printf "%04d" "${SHARD_INDEX}")"
+              DOWNLOAD_ROOT="/tmp/mcragent_tjong_selfplay_cpu32_${SHARD_TAG}"
+              rm -rf "${DOWNLOAD_ROOT}"
+              python - <<'PY'
+              import os
+              import shutil
+              import urllib.request
+              import zipfile
+              from pathlib import Path
+
+              ref = os.environ["TJONG_REF"]
+              shard = os.environ.get("JOB_COMPLETION_INDEX", "x")
+              url = f"https://github.com/Iconoclastic0428/MCRAgent/archive/{ref}.zip"
+              root = Path(f"/tmp/mcragent_tjong_selfplay_cpu32_{int(shard):04d}")
+              archive = Path(f"/tmp/mcragent_tjong_selfplay_cpu32_{int(shard):04d}.zip")
+              shutil.rmtree(root, ignore_errors=True)
+              root.mkdir(parents=True, exist_ok=True)
+              urllib.request.urlretrieve(url, archive)
+              with zipfile.ZipFile(archive) as src:
+                  src.extractall(root)
+              children = [p for p in root.iterdir() if p.is_dir()]
+              if len(children) != 1:
+                  raise RuntimeError(f"unexpected archive layout: {children}")
+              Path(f"/tmp/mcragent_tjong_selfplay_cpu32_repo_{int(shard):04d}.txt").write_text(
+                  str(children[0]), encoding="utf-8"
+              )
+              print("downloaded_ref_zip", url, children[0], flush=True)
+              PY
+              TEST_REPO=$(cat "/tmp/mcragent_tjong_selfplay_cpu32_repo_${SHARD_TAG}.txt")
+              export PYTHONPATH="${TEST_REPO}/papers/tjong_cit2_12298/src:${TEST_REPO}/scripts:${DATA_ROOT}/external/Chinese-Standard-Mahjong-DRL:${PYTHONPATH:-}"
+              INITDATA="${DATA_ROOT}/data/processed/tjong/tziakcha_all_sources_botzone_20260605b_initdata.jsonl"
+              JUDGE_DIR="/tmp/${TJONG_SELFPLAY_RUN}_${SHARD_TAG}_official_judge"
+              JUDGE="${JUDGE_DIR}/mcr_judge.exe"
+              FAN_CHECKER="${JUDGE_DIR}/mcr_fan_check.exe"
+              SHARD_DIR="${DATA_ROOT}/data/processed/tjong/${TJONG_SELFPLAY_RUN}_shards"
+              RAW_OUT="${SHARD_DIR}/tjong_selfplay_raw_shard_${SHARD_TAG}.jsonl"
+              FAN_OUT="${SHARD_DIR}/tjong_selfplay_fan_items_shard_${SHARD_TAG}.jsonl"
+              SUMMARY_OUT="${SHARD_DIR}/tjong_selfplay_summary_shard_${SHARD_TAG}.json"
+              DASHBOARD_JSON="${SHARD_DIR}/tjong_selfplay_dashboard_shard_${SHARD_TAG}.json"
+              DASHBOARD_TXT="${SHARD_DIR}/tjong_selfplay_dashboard_shard_${SHARD_TAG}.txt"
+              SNAPSHOT_CHECKPOINT="/tmp/${TJONG_SELFPLAY_RUN}_${SHARD_TAG}_checkpoint.pt"
+              mkdir -p "${SHARD_DIR}"
+              rm -f "${RAW_OUT}" "${FAN_OUT}" "${SUMMARY_OUT}" "${DASHBOARD_JSON}" "${DASHBOARD_TXT}"
+              test -s "${INITDATA}"
+              test -s "${TJONG_SELFPLAY_CHECKPOINT}"
+              cp "${TJONG_SELFPLAY_CHECKPOINT}" "${SNAPSHOT_CHECKPOINT}"
+              test -s "${SNAPSHOT_CHECKPOINT}"
+              apt-get update
+              apt-get install -y libboost-dev libjsoncpp-dev
+              python -m pip install --no-cache-dir PyMahjongGB
+              python - <<'PY'
+              import MahjongGB
+              print("MahjongGB import ok", flush=True)
+              PY
+              test -s "${DATA_ROOT}/external/Chinese-Standard-Mahjong/judge/main.cpp"
+              test -s "${DATA_ROOT}/external/Chinese-Standard-Mahjong/fan-calculator-usage/ChineseOfficialMahjongHelper/Classes/mahjong-algorithm/shanten.cpp"
+              test -s "${TEST_REPO}/scripts/mcr_fan_check.cpp"
+              mkdir -p "${JUDGE_DIR}/MahjongGB" "${JUDGE_DIR}/jsoncpp"
+              cp "${DATA_ROOT}/external/Chinese-Standard-Mahjong/judge/main.cpp" "${JUDGE_DIR}/main.cpp"
+              cp "${DATA_ROOT}"/external/Chinese-Standard-Mahjong/fan-calculator-usage/ChineseOfficialMahjongHelper/Classes/mahjong-algorithm/*.cpp "${JUDGE_DIR}/MahjongGB/"
+              cp "${DATA_ROOT}"/external/Chinese-Standard-Mahjong/fan-calculator-usage/ChineseOfficialMahjongHelper/Classes/mahjong-algorithm/*.h "${JUDGE_DIR}/MahjongGB/"
+              cp /usr/include/jsoncpp/json/*.h "${JUDGE_DIR}/jsoncpp/"
+              g++ -O2 -std=c++14 \
+                -D_BOTZONE_ONLINE \
+                "${JUDGE_DIR}/main.cpp" \
+                -I"${JUDGE_DIR}" \
+                -I/usr/include \
+                -ljsoncpp \
+                -o "${JUDGE}"
+              g++ -O2 -std=c++14 \
+                "${TEST_REPO}/scripts/mcr_fan_check.cpp" \
+                "${JUDGE_DIR}/MahjongGB/shanten.cpp" \
+                -I"${JUDGE_DIR}" \
+                -I/usr/include \
+                -ljsoncpp \
+                -o "${FAN_CHECKER}"
+              test -x "${JUDGE}"
+              test -x "${FAN_CHECKER}"
+              cd "${TEST_REPO}"
+              echo "selfplay_shard=${SHARD_INDEX} games=${SHARD_GAMES} offset=${OFFSET} checkpoint=${TJONG_SELFPLAY_CHECKPOINT}"
+              python -m tjong_replication.collect_selfplay \
+                --checkpoint "${SNAPSHOT_CHECKPOINT}" \
+                --raw "${INITDATA}" \
+                --games "${SHARD_GAMES}" \
+                --offset "${OFFSET}" \
+                --judge "${JUDGE}" \
+                --fan-checker "${FAN_CHECKER}" \
+                --out-raw "${RAW_OUT}" \
+                --out-fan-items "${FAN_OUT}" \
+                --summary-out "${SUMMARY_OUT}" \
+                --require-encoding-version "${TJONG_TENSOR_ENCODING_VERSION}" \
+                --require-paper-config \
+                --device cpu
+              test -s "${RAW_OUT}"
+              test -s "${FAN_OUT}"
+              test -s "${SUMMARY_OUT}"
+              python -m tjong_replication.selfplay_dashboard \
+                --raw "${RAW_OUT}" \
+                --out-json "${DASHBOARD_JSON}" \
+                --out-text "${DASHBOARD_TXT}"
+              test -s "${DASHBOARD_JSON}"
+              test -s "${DASHBOARD_TXT}"
+              export SHARD_GAMES SUMMARY_OUT
+              python - <<'PY'
+              import json
+              import os
+              from pathlib import Path
+              summary = json.loads(Path(os.environ["SUMMARY_OUT"]).read_text(encoding="utf-8"))
+              assert int(summary.get("games", -1)) == int(os.environ["SHARD_GAMES"]), summary
+              assert "score_table" in summary and len(summary["score_table"]) == 4, summary
+              assert "fan_breakdown" in summary, summary
+              print(json.dumps({"event": "selfplay_shard_complete", "summary": summary}, ensure_ascii=False, sort_keys=True), flush=True)
+              PY
+          resources:
+            limits:
+              cpu: "1"
+              memory: 8Gi
+              ephemeral-storage: 20Gi
+            requests:
+              cpu: "1"
+              memory: 8Gi
+              ephemeral-storage: 10Gi
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc
