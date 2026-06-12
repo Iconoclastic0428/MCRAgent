@@ -173,7 +173,6 @@ spec:
                 --require-encoding-version "${TENSOR_ENCODING_VERSION}" \
                 --optimized-sharded-loader \
                 --shard-prefetch 16 \
-                --mmap-shards \
                 --no-shuffle-within-shards \
                 --pin-memory \
                 --log-every-batches 1000 \
