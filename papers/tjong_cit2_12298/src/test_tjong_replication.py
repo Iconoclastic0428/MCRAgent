@@ -91,6 +91,7 @@ from tjong_replication.train_ppo import (  # noqa: E402
 )
 from tjong_replication.train_slide_resnet_supervised import (  # noqa: E402
     divergence_guard_reasons,
+    elastic_net_penalty,
     slide_checkpoint_payload,
 )
 from tjong_replication.train_supervised import (  # noqa: E402
@@ -305,6 +306,18 @@ def test_slide_divergence_guard_reasons():
     assert any("discard_loss" in reason for reason in reasons)
     assert any("max_grad_norm_before_clip" in reason for reason in reasons)
     assert not any("optimization_loss" in reason for reason in reasons)
+
+
+def test_slide_elastic_net_penalty_uses_l1_and_l2_lambdas():
+    model = torch.nn.Linear(2, 1)
+    with torch.no_grad():
+        model.weight.copy_(torch.tensor([[1.0, -2.0]]))
+        model.bias.copy_(torch.tensor([3.0]))
+
+    l1_penalty, l2_penalty = elastic_net_penalty(model, l1_lambda=0.1, l2_lambda=0.01)
+
+    assert torch.isclose(l1_penalty, torch.tensor(0.6))
+    assert torch.isclose(l2_penalty, torch.tensor(0.14))
 
 
 def test_slide_checkpoint_payload_records_resume_state():

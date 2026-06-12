@@ -443,6 +443,9 @@ def train(args: argparse.Namespace) -> dict:
         model.train()
         metric_sums: dict[str, float] = {}
         total_loss = 0.0
+        total_ce_loss = 0.0
+        total_l1_penalty = 0.0
+        total_l2_penalty = 0.0
         total_examples = 0
         timing_sums = {
             "data_wait": 0.0,
@@ -549,6 +552,9 @@ def train(args: argparse.Namespace) -> dict:
                 if sample_this_batch:
                     total_examples += batch_size
                     total_loss += float(loss.detach().item()) * batch_size
+                    total_ce_loss += float(ce_loss.detach().item()) * batch_size
+                    total_l1_penalty += float(l1_penalty.detach().item()) * batch_size
+                    total_l2_penalty += float(l2_penalty.detach().item()) * batch_size
                     metric_outputs = {name: tensor.detach() for name, tensor in outputs.items()}
                     merge_metric_sums(metric_sums, batch_metric_sums(metric_outputs, labels))
                 if profile_timing and sample_this_batch and not log_this_batch:
@@ -556,15 +562,34 @@ def train(args: argparse.Namespace) -> dict:
                 if args.log_every_batches and global_batch % int(args.log_every_batches) == 0:
                     display_metric_sums = reduce_metric_sums(metric_sums, device) if distributed else metric_sums
                     display_loss_sum = total_loss
+                    display_ce_loss_sum = total_ce_loss
+                    display_l1_penalty_sum = total_l1_penalty
+                    display_l2_penalty_sum = total_l2_penalty
                     display_examples = total_examples
                     display_grad_norm = max_grad_norm_before_clip.detach().clone()
                     if distributed:
-                        loss_tensor = torch.tensor([display_loss_sum, display_examples], dtype=torch.float64, device=device)
+                        loss_tensor = torch.tensor(
+                            [
+                                display_loss_sum,
+                                display_ce_loss_sum,
+                                display_l1_penalty_sum,
+                                display_l2_penalty_sum,
+                                display_examples,
+                            ],
+                            dtype=torch.float64,
+                            device=device,
+                        )
                         dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
                         display_loss_sum = float(loss_tensor[0].item())
-                        display_examples = int(loss_tensor[1].item())
+                        display_ce_loss_sum = float(loss_tensor[1].item())
+                        display_l1_penalty_sum = float(loss_tensor[2].item())
+                        display_l2_penalty_sum = float(loss_tensor[3].item())
+                        display_examples = int(loss_tensor[4].item())
                         dist.all_reduce(display_grad_norm, op=dist.ReduceOp.MAX)
                     display_grad_norm_value = float(display_grad_norm.item())
+                    display_denominator = max(1, display_examples)
+                    display_l1_penalty = display_l1_penalty_sum / display_denominator
+                    display_l2_penalty = display_l2_penalty_sum / display_denominator
                     partial = finalize_metric_sums(display_metric_sums)
                     partial.update(
                         {
@@ -573,7 +598,11 @@ def train(args: argparse.Namespace) -> dict:
                             "batch": batch_index,
                             "batch_transform": transform_index,
                             "global_batch": global_batch,
-                            "optimization_loss": display_loss_sum / max(1, display_examples),
+                            "optimization_loss": display_loss_sum / display_denominator,
+                            "cross_entropy_loss": display_ce_loss_sum / display_denominator,
+                            "elastic_net_l1_penalty": display_l1_penalty,
+                            "elastic_net_l2_penalty": display_l2_penalty,
+                            "regularization_loss": display_l1_penalty + display_l2_penalty,
                             "lr": optimizer.param_groups[0]["lr"],
                             "max_grad_norm_before_clip": display_grad_norm_value,
                             "sampled_examples": display_examples,
@@ -603,15 +632,34 @@ def train(args: argparse.Namespace) -> dict:
 
         display_metric_sums = reduce_metric_sums(metric_sums, device) if distributed else metric_sums
         display_loss_sum = total_loss
+        display_ce_loss_sum = total_ce_loss
+        display_l1_penalty_sum = total_l1_penalty
+        display_l2_penalty_sum = total_l2_penalty
         display_examples = total_examples
         display_grad_norm = max_grad_norm_before_clip.detach().clone()
         if distributed:
-            loss_tensor = torch.tensor([display_loss_sum, display_examples], dtype=torch.float64, device=device)
+            loss_tensor = torch.tensor(
+                [
+                    display_loss_sum,
+                    display_ce_loss_sum,
+                    display_l1_penalty_sum,
+                    display_l2_penalty_sum,
+                    display_examples,
+                ],
+                dtype=torch.float64,
+                device=device,
+            )
             dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
             display_loss_sum = float(loss_tensor[0].item())
-            display_examples = int(loss_tensor[1].item())
+            display_ce_loss_sum = float(loss_tensor[1].item())
+            display_l1_penalty_sum = float(loss_tensor[2].item())
+            display_l2_penalty_sum = float(loss_tensor[3].item())
+            display_examples = int(loss_tensor[4].item())
             dist.all_reduce(display_grad_norm, op=dist.ReduceOp.MAX)
         display_grad_norm_value = float(display_grad_norm.item())
+        display_denominator = max(1, display_examples)
+        display_l1_penalty = display_l1_penalty_sum / display_denominator
+        display_l2_penalty = display_l2_penalty_sum / display_denominator
         finalized = finalize_metric_sums(display_metric_sums)
         epoch_metrics = dict(finalized)
         epoch_metrics.update(
@@ -619,7 +667,11 @@ def train(args: argparse.Namespace) -> dict:
                 "event": "epoch",
                 "epoch": epoch,
                 "global_batch": global_batch,
-                "optimization_loss": display_loss_sum / max(1, display_examples),
+                "optimization_loss": display_loss_sum / display_denominator,
+                "cross_entropy_loss": display_ce_loss_sum / display_denominator,
+                "elastic_net_l1_penalty": display_l1_penalty,
+                "elastic_net_l2_penalty": display_l2_penalty,
+                "regularization_loss": display_l1_penalty + display_l2_penalty,
                 "lr": optimizer.param_groups[0]["lr"],
                 "max_grad_norm_before_clip": display_grad_norm_value,
                 "sampled_examples": display_examples,
