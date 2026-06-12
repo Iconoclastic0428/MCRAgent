@@ -268,7 +268,10 @@ def observe_request(runtime: AgentRuntime, seat: int, request: str, stats: Conve
         agent.request2obs(f"Wind {tokens[2]}")
         return None
     if tokens[0] == "1":
-        agent.request2obs(" ".join(["Deal", *tokens[5:]]))
+        hand_tiles = [tile for tile in tokens[5:] if not tile.startswith("H")]
+        if len(hand_tiles) != len(tokens[5:]):
+            stats.unsupported_requests["DEAL_FLOWER_TILES"] += len(tokens[5:]) - len(hand_tiles)
+        agent.request2obs(" ".join(["Deal", *hand_tiles[:13]]))
         return None
     if tokens[0] == "2" and len(tokens) >= 2:
         if tokens[1].startswith("H"):
