@@ -106,7 +106,7 @@ spec:
               print("downloaded_ref_zip", url, children[0], flush=True)
               PY
               TEST_REPO=$(cat /tmp/mcragent_tjong_selfplay_repo_path.txt)
-              export PYTHONPATH="${TEST_REPO}/papers/tjong_cit2_12298/src:${TEST_REPO}/scripts:${PYTHONPATH:-}"
+              export PYTHONPATH="${TEST_REPO}/papers/tjong_cit2_12298/src:${TEST_REPO}/scripts:${DATA_ROOT}/external/Chinese-Standard-Mahjong-DRL:${PYTHONPATH:-}"
               CHECKPOINT_DIR="${DATA_ROOT}/models/tjong_supervised_hu_ddp_full_4x4090_20260608d_checkpoints"
               INITDATA="${DATA_ROOT}/data/processed/tjong/tziakcha_all_sources_botzone_20260605b_initdata.jsonl"
               JUDGE_DIR="/tmp/${TJONG_SELFPLAY_RUN}_official_judge"
