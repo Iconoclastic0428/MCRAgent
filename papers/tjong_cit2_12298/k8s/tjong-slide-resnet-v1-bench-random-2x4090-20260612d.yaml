@@ -1,0 +1,185 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tjong-slide-resnet-v1-bench-random-2x4090-20260612d
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: slide-resnet-v1-bench-random-2x
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 7200
+  ttlSecondsAfterFinished: 43200
+  template:
+    metadata:
+      labels:
+        app: tjong-replication
+        task: slide-resnet-v1-bench-random-2x
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-GeForce-RTX-4090
+                      - NVIDIA-L40S
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - rci-tide-gpu-01.sdsu.edu
+                      - rci-tide-gpu-02.sdsu.edu
+                      - rci-tide-gpu-03.sdsu.edu
+                      - rci-tide-gpu-04.sdsu.edu
+                      - rci-tide-gpu-05.sdsu.edu
+                      - rci-tide-gpu-06.sdsu.edu
+                      - rci-tide-gpu-07.sdsu.edu
+                      - rci-tide-gpu-08.sdsu.edu
+                      - rci-tide-gpu-09.sdsu.edu
+                      - rci-tide-gpu-10.sdsu.edu
+                      - rci-tide-gpu-11.sdsu.edu
+                      - rci-tide-gpu-12.sdsu.edu
+                      - rci-tide-gpu-13.sdsu.edu
+                      - rci-tide-gpu-14.sdsu.edu
+                      - rci-tide-gpu-15.sdsu.edu
+                      - rci-tide-gpu-16.sdsu.edu
+                      - rci-tide-gpu-17.sdsu.edu
+      containers:
+        - name: slide-resnet-v1-bench-random
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+            - name: TORCH_NCCL_ASYNC_ERROR_HANDLING
+              value: "1"
+            - name: TJONG_GPU_COUNT
+              value: "2"
+            - name: TJONG_RUN
+              value: tjong_slide_resnet_v1_bench_random_2x4090_20260612d
+            - name: TJONG_BRANCH
+              value: codex/tjong-paper-ppo-gate
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              DATA_ROOT=/data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+              DOWNLOAD_ROOT=/tmp/mcragent_tjong_slide_resnet_v1_bench_random_2x_20260612d
+              rm -rf "${DOWNLOAD_ROOT}"
+              python - <<'PY'
+              import os
+              import shutil
+              import urllib.request
+              import zipfile
+              from pathlib import Path
+
+              branch = os.environ["TJONG_BRANCH"]
+              url = f"https://github.com/Iconoclastic0428/MCRAgent/archive/refs/heads/{branch}.zip"
+              root = Path("/tmp/mcragent_tjong_slide_resnet_v1_bench_random_2x_20260612d")
+              archive = Path("/tmp/mcragent_tjong_slide_resnet_v1_bench_random_2x_20260612d.zip")
+              shutil.rmtree(root, ignore_errors=True)
+              root.mkdir(parents=True, exist_ok=True)
+              urllib.request.urlretrieve(url, archive)
+              with zipfile.ZipFile(archive) as src:
+                  src.extractall(root)
+              children = [p for p in root.iterdir() if p.is_dir()]
+              if len(children) != 1:
+                  raise RuntimeError(f"unexpected archive layout: {children}")
+              Path("/tmp/mcragent_tjong_slide_resnet_v1_bench_random_2x_repo_path.txt").write_text(str(children[0]), encoding="utf-8")
+              print("downloaded_branch_zip", url, children[0], flush=True)
+              PY
+              TEST_REPO=$(cat /tmp/mcragent_tjong_slide_resnet_v1_bench_random_2x_repo_path.txt)
+              cd "${TEST_REPO}"
+              export PYTHONPATH="${TEST_REPO}/papers/tjong_cit2_12298/src:${TEST_REPO}/scripts:${PYTHONPATH:-}"
+              TRAIN_PT="${TJONG_TRAIN_PT:-${DATA_ROOT}/data/processed/tjong/tziakcha_all_sources_botzone_hu_20260607f_shards/index.json}"
+              TENSORIZE_SUMMARY="${TJONG_TENSORIZE_SUMMARY:-${DATA_ROOT}/runs/tjong_tensorize_all_sources_hu_20260607f_summary.json}"
+              TENSOR_ENCODING_VERSION="${TJONG_TENSOR_ENCODING_VERSION:-tjong_cit2_12298_v3_hidden_concealed_kong}"
+              export TRAIN_PT TENSORIZE_SUMMARY TENSOR_ENCODING_VERSION
+              BATCH_SIZE="${TJONG_BATCH_SIZE:-32768}"
+              LR="${TJONG_LR:-0.0005}"
+              test -s papers/tjong_cit2_12298/src/tjong_replication/slide_resnet.py
+              test -s papers/tjong_cit2_12298/src/tjong_replication/train_slide_resnet_supervised.py
+              test -s "${TRAIN_PT}"
+              test -s "${TENSORIZE_SUMMARY}"
+              python - <<'PY'
+              import json
+              import os
+              from pathlib import Path
+              import torch
+
+              summary = json.loads(Path(os.environ["TENSORIZE_SUMMARY"]).read_text(encoding="utf-8"))
+              assert summary.get("format") == "tjong_tensor_shards_v1", summary
+              assert summary.get("compact_storage") is True, summary
+              assert (summary.get("encoding_schema") or {}).get("version") == os.environ["TENSOR_ENCODING_VERSION"], summary
+              print("slide_resnet_v1_bench_random_2x_preflight", json.dumps({
+                  "run": os.environ["TJONG_RUN"],
+                  "torch": torch.__version__,
+                  "cuda": torch.cuda.is_available(),
+                  "device_count": torch.cuda.device_count(),
+                  "examples": int(summary.get("examples", 0)),
+                  "shards": len(summary.get("shards") or []),
+              }, sort_keys=True), flush=True)
+              PY
+              python -m torch.distributed.run --standalone --nproc_per_node="${TJONG_GPU_COUNT}" \
+                -m tjong_replication.train_slide_resnet_supervised \
+                --train-pt "${TRAIN_PT}" \
+                --checkpoint-out "/tmp/${TJONG_RUN}.pt" \
+                --metrics-out "${DATA_ROOT}/runs/${TJONG_RUN}_metrics.json" \
+                --metrics-jsonl "${DATA_ROOT}/runs/${TJONG_RUN}_metrics.jsonl" \
+                --feature-version v1 \
+                --augmentation-mode random \
+                --epochs 1 \
+                --max-steps 1000 \
+                --batch-size "${BATCH_SIZE}" \
+                --lr "${LR}" \
+                --weight-decay 0.0001 \
+                --l1-lambda 0.0 \
+                --l2-lambda 0.0 \
+                --base-channels 64 \
+                --head-hidden 512 \
+                --dropout 0.1 \
+                --grad-clip 0.5 \
+                --amp bf16 \
+                --allow-tf32 \
+                --cudnn-benchmark \
+                --metric-sample-every-batches 100 \
+                --finite-check-every-batches 1000 \
+                --local-loss-normalization \
+                --profile-timing \
+                --num-workers 0 \
+                --device cuda \
+                --distributed \
+                --seed 0 \
+                --require-encoding-version "${TENSOR_ENCODING_VERSION}" \
+                --optimized-sharded-loader \
+                --shard-prefetch 4 \
+                --pin-memory \
+                --log-every-batches 100
+          resources:
+            limits:
+              cpu: "2"
+              memory: 16Gi
+              ephemeral-storage: 40Gi
+              nvidia.com/gpu: 2
+            requests:
+              cpu: "2"
+              memory: 16Gi
+              ephemeral-storage: 30Gi
+              nvidia.com/gpu: 2
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

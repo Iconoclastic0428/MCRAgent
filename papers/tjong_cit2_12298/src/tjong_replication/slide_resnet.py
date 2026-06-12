@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from itertools import permutations
 
 import torch
@@ -23,6 +24,7 @@ SLIDE_SYMMETRY_TRANSFORMS = tuple(
     for suit_permutation in permutations(SUIT_ORDER)
     for mirror in (False, True)
 )
+_TRANSFORM_TENSOR_CACHE: dict[tuple[tuple[int, ...], str, str], torch.Tensor] = {}
 
 
 @dataclass
@@ -104,36 +106,27 @@ def tile_source_indices_for_transform(
     return source_for_target
 
 
-def transform_tile_tensor(
-    tensor: torch.Tensor,
+@lru_cache(maxsize=None)
+def _tile_source_indices_tuple(
     suit_permutation: tuple[str, str, str],
-    *,
     mirror: bool,
-) -> torch.Tensor:
-    source = torch.tensor(tile_source_indices_for_transform(suit_permutation, mirror=mirror), device=tensor.device)
-    return tensor.index_select(-1, source)
+) -> tuple[int, ...]:
+    return tuple(tile_source_indices_for_transform(suit_permutation, mirror=mirror))
 
 
-def transform_discard_labels(
-    labels: torch.Tensor,
+@lru_cache(maxsize=None)
+def _discard_label_mapping_tuple(
     suit_permutation: tuple[str, str, str],
-    *,
     mirror: bool,
-) -> torch.Tensor:
-    mapping = torch.tensor(
-        [transform_tile_id(index, suit_permutation, mirror=mirror) for index in range(TILE_TYPES)],
-        device=labels.device,
-        dtype=labels.dtype,
-    )
-    return mapping[labels.long()]
+) -> tuple[int, ...]:
+    return tuple(transform_tile_id(index, suit_permutation, mirror=mirror) for index in range(TILE_TYPES))
 
 
-def transform_claim_labels(
-    labels: torch.Tensor,
+@lru_cache(maxsize=None)
+def _claim_label_mapping_tuple(
     suit_permutation: tuple[str, str, str],
-    *,
     mirror: bool,
-) -> torch.Tensor:
+) -> tuple[int, ...]:
     mapping = [0] * CLAIM_SIZE
     for old_suit_id, old_suit in enumerate(SUIT_ORDER):
         for middle_rank in range(2, 9):
@@ -148,7 +141,62 @@ def transform_claim_labels(
         offset = CLAIM_OFFSETS[family]
         for local in range(TILE_TYPES):
             mapping[offset + local] = offset + transform_tile_id(local, suit_permutation, mirror=mirror)
-    label_mapping = torch.tensor(mapping, device=labels.device, dtype=labels.dtype)
+    return tuple(mapping)
+
+
+def _cached_transform_tensor(
+    values: tuple[int, ...],
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    key = (values, str(device), str(dtype))
+    cached = _TRANSFORM_TENSOR_CACHE.get(key)
+    if cached is None:
+        cached = torch.tensor(values, device=device, dtype=dtype)
+        _TRANSFORM_TENSOR_CACHE[key] = cached
+    return cached
+
+
+def transform_tile_tensor(
+    tensor: torch.Tensor,
+    suit_permutation: tuple[str, str, str],
+    *,
+    mirror: bool,
+) -> torch.Tensor:
+    source = _cached_transform_tensor(
+        _tile_source_indices_tuple(suit_permutation, mirror),
+        device=tensor.device,
+        dtype=torch.long,
+    )
+    return tensor.index_select(-1, source)
+
+
+def transform_discard_labels(
+    labels: torch.Tensor,
+    suit_permutation: tuple[str, str, str],
+    *,
+    mirror: bool,
+) -> torch.Tensor:
+    mapping = _cached_transform_tensor(
+        _discard_label_mapping_tuple(suit_permutation, mirror),
+        device=labels.device,
+        dtype=labels.dtype,
+    )
+    return mapping[labels.long()]
+
+
+def transform_claim_labels(
+    labels: torch.Tensor,
+    suit_permutation: tuple[str, str, str],
+    *,
+    mirror: bool,
+) -> torch.Tensor:
+    label_mapping = _cached_transform_tensor(
+        _claim_label_mapping_tuple(suit_permutation, mirror),
+        device=labels.device,
+        dtype=labels.dtype,
+    )
     return label_mapping[labels.long()]
 
 
