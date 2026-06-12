@@ -22,6 +22,7 @@ if str(WORKSPACE_ROOT) not in sys.path:
 DEFAULT_JUDGE = Path("build/official_judge/mcr_judge.exe")
 DEFAULT_ALEO = Path("build/aleo_bot.exe")
 DEFAULT_SAMPLE = Path("build/official_sample_bot.exe")
+DEFAULT_TJONG_JSON = Path("scripts/tjong_botzone_json_policy_bot.py")
 PLACEMENT_REWARDS_4_2_1_0 = (4.0, 2.0, 1.0, 0.0)
 
 
@@ -161,6 +162,60 @@ class BotzoneJsonProcessPolicy:
             ensure_ascii=False,
         )
         output = json.loads(self.runner(self.exe_path, payload))
+        response = str(output.get("response", "PASS")).strip()
+        self.requests.append(request)
+        self.responses.append(response)
+        return response
+
+
+def run_tjong_json_bot_process(
+    exe_path: Path | str,
+    payload: str,
+    *,
+    checkpoint: Path | str,
+    device: str | None = None,
+) -> str:
+    exe = Path(exe_path)
+    command = [sys.executable, str(exe)] if exe.suffix.lower() in {".py", ".pyz", ".zip"} else [str(exe)]
+    command.extend(["--checkpoint", str(checkpoint)])
+    if device:
+        command.extend(["--device", str(device)])
+    proc = subprocess.run(
+        command,
+        input=payload,
+        text=True,
+        capture_output=True,
+        env=judge_env(),
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"Tjong JSON bot failed rc={proc.returncode}: {proc.stderr[:500]}")
+    return proc.stdout
+
+
+class TjongJsonProcessPolicy(BotzoneJsonProcessPolicy):
+    def __init__(
+        self,
+        checkpoint: Path | str,
+        *,
+        exe_path: Path | str = DEFAULT_TJONG_JSON,
+        device: str | None = None,
+        runner=run_tjong_json_bot_process,
+    ):
+        super().__init__(exe_path)
+        self.checkpoint = str(checkpoint)
+        self.device = device
+        self.runner = runner
+
+    def respond(self, request: str) -> str:
+        current_requests = [*self.requests, request]
+        payload = json.dumps(
+            {"requests": current_requests, "responses": self.responses},
+            ensure_ascii=False,
+        )
+        output = json.loads(
+            self.runner(self.exe_path, payload, checkpoint=self.checkpoint, device=self.device)
+        )
         response = str(output.get("response", "PASS")).strip()
         self.requests.append(request)
         self.responses.append(response)
@@ -316,9 +371,11 @@ def make_policy(
     qadv_lambda: float = 0.0,
     aleo_exe: str | Path = DEFAULT_ALEO,
     sample_exe: str | Path = DEFAULT_SAMPLE,
+    tjong_json_exe: str | Path = DEFAULT_TJONG_JSON,
+    tjong_device: str | None = None,
     lawlorentz_levels: int = 1,
     transformer_predictor=None,
-) -> BotzonePolicy | AleoProcessPolicy | BotzoneJsonProcessPolicy | LawlorentzEffectivePolicy | LawlorentzModelPolicy:
+) -> BotzonePolicy | AleoProcessPolicy | BotzoneJsonProcessPolicy | TjongJsonProcessPolicy | LawlorentzEffectivePolicy | LawlorentzModelPolicy:
     if kind == "lawlorentz_effective":
         return LawlorentzEffectivePolicy(levels=lawlorentz_levels)
     if kind == "lawlorentz_model":
@@ -365,6 +422,10 @@ def make_policy(
         if model is None:
             raise ValueError("--model is required for json policy")
         return BotzoneJsonProcessPolicy(model)
+    if kind == "tjong_json":
+        if model is None:
+            raise ValueError("--model is required for tjong_json policy")
+        return TjongJsonProcessPolicy(model, exe_path=tjong_json_exe, device=tjong_device)
     if kind == "sample":
         return BotzoneJsonProcessPolicy(sample_exe)
     raise ValueError(f"unknown policy kind: {kind}")
@@ -397,6 +458,8 @@ def build_policies(args: argparse.Namespace) -> list[BotzonePolicy | AleoProcess
     qadv_lambda = float(getattr(args, "qadv_lambda", 0.0) or 0.0)
     opponent_qadv_model = getattr(args, "opponent_qadv_model", None)
     opponent_qadv_lambda = float(getattr(args, "opponent_qadv_lambda", 0.0) or 0.0)
+    tjong_json_exe = getattr(args, "tjong_json_exe", DEFAULT_TJONG_JSON)
+    tjong_device = getattr(args, "tjong_device", None)
 
     policies = []
     for seat in range(4):
@@ -409,6 +472,8 @@ def build_policies(args: argparse.Namespace) -> list[BotzonePolicy | AleoProcess
                     qadv_lambda=qadv_lambda,
                     aleo_exe=args.aleo_exe,
                     sample_exe=args.sample_exe,
+                    tjong_json_exe=tjong_json_exe,
+                    tjong_device=tjong_device,
                     lawlorentz_levels=lawlorentz_levels,
                 )
             )
@@ -421,6 +486,8 @@ def build_policies(args: argparse.Namespace) -> list[BotzonePolicy | AleoProcess
                     qadv_lambda=opponent_qadv_lambda,
                     aleo_exe=args.aleo_exe,
                     sample_exe=args.sample_exe,
+                    tjong_json_exe=tjong_json_exe,
+                    tjong_device=tjong_device,
                     lawlorentz_levels=lawlorentz_levels,
                 )
             )
@@ -490,6 +557,7 @@ def main() -> int:
             "transformer",
             "transformer_feature",
             "json",
+            "tjong_json",
             "aleo",
             "sample",
         ],
@@ -509,6 +577,7 @@ def main() -> int:
             "transformer",
             "transformer_feature",
             "json",
+            "tjong_json",
             "aleo",
             "sample",
         ],
@@ -525,6 +594,8 @@ def main() -> int:
     parser.add_argument("--judge", default=str(DEFAULT_JUDGE))
     parser.add_argument("--aleo-exe", default=str(DEFAULT_ALEO))
     parser.add_argument("--sample-exe", default=str(DEFAULT_SAMPLE))
+    parser.add_argument("--tjong-json-exe", default=str(DEFAULT_TJONG_JSON))
+    parser.add_argument("--tjong-device", default=None)
     parser.add_argument("--lawlorentz-levels", type=int, default=1)
     parser.add_argument("--out", default="runs/official_judge_match.json")
     args = parser.parse_args()

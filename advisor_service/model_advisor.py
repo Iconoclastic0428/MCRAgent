@@ -11,16 +11,20 @@ from .tiles import botzone_symbol, display_name, tile_id_from_botzone_symbol
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = WORKSPACE_ROOT / "scripts"
+TJONG_SRC_DIR = WORKSPACE_ROOT / "papers" / "tjong_cit2_12298" / "src"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
+if str(TJONG_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(TJONG_SRC_DIR))
 
 from legal_actions import generate_chi_responses  # noqa: E402
 from lawlorentz_policy import LawlorentzEffectiveScorer  # noqa: E402
 
 DEFAULT_TRANSFORMER_MODEL = (
-    WORKSPACE_ROOT / "models" / "transformer_candidate_finetune_medhard_l40_20260528b.pt"
+    WORKSPACE_ROOT / "models" / "transformer_candidate_finetune_medbest_l40_20260529a.pt"
 )
-DEFAULT_QADV_RERANKER = WORKSPACE_ROOT / "models" / "qadv_reranker_v0_best.pt"
+DEFAULT_QADV_RERANKER = WORKSPACE_ROOT / "models" / "qadv_reranker_medbest_v1_terminal_best.pt"
+DEFAULT_QADV_LAMBDA = 0.10
 DEFAULT_MODEL = DEFAULT_TRANSFORMER_MODEL if DEFAULT_TRANSFORMER_MODEL.exists() else None
 DEFAULT_QADV_MODEL = DEFAULT_QADV_RERANKER if DEFAULT_QADV_RERANKER.exists() else None
 
@@ -36,7 +40,7 @@ class TziakchaModelAdvisor:
         self,
         model_path: Path | str | None = DEFAULT_MODEL,
         qadv_path: Path | str | None = DEFAULT_QADV_MODEL,
-        qadv_lambda: float = 0.05,
+        qadv_lambda: float = DEFAULT_QADV_LAMBDA,
         predictor: Any | None = None,
         fan_checker: Any | None = None,
     ) -> None:
@@ -50,6 +54,8 @@ class TziakchaModelAdvisor:
         if model_path is None:
             return None
         if model_path.suffix.lower() in {".pt", ".pth"}:
+            if _is_tjong_checkpoint(model_path):
+                return _build_tjong_predictor(model_path)
             if self.qadv_path is not None or self.qadv_lambda != 0.0:
                 return _build_transformer_predictor(
                     model_path,
@@ -84,21 +90,32 @@ class TziakchaModelAdvisor:
             return self._fallback(snapshot, hu_result)
         if self.predictor is None:
             response = _effective_response(candidates, hand, request, snapshot)
+            skipped_reason = None
         elif getattr(self.predictor, "prefer_hu", False) and "HU" in candidates:
             response = "HU"
+            skipped_reason = None
         elif hasattr(self.predictor, "predict_legal_response"):
-            response = self.predictor.predict_legal_response(
-                f"REQ {request}",
-                hand,
-                _optional_int(snapshot.get("seat"), 0),
-                request,
-                candidates,
-            ).strip()
+            skipped_reason = _predictor_history_skip_reason(self.predictor, snapshot)
+            if skipped_reason is None:
+                response = self.predictor.predict_legal_response(
+                    _predictor_input_text(snapshot, request),
+                    hand,
+                    _optional_int(snapshot.get("seat"), 0),
+                    request,
+                    candidates,
+                ).strip()
+            else:
+                response = _effective_response(candidates, hand, request, snapshot)
         else:
             response = str(self.predictor.predict_response(f"REQ {request}")).strip()
+            skipped_reason = None
         if response not in candidates:
-            response = _heuristic_response(candidates, hand)
-        return self._format_response(response, snapshot, hu_result)
+            response = _platform_illegal_response(candidates, hand, request)
+        rec = self._format_response(response, snapshot, hu_result)
+        if skipped_reason is not None:
+            rec["source"] = "local-model-fallback"
+            rec["model_skipped_reason"] = skipped_reason
+        return rec
 
     def _decision(
         self, snapshot: dict[str, Any], hand: Counter[str]
@@ -309,6 +326,107 @@ def _hand_counter(snapshot: dict[str, Any]) -> Counter[str]:
     return Counter(botzone_symbol(int(tile)) for tile in snapshot.get("hand") or [])
 
 
+def _predictor_input_text(snapshot: dict[str, Any], request: str) -> str:
+    raw_text = snapshot.get("botzone_input_text") or snapshot.get("input_text")
+    if isinstance(raw_text, str) and raw_text.strip():
+        return _append_current_request(_normal_history_lines(raw_text.splitlines()), request)
+
+    for key in ("botzone_history", "history"):
+        lines = _history_item_lines(snapshot.get(key))
+        if lines:
+            return _append_current_request(lines, request)
+
+    requests = snapshot.get("requests")
+    responses = snapshot.get("responses")
+    if isinstance(requests, list):
+        lines: list[str] = []
+        response_items = responses if isinstance(responses, list) else []
+        for previous_request, previous_response in zip(requests, response_items):
+            lines.append(_req_line(str(previous_request)))
+            lines.append(_res_line(str(previous_response)))
+        for extra_request in requests[len(response_items) :]:
+            extra = str(extra_request).strip()
+            if extra and extra != request.strip():
+                lines.append(_req_line(extra))
+        return _append_current_request(lines, request)
+
+    return _req_line(request)
+
+
+def _predictor_history_skip_reason(predictor: Any, snapshot: dict[str, Any]) -> str | None:
+    if not getattr(predictor, "requires_botzone_history", False):
+        return None
+    if _has_explicit_complete_history(snapshot):
+        return None
+    return "incomplete_botzone_history"
+
+
+def _has_explicit_complete_history(snapshot: dict[str, Any]) -> bool:
+    raw_text = snapshot.get("botzone_input_text") or snapshot.get("input_text")
+    if isinstance(raw_text, str) and raw_text.strip():
+        return True
+    if _history_item_lines(snapshot.get("botzone_history")) and bool(
+        snapshot.get("botzone_history_complete", True)
+    ):
+        return True
+    if _history_item_lines(snapshot.get("history")):
+        return True
+    requests = snapshot.get("requests")
+    responses = snapshot.get("responses")
+    if isinstance(requests, list) and isinstance(responses, list) and requests and len(requests) >= len(responses):
+        return True
+    return False
+
+
+def _history_item_lines(history: Any) -> list[str]:
+    if isinstance(history, str):
+        return _normal_history_lines(history.splitlines())
+    if not isinstance(history, list):
+        return []
+    lines: list[str] = []
+    for item in history:
+        if isinstance(item, str):
+            lines.extend(_normal_history_lines([item]))
+            continue
+        if not isinstance(item, dict):
+            continue
+        if "request" in item:
+            lines.append(_req_line(str(item["request"])))
+        if "response" in item:
+            lines.append(_res_line(str(item["response"])))
+    return lines
+
+
+def _normal_history_lines(lines: list[str]) -> list[str]:
+    result: list[str] = []
+    for line in lines:
+        text = str(line).strip()
+        if not text:
+            continue
+        if text.startswith("REQ ") or text.startswith("RES "):
+            result.append(text)
+        else:
+            result.append(_req_line(text))
+    return result
+
+
+def _append_current_request(lines: list[str], request: str) -> str:
+    current = _req_line(request)
+    while lines and lines[-1] == current:
+        lines.pop()
+    return "\n".join([*lines, current])
+
+
+def _req_line(request: str) -> str:
+    request = str(request).strip()
+    return request if request.startswith("REQ ") else f"REQ {request}"
+
+
+def _res_line(response: str) -> str:
+    response = str(response).strip()
+    return response if response.startswith("RES ") else f"RES {response}"
+
+
 def _action_symbols(values: list[int]) -> list[str]:
     return [botzone_symbol(int(value)) for value in values if isinstance(value, int)]
 
@@ -328,6 +446,21 @@ def _heuristic_response(candidates: list[str], hand: Counter[str]) -> str:
         return plays[0]
     non_pass = [candidate for candidate in candidates if candidate != "PASS"]
     return non_pass[0] if non_pass else "PASS"
+
+
+def _platform_illegal_response(candidates: list[str], hand: Counter[str], request: str) -> str:
+    parts = request.strip().split()
+    if parts and parts[0] == "2":
+        drawn = parts[1] if len(parts) >= 2 else None
+        if drawn and hand[drawn] > 0 and f"PLAY {drawn}" in candidates:
+            return f"PLAY {drawn}"
+        for candidate in candidates:
+            if candidate.startswith("PLAY "):
+                return candidate
+        return "PASS"
+    if parts and parts[0] == "3" and "PASS" in candidates:
+        return "PASS"
+    return _heuristic_response(candidates, hand)
 
 
 def _reaction_event(
@@ -601,3 +734,30 @@ def _build_transformer_predictor(
     from .transformer_predictor import TransformerCheckpointPredictor
 
     return TransformerCheckpointPredictor(model_path, qadv_path=qadv_path, qadv_lambda=qadv_lambda)
+
+
+def _build_tjong_predictor(model_path: Path):
+    from tjong_replication.policy_bot import TjongCheckpointPredictor
+
+    return TjongCheckpointPredictor(
+        model_path,
+        require_encoding_version="tjong_cit2_12298_v3_hidden_concealed_kong",
+        require_paper_config=False,
+    )
+
+
+def _is_tjong_checkpoint(model_path: Path) -> bool:
+    try:
+        import torch
+
+        payload = torch.load(model_path, map_location="cpu")
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return (
+        "model" in payload
+        and "tensor_encoding_version" in payload
+        and "encoding_schema" in payload
+        and "config" in payload
+    )

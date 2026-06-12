@@ -133,6 +133,25 @@ python -m tjong_replication.evaluate_checkpoints `
   --seed 0
 ```
 
+Verify that the deployable platform wrappers feed the model the same state that training used before using a checkpoint for Botzone, Tziakcha, smoke self-play, or paper self-play:
+
+```powershell
+$env:PYTHONPATH="D:\MCR_Agent\papers\tjong_cit2_12298\src"
+python -m tjong_replication.verify_platform_wrappers `
+  --checkpoint models\tjong_supervised_all_sources_20260605b.pt `
+  --raw data\raw\tziakcha_all_sources_botzone_20260605b.jsonl `
+  --max-states 1000 `
+  --nonpass-only `
+  --device cpu `
+  --require-encoding-version tjong_cit2_12298_v3_hidden_concealed_kong `
+  --require-paper-config `
+  --min-states 100 `
+  --fail-on-error `
+  --out runs\tjong_platform_wrapper_gate_20260605b.json
+```
+
+This gate checks three deployment invariants in one report: Botzone JSON and Tziakcha complete-history snapshots produce identical predictor input/candidates on the same state, illegal model outputs fall back exactly like the Botzone runtime instead of using a smoke-test heuristic, and the wrapper can replay held-out Botzone-format training logs with zero state-replay errors while reporting exact and action-family agreement. The Kubernetes manifest `k8s/tjong-platform-wrapper-gate-cpu-20260612a.yaml` runs the same gate on CPU against a PVC checkpoint path, defaults to `models/tjong_supervised_hu_ddp_full_4x4090_20260608d_checkpoints/latest.pt`, requests no GPUs, and excludes `rci-tide-*` nodes. Like the long training manifest, it downloads the configured GitHub branch archive into `/tmp` before running so the verifier code is not accidentally taken from stale PVC files.
+
 Collect Tjong self-play games through the official judge, then tensorize the resulting decisions:
 
 ```powershell

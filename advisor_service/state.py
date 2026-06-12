@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .tiles import display_name
+from .tiles import botzone_symbol, display_name
 
 ACTION_NAMES = {
     1: "flower",
@@ -42,6 +42,12 @@ class AdvisorState:
     available_actions: dict[str, list[int]] = field(default_factory=dict)
     raw_events: list[dict[str, Any]] = field(default_factory=list)
     unknown_events: list[dict[str, Any]] = field(default_factory=list)
+    botzone_history: list[str] = field(default_factory=list)
+    botzone_history_complete: bool = False
+    _botzone_pending_draw_request: str | None = None
+    _botzone_pending_reaction_request: str | None = None
+    _botzone_pending_claim_response: dict[str, Any] | None = None
+    _botzone_pending_public_claim: dict[str, Any] | None = None
 
     def ingest(self, message: dict[str, Any]) -> None:
         self.raw_events.append(message)
@@ -99,6 +105,7 @@ class AdvisorState:
         self.available_actions.clear()
         self.raw_events.clear()
         self.unknown_events.clear()
+        self._clear_botzone_history()
 
     def _apply_reconnect(self, message: dict[str, Any]) -> None:
         info = message["i"]
@@ -107,6 +114,7 @@ class AdvisorState:
             self._apply_snapshot(info)
             if "v" in message:
                 self.seat = _optional_int(message.get("v"), self.seat)
+            self._clear_botzone_history()
             return
 
         self.seat = _optional_int(message.get("v", info.get("v")), self.seat)
@@ -125,6 +133,7 @@ class AdvisorState:
             self.melds = [int(pack) for pack in hand_info.get("p") or []]
             self.flowers = _player_flower_count(message.get("u") or info.get("u"), self.seat, self.flowers)
         self._apply_prompt(info.get("a") or {})
+        self._clear_botzone_history()
 
     def _apply_snapshot(self, info: dict[str, Any]) -> None:
         self.seat = _optional_int(info.get("v"), self.seat)
@@ -171,6 +180,7 @@ class AdvisorState:
         if isinstance(tiles, list):
             self.hand = _visible_tiles(tiles)
         self.available_actions = {}
+        self._start_botzone_round()
 
     def _apply_round_exchange(self, message: dict[str, Any]) -> None:
         self.seat = _optional_int(message.get("v"), self.seat)
@@ -187,8 +197,10 @@ class AdvisorState:
         self.last_win_event = None
         self.next_draw_about_kong.clear()
         self.available_actions.clear()
+        self._clear_botzone_history()
 
     def _apply_flower(self, message: dict[str, Any]) -> None:
+        self._botzone_pass_pending_reaction()
         self._commit_pending_discard()
         player = _optional_int(message.get("v"), self.turn)
         self.turn = player
@@ -205,11 +217,15 @@ class AdvisorState:
                     self.next_draw_about_kong.discard(player)
                 self.last_draw = {"seat": player, "tile": replacement_tile, "display": display_name(replacement_tile)}
                 self._set_last_win_event(player, replacement_tile, "draw", True, about_kong)
+                self._botzone_start_draw(player, replacement_tile)
             self._apply_prompt(message.get("a") or {})
         else:
             self.available_actions = {}
+            if player is not None and replacement_tile is not None:
+                self._botzone_append(f"3 {player} BUHUA {botzone_symbol(replacement_tile)}", "PASS")
 
     def _apply_draw(self, message: dict[str, Any]) -> None:
+        self._botzone_pass_pending_reaction()
         self._commit_pending_discard()
         player = _optional_int(message.get("v"), self.turn)
         self.turn = player
@@ -225,15 +241,17 @@ class AdvisorState:
             self.last_draw = {"seat": player, "tile": tile_value, "display": display_name(tile_value)}
         if player is not None and tile_value is not None:
             self._set_last_win_event(player, tile_value, "draw", True, about_kong)
+            self._botzone_start_draw(player, tile_value)
         self._apply_prompt(message.get("a") or {})
 
     def _apply_discard(self, message: dict[str, Any]) -> None:
-        self._commit_pending_discard()
         seat = _optional_int(message.get("v"), None)
         tile = _tile_value(message.get("t"))
         if tile is None:
             self.unknown_events.append(message)
             return
+        started_public_claim_request = self._botzone_apply_discard_event(seat, tile)
+        self._commit_pending_discard()
         self.turn = seat
         self.wall_count = _optional_int(message.get("h"), self.wall_count)
         self.discards.append({"seat": seat, "tile": tile, "display": display_name(tile)})
@@ -243,6 +261,11 @@ class AdvisorState:
             self._remove_one_from_hand(tile)
             self.last_draw = None
         self._apply_prompt(message.get("a") or {})
+        self._botzone_maybe_start_discard_reaction(
+            seat,
+            tile,
+            already_started=started_public_claim_request,
+        )
 
     def _apply_chow(self, message: dict[str, Any]) -> None:
         player = _optional_int(message.get("v"), self.turn)
@@ -252,6 +275,7 @@ class AdvisorState:
             return
         base = _pack_tile(pack)
         offer = _pack_offer(pack)
+        self._botzone_apply_claim_event(player, "CHI", middle=botzone_symbol(base))
         if offer == 2:
             consumed = [base - 4, base + 4]
         elif offer == 3:
@@ -268,6 +292,7 @@ class AdvisorState:
             self._apply_prompt(message.get("a") or {})
             return
         base = _pack_tile(pack)
+        self._botzone_apply_claim_event(player, "PENG")
         self._apply_claimed_meld_visibility(player, [base, base, base])
         self._apply_meld(player, pack, [base, base], message.get("a") or {})
 
@@ -292,15 +317,17 @@ class AdvisorState:
                 self.next_draw_about_kong.add(player)
             consumed = [base, base, base]
         self._apply_meld(player, pack, consumed, message.get("a") or {})
+        self._botzone_apply_kong_event(player, base, promoted=pack_type == 3)
 
     def _apply_ckong(self, message: dict[str, Any]) -> None:
-        self._commit_pending_discard()
         player = _optional_int(message.get("v"), self.turn)
         pack = _optional_int(message.get("p"), None)
         if not pack:
             self._apply_prompt(message.get("a") or {})
             return
         base = _pack_tile(pack)
+        self._botzone_apply_kong_event(player, base, promoted=False)
+        self._commit_pending_discard()
         if player is not None:
             self.next_draw_about_kong.add(player)
         self._apply_meld(player, pack, [base, base, base, base], message.get("a") or {})
@@ -401,6 +428,14 @@ class AdvisorState:
             winner = _optional_int(payload.get("v"), None)
         if winner is None:
             winner = _winner_from_scores(scores)
+        if winner == self.seat:
+            if self._botzone_pending_draw_request is not None:
+                self._botzone_append(self._botzone_pending_draw_request, "HU")
+                self._botzone_pending_draw_request = None
+            elif self._botzone_pending_reaction_request is not None:
+                self._botzone_finish_pending_reaction("HU")
+        else:
+            self._botzone_pass_pending_reaction()
 
         if discarder is None:
             discarder = _optional_int(payload.get("discarder"), None)
@@ -470,7 +505,151 @@ class AdvisorState:
             "last_discard_display": self.discards[-1]["display"] if self.discards else None,
             "event_count": len(self.raw_events),
             "unknown_event_count": len(self.unknown_events),
+            "botzone_history": list(self.botzone_history),
+            "botzone_history_complete": self.botzone_history_complete,
         }
+
+    def _clear_botzone_history(self) -> None:
+        self.botzone_history.clear()
+        self.botzone_history_complete = False
+        self._botzone_pending_draw_request = None
+        self._botzone_pending_reaction_request = None
+        self._botzone_pending_claim_response = None
+        self._botzone_pending_public_claim = None
+
+    def _start_botzone_round(self) -> None:
+        self._clear_botzone_history()
+        if self.seat is None:
+            return
+        self.botzone_history_complete = True
+        wind = self.prevalent_wind if self.prevalent_wind is not None else 0
+        self._botzone_append(f"0 {self.seat} {wind}", "PASS")
+        flower_counts = [0, 0, 0, 0]
+        if 0 <= self.seat < 4:
+            flower_counts[self.seat] = int(self.flowers)
+        prefix = " ".join(str(count) for count in flower_counts)
+        tiles = " ".join(botzone_symbol(tile) for tile in self.hand[:13])
+        self._botzone_append(f"1 {prefix} {tiles}".strip(), "PASS")
+
+    def _botzone_append(self, request: str, response: str) -> None:
+        if not self.botzone_history_complete:
+            return
+        self.botzone_history.append(f"REQ {request}")
+        self.botzone_history.append(f"RES {response}")
+
+    def _botzone_start_draw(self, player: int, tile: int) -> None:
+        symbol = botzone_symbol(tile)
+        if player == self.seat:
+            self._botzone_pending_draw_request = f"2 {symbol}"
+        else:
+            self._botzone_append(f"3 {player} DRAW", "PASS")
+
+    def _botzone_pass_pending_reaction(self) -> None:
+        if self._botzone_pending_reaction_request is not None:
+            self._botzone_append(self._botzone_pending_reaction_request, "PASS")
+            self._botzone_pending_reaction_request = None
+
+    def _botzone_finish_pending_reaction(self, response: str) -> None:
+        if self._botzone_pending_reaction_request is None:
+            return
+        self._botzone_append(self._botzone_pending_reaction_request, response)
+        self._botzone_pending_reaction_request = None
+
+    def _botzone_apply_discard_event(self, seat: int | None, tile: int) -> bool:
+        if seat is None:
+            self._botzone_pass_pending_reaction()
+            return False
+        symbol = botzone_symbol(tile)
+        if seat == self.seat and self._botzone_pending_draw_request is not None:
+            self._botzone_append(self._botzone_pending_draw_request, f"PLAY {symbol}")
+            self._botzone_pending_draw_request = None
+            return False
+        if seat == self.seat and self._botzone_pending_claim_response is not None:
+            claim = self._botzone_pending_claim_response
+            response = f"{claim['head']} {symbol}"
+            self._botzone_append(str(claim["request"]), response)
+            self._botzone_pending_claim_response = None
+            self._botzone_append(self._botzone_public_claim_request(seat, claim, symbol), "PASS")
+            return True
+        if self._botzone_pending_public_claim is not None and seat == self._botzone_pending_public_claim.get("player"):
+            claim = self._botzone_pending_public_claim
+            request = self._botzone_public_claim_request(seat, claim, symbol)
+            self._botzone_pending_public_claim = None
+            self._botzone_pass_pending_reaction()
+            self._botzone_pending_reaction_request = request
+            return True
+        self._botzone_pass_pending_reaction()
+        return False
+
+    def _botzone_maybe_start_discard_reaction(
+        self,
+        seat: int | None,
+        tile: int,
+        *,
+        already_started: bool = False,
+    ) -> None:
+        if seat is None or seat == self.seat:
+            return
+        if already_started:
+            if not self._botzone_has_reaction_prompt():
+                self._botzone_pass_pending_reaction()
+            return
+        request = f"3 {seat} PLAY {botzone_symbol(tile)}"
+        if self._botzone_has_reaction_prompt():
+            self._botzone_pending_reaction_request = request
+        else:
+            self._botzone_append(request, "PASS")
+
+    def _botzone_apply_claim_event(self, player: int | None, action: str, *, middle: str | None = None) -> None:
+        if player is None:
+            self._botzone_pass_pending_reaction()
+            return
+        if player == self.seat and self._botzone_pending_reaction_request is not None:
+            head = action if middle is None else f"{action} {middle}"
+            self._botzone_pending_claim_response = {
+                "request": self._botzone_pending_reaction_request,
+                "head": head,
+                "action": action,
+                "middle": middle,
+            }
+            self._botzone_pending_reaction_request = None
+            return
+        self._botzone_pass_pending_reaction()
+        self._botzone_pending_public_claim = {"player": player, "action": action, "middle": middle}
+
+    def _botzone_apply_kong_event(self, player: int | None, tile: int, *, promoted: bool) -> None:
+        if player is None:
+            self._botzone_pass_pending_reaction()
+            return
+        symbol = botzone_symbol(tile)
+        if player == self.seat and self._botzone_pending_draw_request is not None:
+            action = "BUGANG" if promoted else "GANG"
+            self._botzone_append(self._botzone_pending_draw_request, f"{action} {symbol}")
+            self._botzone_pending_draw_request = None
+            self._botzone_append(f"3 {player} {action} {symbol}", "PASS")
+            return
+        if player == self.seat and self._botzone_pending_reaction_request is not None:
+            self._botzone_finish_pending_reaction("GANG")
+            return
+        self._botzone_pass_pending_reaction()
+        request = f"3 {player} {'BUGANG' if promoted else 'GANG'} {symbol}"
+        if promoted and self._botzone_has_reaction_prompt():
+            self._botzone_pending_reaction_request = request
+        else:
+            self._botzone_append(request, "PASS")
+
+    def _botzone_public_claim_request(self, player: int, claim: dict[str, Any], discard_symbol: str) -> str:
+        action = str(claim.get("action") or "").upper()
+        if action == "CHI":
+            middle = claim.get("middle") or "W2"
+            return f"3 {player} CHI {middle} {discard_symbol}"
+        return f"3 {player} PENG {discard_symbol}"
+
+    def _botzone_has_reaction_prompt(self) -> bool:
+        return any(
+            self.available_actions.get(name)
+            for name in ("hu", "pung", "chow", "kong", "pass", "waive")
+        )
 
 
 def _optional_int(value: Any, default: int | None) -> int | None:

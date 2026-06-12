@@ -3,25 +3,41 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
-from collections import Counter
+from collections import Counter, deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 import torch
 
-from .actions import ACTION_TO_INDEX, flatten_claim
+from .actions import ACTION_NAMES, ACTION_TO_INDEX, flatten_claim
 from .encoding import build_game_features, stack_hidden_tile_features, stack_visible_tile_features
 from .evaluate_supervised import load_model
-from .tensorize_botzone import HIDDEN_TILE_ROW_NAMES, chow_claim_index, request_event_tile, selected_action_mask
+from .tensorize_botzone import (
+    HIDDEN_TILE_ROW_NAMES,
+    MemoryFrame,
+    ReplayState,
+    chow_claim_index,
+    chow_needed_from_hand,
+    request_event_tile,
+    selected_action_mask,
+    zero_memory_frame,
+)
 from .tiles import TILE_NAMES, tile_id
+
+PASS_ACTION = ACTION_TO_INDEX["PASS"]
+DISCARD_ACTION = ACTION_TO_INDEX["DISCARD"]
+HU_ACTION = ACTION_TO_INDEX["HU"]
 
 
 class TjongCheckpointPredictor:
     """Score legal Botzone responses with the paper hierarchical heads."""
 
     kind = "legal_action_ranker"
+    requires_botzone_history = True
 
     def __init__(
         self,
@@ -49,13 +65,186 @@ class TjongCheckpointPredictor:
         candidates: list[str] | None = None,
     ) -> str:
         candidates = candidates or ["PASS"]
-        scores = self.score_legal_response_candidates(input_text, hand, player_id, request, candidates)
-        if not scores:
+        return self.predict_hierarchical_response(input_text, hand, player_id, request, candidates)
+
+    def predict_hierarchical_response(
+        self,
+        input_text: str,
+        hand: Counter[str],
+        player_id: int | None,
+        request: str,
+        candidates: list[str],
+    ) -> str:
+        if not candidates:
+            return "PASS"
+        labels = [response_to_labels(request, response) for response in candidates]
+        action_mask = action_mask_from_labels(labels)
+        if not any(action_mask):
             return "PASS" if "PASS" in candidates else candidates[0]
-        best_index = max(range(len(candidates)), key=lambda index: scores[index])
-        if scores[best_index] == float("-inf"):
-            return "PASS" if "PASS" in candidates else candidates[0]
-        return candidates[best_index]
+
+        context = build_runtime_context(
+            input_text=input_text,
+            hand=hand,
+            player_id=player_id or 0,
+            current_action_mask=action_mask,
+            memory_len=self.model.config.memory_len,
+        )
+        primary_memory = context.memory_for_mask(action_mask, previous_action=context.last_action)
+        with torch.no_grad():
+            outputs = self.model(
+                visible_tiles=primary_memory.visible_tiles.unsqueeze(0).to(self.device),
+                game_features=primary_memory.game_features.unsqueeze(0).to(self.device),
+                rewards=primary_memory.rewards.unsqueeze(0).to(self.device),
+                previous_actions=primary_memory.previous_actions.unsqueeze(0).to(self.device),
+                hidden_tiles=primary_memory.hidden_tiles.unsqueeze(0).to(self.device),
+            )
+        masked_action_logits = outputs["action_logits"].masked_fill(
+            torch.tensor(action_mask, dtype=torch.float32, device=self.device).unsqueeze(0) <= 0,
+            torch.finfo(outputs["action_logits"].dtype).min,
+        )
+        action_order = torch.argsort(masked_action_logits[0], descending=True).tolist()
+        for action in action_order:
+            if action_mask[int(action)] <= 0:
+                continue
+            response = self._response_for_selected_action(context, request, candidates, labels, int(action), action_mask)
+            if response is not None:
+                return response
+        return "PASS" if "PASS" in candidates else candidates[0]
+
+    def _response_for_selected_action(
+        self,
+        context: "RuntimeFeatureContext",
+        request: str,
+        candidates: list[str],
+        labels: list[tuple[int, int, int] | None],
+        action: int,
+        action_mask: list[float],
+    ) -> str | None:
+        matching = [index for index, label in enumerate(labels) if label is not None and label[0] == action]
+        if not matching:
+            return None
+        if action in {PASS_ACTION, HU_ACTION}:
+            return candidates[matching[0]]
+        if action == DISCARD_ACTION:
+            return self._choose_discard_candidate(context, candidates, labels, matching, action_mask)
+        if action in CLAIM_ACTIONS:
+            claim_index = self._choose_claim_index(context, labels, matching, action, action_mask)
+            if claim_index is None:
+                return None
+            claim_matching = [index for index in matching if labels[index] is not None and labels[index][1] == claim_index]
+            if not claim_matching:
+                return None
+            if action in {ACTION_TO_INDEX["CHOW"], ACTION_TO_INDEX["PONG"]}:
+                return self._choose_post_claim_discard_candidate(
+                    context,
+                    request,
+                    candidates,
+                    labels,
+                    claim_matching,
+                    action,
+                )
+            return candidates[claim_matching[0]]
+        return None
+
+    def _choose_claim_index(
+        self,
+        context: "RuntimeFeatureContext",
+        labels: list[tuple[int, int, int] | None],
+        matching: list[int],
+        action: int,
+        action_mask: list[float],
+    ) -> int | None:
+        sub_memory = context.memory_for_mask(selected_action_mask(action), previous_action=action)
+        primary_memory = context.memory_for_mask(action_mask, previous_action=context.last_action)
+        with torch.no_grad():
+            outputs = self.model(
+                visible_tiles=primary_memory.visible_tiles.unsqueeze(0).to(self.device),
+                game_features=primary_memory.game_features.unsqueeze(0).to(self.device),
+                rewards=primary_memory.rewards.unsqueeze(0).to(self.device),
+                previous_actions=primary_memory.previous_actions.unsqueeze(0).to(self.device),
+                sub_visible_tiles=sub_memory.visible_tiles.unsqueeze(0).to(self.device),
+                sub_game_features=sub_memory.game_features.unsqueeze(0).to(self.device),
+                sub_rewards=sub_memory.rewards.unsqueeze(0).to(self.device),
+                sub_previous_actions=sub_memory.previous_actions.unsqueeze(0).to(self.device),
+                hidden_tiles=primary_memory.hidden_tiles.unsqueeze(0).to(self.device),
+            )
+        claim_logits = outputs["claim_logits"][0]
+        allowed_claims = sorted({int(labels[index][1]) for index in matching if labels[index] is not None})
+        if not allowed_claims:
+            return None
+        return max(allowed_claims, key=lambda claim: float(claim_logits[claim].item()))
+
+    def _choose_discard_candidate(
+        self,
+        context: "RuntimeFeatureContext",
+        candidates: list[str],
+        labels: list[tuple[int, int, int] | None],
+        matching: list[int],
+        action_mask: list[float],
+    ) -> str | None:
+        primary_memory = context.memory_for_mask(action_mask, previous_action=context.last_action)
+        sub_memory = context.memory_for_mask(selected_action_mask(DISCARD_ACTION), previous_action=DISCARD_ACTION)
+        with torch.no_grad():
+            outputs = self.model(
+                visible_tiles=primary_memory.visible_tiles.unsqueeze(0).to(self.device),
+                game_features=primary_memory.game_features.unsqueeze(0).to(self.device),
+                rewards=primary_memory.rewards.unsqueeze(0).to(self.device),
+                previous_actions=primary_memory.previous_actions.unsqueeze(0).to(self.device),
+                sub_visible_tiles=sub_memory.visible_tiles.unsqueeze(0).to(self.device),
+                sub_game_features=sub_memory.game_features.unsqueeze(0).to(self.device),
+                sub_rewards=sub_memory.rewards.unsqueeze(0).to(self.device),
+                sub_previous_actions=sub_memory.previous_actions.unsqueeze(0).to(self.device),
+                hidden_tiles=primary_memory.hidden_tiles.unsqueeze(0).to(self.device),
+            )
+        discard_logits = outputs["discard_logits"][0]
+        return candidates[
+            max(
+                matching,
+                key=lambda index: float(discard_logits[int(labels[index][2])].item()) if labels[index] is not None else float("-inf"),
+            )
+        ]
+
+    def _choose_post_claim_discard_candidate(
+        self,
+        context: "RuntimeFeatureContext",
+        request: str,
+        candidates: list[str],
+        labels: list[tuple[int, int, int] | None],
+        matching: list[int],
+        claim_action: int,
+    ) -> str | None:
+        scored: list[tuple[float, int]] = []
+        for index in matching:
+            candidate = candidates[index]
+            discard = response_discard_label(candidate)
+            post_context = context.post_claim_context(request, candidate)
+            if discard is None or post_context is None:
+                scored.append((0.0, index))
+                continue
+            primary_memory = post_context.memory_for_mask(
+                selected_action_mask(DISCARD_ACTION),
+                previous_action=claim_action,
+            )
+            sub_memory = post_context.memory_for_mask(
+                selected_action_mask(DISCARD_ACTION),
+                previous_action=DISCARD_ACTION,
+            )
+            with torch.no_grad():
+                outputs = self.model(
+                    visible_tiles=primary_memory.visible_tiles.unsqueeze(0).to(self.device),
+                    game_features=primary_memory.game_features.unsqueeze(0).to(self.device),
+                    rewards=primary_memory.rewards.unsqueeze(0).to(self.device),
+                    previous_actions=primary_memory.previous_actions.unsqueeze(0).to(self.device),
+                    sub_visible_tiles=sub_memory.visible_tiles.unsqueeze(0).to(self.device),
+                    sub_game_features=sub_memory.game_features.unsqueeze(0).to(self.device),
+                    sub_rewards=sub_memory.rewards.unsqueeze(0).to(self.device),
+                    sub_previous_actions=sub_memory.previous_actions.unsqueeze(0).to(self.device),
+                    hidden_tiles=primary_memory.hidden_tiles.unsqueeze(0).to(self.device),
+                )
+            scored.append((float(outputs["discard_logits"][0, discard].item()), index))
+        if not scored:
+            return None
+        return candidates[max(scored, key=lambda item: item[0])[1]]
 
     def score_legal_response_candidates(
         self,
@@ -75,66 +264,77 @@ class TjongCheckpointPredictor:
         if not any(action_mask):
             return [0.0 if candidate == "PASS" else float("-inf") for candidate in candidates]
 
-        visible, game, hidden = encode_runtime_state(
+        context = build_runtime_context(
             input_text=input_text,
             hand=hand,
             player_id=player_id or 0,
-            action_mask=action_mask,
+            current_action_mask=action_mask,
+            memory_len=self.model.config.memory_len,
         )
-        visible_memory, game_memory = current_memory(visible, game)
+        primary_memory = context.memory_for_mask(action_mask, previous_action=context.last_action)
         sub_memories = [
-            current_memory(
-                *encode_runtime_state(
-                    input_text=input_text,
-                    hand=hand,
-                    player_id=player_id or 0,
-                    action_mask=selected_action_mask(label[0] if label is not None else ACTION_TO_INDEX["PASS"]),
-                )[:2]
+            context.memory_for_mask(
+                selected_action_mask(label[0] if label is not None else PASS_ACTION),
+                previous_action=label[0] if label is not None else PASS_ACTION,
             )
             for label in labels
         ]
         forced_discard_indices: list[int] = []
-        forced_discard_memories: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        forced_discard_memories: list[tuple[PolicyMemory, PolicyMemory]] = []
         discard_only_mask = selected_action_mask(ACTION_TO_INDEX["DISCARD"])
         for index, (candidate, label) in enumerate(zip(candidates, labels)):
             if label is None or label[0] not in CLAIM_ACTIONS or response_discard_label(candidate) is None:
                 continue
-            post_visible, post_game, post_hidden = encode_runtime_state(
-                input_text=input_text,
-                hand=hand,
-                player_id=player_id or 0,
-                action_mask=discard_only_mask,
-                post_claim_request=request,
-                post_claim_response=candidate,
-            )
-            post_visible_memory, post_game_memory = current_memory(post_visible, post_game)
+            post_context = context.post_claim_context(request, candidate)
+            if post_context is None:
+                continue
+            post_primary_memory = post_context.memory_for_mask(discard_only_mask, previous_action=label[0])
+            post_sub_memory = post_context.memory_for_mask(discard_only_mask, previous_action=DISCARD_ACTION)
             forced_discard_indices.append(index)
-            forced_discard_memories.append((post_visible_memory, post_game_memory, post_hidden))
-        visible_batch = visible_memory.unsqueeze(0).repeat(len(candidates), 1, 1, 1).to(self.device)
-        game_batch = game_memory.unsqueeze(0).repeat(len(candidates), 1, 1).to(self.device)
-        sub_visible_batch = torch.stack([item[0] for item in sub_memories], dim=0).to(self.device)
-        sub_game_batch = torch.stack([item[1] for item in sub_memories], dim=0).to(self.device)
-        hidden_batch = hidden.unsqueeze(0).repeat(len(candidates), 1, 1).to(self.device)
+            forced_discard_memories.append((post_primary_memory, post_sub_memory))
+        visible_batch = primary_memory.visible_tiles.unsqueeze(0).repeat(len(candidates), 1, 1, 1).to(self.device)
+        game_batch = primary_memory.game_features.unsqueeze(0).repeat(len(candidates), 1, 1).to(self.device)
+        rewards_batch = primary_memory.rewards.unsqueeze(0).repeat(len(candidates), 1).to(self.device)
+        previous_actions_batch = primary_memory.previous_actions.unsqueeze(0).repeat(len(candidates), 1).to(self.device)
+        sub_visible_batch = torch.stack([item.visible_tiles for item in sub_memories], dim=0).to(self.device)
+        sub_game_batch = torch.stack([item.game_features for item in sub_memories], dim=0).to(self.device)
+        sub_rewards_batch = torch.stack([item.rewards for item in sub_memories], dim=0).to(self.device)
+        sub_previous_actions_batch = torch.stack([item.previous_actions for item in sub_memories], dim=0).to(self.device)
+        hidden_batch = primary_memory.hidden_tiles.unsqueeze(0).repeat(len(candidates), 1, 1).to(self.device)
         action_mask_tensor = torch.tensor(action_mask, dtype=torch.float32, device=self.device).unsqueeze(0)
 
         with torch.no_grad():
             outputs = self.model(
                 visible_tiles=visible_batch,
                 game_features=game_batch,
+                rewards=rewards_batch,
+                previous_actions=previous_actions_batch,
                 sub_visible_tiles=sub_visible_batch,
                 sub_game_features=sub_game_batch,
+                sub_rewards=sub_rewards_batch,
+                sub_previous_actions=sub_previous_actions_batch,
                 hidden_tiles=hidden_batch,
             )
             forced_discard_logp: dict[int, torch.Tensor] = {}
             if forced_discard_memories:
-                forced_visible_batch = torch.stack([item[0] for item in forced_discard_memories], dim=0).to(self.device)
-                forced_game_batch = torch.stack([item[1] for item in forced_discard_memories], dim=0).to(self.device)
-                forced_hidden_batch = torch.stack([item[2] for item in forced_discard_memories], dim=0).to(self.device)
+                forced_visible_batch = torch.stack([item[0].visible_tiles for item in forced_discard_memories], dim=0).to(self.device)
+                forced_game_batch = torch.stack([item[0].game_features for item in forced_discard_memories], dim=0).to(self.device)
+                forced_rewards_batch = torch.stack([item[0].rewards for item in forced_discard_memories], dim=0).to(self.device)
+                forced_previous_actions_batch = torch.stack([item[0].previous_actions for item in forced_discard_memories], dim=0).to(self.device)
+                forced_sub_visible_batch = torch.stack([item[1].visible_tiles for item in forced_discard_memories], dim=0).to(self.device)
+                forced_sub_game_batch = torch.stack([item[1].game_features for item in forced_discard_memories], dim=0).to(self.device)
+                forced_sub_rewards_batch = torch.stack([item[1].rewards for item in forced_discard_memories], dim=0).to(self.device)
+                forced_sub_previous_actions_batch = torch.stack([item[1].previous_actions for item in forced_discard_memories], dim=0).to(self.device)
+                forced_hidden_batch = torch.stack([item[0].hidden_tiles for item in forced_discard_memories], dim=0).to(self.device)
                 forced_outputs = self.model(
                     visible_tiles=forced_visible_batch,
                     game_features=forced_game_batch,
-                    sub_visible_tiles=forced_visible_batch,
-                    sub_game_features=forced_game_batch,
+                    rewards=forced_rewards_batch,
+                    previous_actions=forced_previous_actions_batch,
+                    sub_visible_tiles=forced_sub_visible_batch,
+                    sub_game_features=forced_sub_game_batch,
+                    sub_rewards=forced_sub_rewards_batch,
+                    sub_previous_actions=forced_sub_previous_actions_batch,
                     hidden_tiles=forced_hidden_batch,
                 )
                 forced_logp_batch = torch.log_softmax(forced_outputs["discard_logits"], dim=-1)
@@ -175,6 +375,399 @@ CLAIM_ACTIONS = {
     ACTION_TO_INDEX["BUKONG"],
     ACTION_TO_INDEX["ANKONG"],
 }
+
+
+@dataclass
+class PolicyMemory:
+    visible_tiles: torch.Tensor
+    game_features: torch.Tensor
+    rewards: torch.Tensor
+    previous_actions: torch.Tensor
+    hidden_tiles: torch.Tensor
+
+
+@dataclass
+class LivePolicyState:
+    state: ReplayState
+    hand_counts: list[int]
+    wall_counts: list[int]
+    player_id: int
+
+
+@dataclass
+class RuntimeFeatureContext:
+    live: LivePolicyState
+    history: list[MemoryFrame]
+    last_action: int
+    player_id: int
+    current_request: str
+    memory_len: int
+
+    def memory_for_mask(
+        self,
+        action_mask: Iterable[float],
+        *,
+        previous_action: int,
+        live: LivePolicyState | None = None,
+    ) -> PolicyMemory:
+        live_state = self.live if live is None else live
+        visible, game, hidden = encode_live_policy_state(live_state, self.player_id, action_mask)
+        frames = list(self.history)[-(self.memory_len - 1) :] + [
+            MemoryFrame(visible, game, previous_action=int(previous_action), reward=0.0)
+        ]
+        while len(frames) < self.memory_len:
+            frames.insert(0, zero_memory_frame(previous_action=PASS_ACTION))
+        return PolicyMemory(
+            visible_tiles=torch.stack([frame.visible_tiles for frame in frames], dim=0),
+            game_features=torch.stack([frame.game_features for frame in frames], dim=0),
+            rewards=torch.tensor([frame.reward for frame in frames], dtype=torch.float32),
+            previous_actions=torch.tensor([frame.previous_action for frame in frames], dtype=torch.long),
+            hidden_tiles=hidden,
+        )
+
+    def post_claim_context(self, request: str, response: str) -> "RuntimeFeatureContext | None":
+        post_replay = self.live.state.after_claim(self.player_id, request, response)
+        if post_replay is None:
+            return None
+        post_live = copy.deepcopy(self.live)
+        post_live.state = post_replay
+        head = response.split()[0].upper() if response.split() else ""
+        if head in {"CHI", "PENG"}:
+            post_live.hand_counts[self.player_id] = max(0, post_live.hand_counts[self.player_id] - 2)
+        return RuntimeFeatureContext(
+            live=post_live,
+            history=list(self.history),
+            last_action=self.last_action,
+            player_id=self.player_id,
+            current_request=request,
+            memory_len=self.memory_len,
+        )
+
+
+def action_mask_from_labels(labels: Iterable[tuple[int, int, int] | None]) -> list[float]:
+    mask = [0.0] * len(ACTION_NAMES)
+    for label in labels:
+        if label is not None:
+            mask[int(label[0])] = 1.0
+    return mask
+
+
+def build_runtime_context(
+    *,
+    input_text: str,
+    hand: Counter[str],
+    player_id: int,
+    current_action_mask: Iterable[float],
+    memory_len: int,
+) -> RuntimeFeatureContext:
+    live = LivePolicyState(
+        state=ReplayState(),
+        hand_counts=[13, 13, 13, 13],
+        wall_counts=[21, 21, 21, 21],
+        player_id=int(player_id),
+    )
+    history: deque[MemoryFrame] = deque(maxlen=max(0, memory_len - 1))
+    last_action = PASS_ACTION
+    current_request = ""
+    entries = list(iter_policy_history(input_text))
+    for request, response in entries:
+        current_request = request
+        apply_request_to_live_state(live, request)
+        tokens = request.strip().split()
+        if response is None:
+            break
+        label = response_to_labels(request, response)
+        if tokens and tokens[0] in {"2", "3"} and label is not None:
+            action_mask = runtime_action_type_mask(live, request, response)
+            if action_mask[label[0]] <= 0.0:
+                action_mask[label[0]] = 1.0
+            if sum(1 for value in action_mask if value > 0.0) <= 1 and label[0] != DISCARD_ACTION:
+                continue
+            visible, game, _ = encode_live_policy_state(live, live.player_id, action_mask)
+            history.append(MemoryFrame(visible, game, previous_action=int(label[0]), reward=0.0))
+            last_action = int(label[0])
+
+    # The generic live replay is intentionally public-information only. The
+    # policy wrapper already owns the exact current concealed hand, so use it
+    # for the current decision frame even if the textual replay was truncated.
+    live.player_id = int(player_id)
+    live.state.hands[int(player_id)] = Counter(hand)
+    live.hand_counts[int(player_id)] = int(sum(hand.values()))
+    return RuntimeFeatureContext(
+        live=live,
+        history=list(history),
+        last_action=last_action,
+        player_id=int(player_id),
+        current_request=current_request,
+        memory_len=int(memory_len),
+    )
+
+
+def iter_policy_history(input_text: str) -> Iterable[tuple[str, str | None]]:
+    pending_request: str | None = None
+    for raw_line in input_text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("REQ "):
+            if pending_request is not None:
+                yield pending_request, None
+            pending_request = line[4:].strip()
+        elif line.startswith("RES ") and pending_request is not None:
+            yield pending_request, line[4:].strip()
+            pending_request = None
+    if pending_request is not None:
+        yield pending_request, None
+
+
+def runtime_action_type_mask(live: LivePolicyState, request: str, response: str | None = None) -> list[float]:
+    mask = [0.0] * len(ACTION_NAMES)
+    tokens = request.strip().split()
+    if not tokens:
+        mask[PASS_ACTION] = 1.0
+        return mask
+    response_head = response.split()[0].upper() if response and response.split() else ""
+    player = live.player_id
+    hand = live.state.hands[player]
+    if tokens[0] == "2":
+        if response_head == "HU":
+            mask[HU_ACTION] = 1.0
+        if hand:
+            mask[DISCARD_ACTION] = 1.0
+        if any(count >= 4 for count in hand.values()):
+            mask[ACTION_TO_INDEX["ANKONG"]] = 1.0
+        if any(live.state.pengs[player][tile] > 0 and hand[tile] > 0 for tile in live.state.pengs[player]):
+            mask[ACTION_TO_INDEX["BUKONG"]] = 1.0
+        return mask
+
+    mask[PASS_ACTION] = 1.0
+    if response_head == "HU":
+        mask[HU_ACTION] = 1.0
+    if tokens[0] != "3" or len(tokens) < 3:
+        return mask
+    try:
+        actor = int(tokens[1])
+    except ValueError:
+        return mask
+    event_tile = request_event_tile(tokens)
+    if actor == player or event_tile not in TILE_NAMES or tokens[2].upper() not in {"PLAY", "PENG", "CHI"}:
+        return mask
+    if hand[event_tile] >= 2:
+        mask[ACTION_TO_INDEX["PONG"]] = 1.0
+    if hand[event_tile] >= 3:
+        mask[ACTION_TO_INDEX["MINGKONG"]] = 1.0
+    if player == (actor + 1) % 4 and runtime_any_chow(hand, event_tile):
+        mask[ACTION_TO_INDEX["CHOW"]] = 1.0
+    return mask
+
+
+def apply_request_to_live_state(live: LivePolicyState, request: str) -> None:
+    tokens = request.strip().split()
+    if not tokens:
+        return
+    if tokens[0] == "0" and len(tokens) >= 2:
+        try:
+            live.player_id = int(tokens[1])
+            if len(tokens) >= 3:
+                live.state.prevailing_wind = int(tokens[2])
+        except ValueError:
+            return
+        return
+    if tokens[0] == "1":
+        apply_initial_hand_request(live, tokens)
+        return
+    if tokens[0] == "2" and len(tokens) >= 2:
+        tile = tokens[1]
+        player = live.player_id
+        if tile in TILE_NAMES:
+            live.state.hands[player][tile] += 1
+            live.hand_counts[player] += 1
+        decrement_wall(live, player)
+        return
+    if tokens[0] != "3" or len(tokens) < 3:
+        return
+    try:
+        actor = int(tokens[1])
+    except ValueError:
+        return
+    action = tokens[2].upper()
+    if action == "DRAW":
+        live.hand_counts[actor] += 1
+        decrement_wall(live, actor)
+    elif action == "BUHUA":
+        decrement_wall(live, actor)
+    elif action == "PLAY":
+        apply_public_play(live, actor, tokens)
+    elif action == "PENG":
+        apply_public_peng(live, actor, tokens)
+    elif action == "CHI":
+        apply_public_chow(live, actor, tokens)
+    elif action == "GANG":
+        apply_public_kong(live, actor, tokens)
+    elif action == "BUGANG":
+        apply_public_bukong(live, actor, tokens)
+    live.state.tile_counts = [max(0, int(value)) for value in live.wall_counts]
+
+
+def apply_initial_hand_request(live: LivePolicyState, tokens: list[str]) -> None:
+    player = live.player_id
+    if len(tokens) >= 5:
+        try:
+            flowers = [int(value) for value in tokens[1:5]]
+            live.wall_counts = [max(0, 21 - value) for value in flowers]
+        except ValueError:
+            pass
+    tiles = [tile for tile in tokens[5:] if tile in TILE_NAMES]
+    live.state.hands[player] = Counter(tiles)
+    own_count = len(tiles) if tiles else 13
+    live.hand_counts = [13, 13, 13, 13]
+    live.hand_counts[player] = own_count
+    live.state.tile_counts = [max(0, int(value)) for value in live.wall_counts]
+    live.state.claimable_discard = None
+
+
+def apply_public_play(live: LivePolicyState, actor: int, tokens: list[str]) -> None:
+    tile = request_event_tile(tokens)
+    if tile not in TILE_NAMES:
+        return
+    live.state._remove_from_hand(actor, tile, 1)
+    live.state.discards[actor][tile] += 1
+    live.state.claimable_discard = (actor, tile)
+    live.hand_counts[actor] = max(0, live.hand_counts[actor] - 1)
+
+
+def apply_public_peng(live: LivePolicyState, actor: int, tokens: list[str]) -> None:
+    event_tile = live.state.claimable_discard[1] if live.state.claimable_discard else None
+    discard = tokens[3] if len(tokens) >= 4 else None
+    if event_tile not in TILE_NAMES:
+        live.state.claimable_discard = None
+        return
+    live.state._consume_claimable_discard(event_tile)
+    live.state.claimable_discard = None
+    live.state._remove_from_hand(actor, event_tile, 2)
+    live.state.pengs[actor][event_tile] += 1
+    live.hand_counts[actor] = max(0, live.hand_counts[actor] - 2)
+    if discard in TILE_NAMES:
+        live.state._remove_from_hand(actor, discard, 1)
+        live.state.discards[actor][discard] += 1
+        live.state.claimable_discard = (actor, discard)
+        live.hand_counts[actor] = max(0, live.hand_counts[actor] - 1)
+
+
+def apply_public_chow(live: LivePolicyState, actor: int, tokens: list[str]) -> None:
+    event_tile = live.state.claimable_discard[1] if live.state.claimable_discard else None
+    middle = tokens[3] if len(tokens) >= 4 else None
+    discard = tokens[4] if len(tokens) >= 5 else None
+    if event_tile not in TILE_NAMES or middle not in TILE_NAMES:
+        live.state.claimable_discard = None
+        return
+    live.state._consume_claimable_discard(event_tile)
+    live.state.claimable_discard = None
+    needed = chow_needed_from_hand(middle, event_tile)
+    for tile, count in needed.items():
+        live.state._remove_from_hand(actor, tile, count)
+    for tile in safe_chow_sequence(middle):
+        live.state.chows[actor][tile] += 1
+    live.hand_counts[actor] = max(0, live.hand_counts[actor] - sum(needed.values()))
+    if discard in TILE_NAMES:
+        live.state._remove_from_hand(actor, discard, 1)
+        live.state.discards[actor][discard] += 1
+        live.state.claimable_discard = (actor, discard)
+        live.hand_counts[actor] = max(0, live.hand_counts[actor] - 1)
+
+
+def apply_public_kong(live: LivePolicyState, actor: int, tokens: list[str]) -> None:
+    tile = tokens[3] if len(tokens) >= 4 else None
+    if tile not in TILE_NAMES:
+        live.state.claimable_discard = None
+        return
+    if live.state.claimable_discard and live.state.claimable_discard[1] == tile:
+        live.state._consume_claimable_discard(tile)
+        live.state._remove_from_hand(actor, tile, 3)
+        live.hand_counts[actor] = max(0, live.hand_counts[actor] - 3)
+    else:
+        live.state._remove_from_hand(actor, tile, 4)
+        live.state.concealed_kongs[actor] += 1
+        live.state.concealed_kong_tiles[actor][tile] += 4
+        live.hand_counts[actor] = max(0, live.hand_counts[actor] - 4)
+    live.state.kongs[actor][tile] += 1
+    live.state.claimable_discard = None
+
+
+def apply_public_bukong(live: LivePolicyState, actor: int, tokens: list[str]) -> None:
+    tile = tokens[3] if len(tokens) >= 4 else None
+    live.state.claimable_discard = None
+    if tile not in TILE_NAMES:
+        return
+    live.state._remove_from_hand(actor, tile, 1)
+    if live.state.pengs[actor][tile] > 0:
+        live.state.pengs[actor][tile] -= 1
+    live.state.kongs[actor][tile] += 1
+    live.hand_counts[actor] = max(0, live.hand_counts[actor] - 1)
+
+
+def decrement_wall(live: LivePolicyState, player: int) -> None:
+    if 0 <= player < 4:
+        live.wall_counts[player] = max(0, live.wall_counts[player] - 1)
+        live.state.tile_counts = [max(0, int(value)) for value in live.wall_counts]
+
+
+def encode_live_policy_state(
+    live: LivePolicyState,
+    player: int,
+    action_mask: Iterable[float],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    state = live.state
+    rows: dict[str, list[int] | torch.Tensor] = {
+        "hand_self": counter_to_ids(state.hands[player]),
+    }
+    live_counts = state.live_counts_for(player)
+    rows["available_tile_mask"] = (live_counts > 0).float()
+    for rel in range(4):
+        absolute = (player + rel) % 4
+        rows[f"discard_p{rel}"] = counter_to_ids(state.discards[absolute])
+        rows[f"peng_p{rel}"] = counter_to_ids(expand_counter(state.pengs[absolute], 3))
+        rows[f"chow_p{rel}"] = counter_to_ids(state.chows[absolute])
+        rows[f"kong_p{rel}"] = counter_to_ids(expand_counter(state.kongs[absolute], 4))
+        rows[f"remaining_tiles_p{rel}"] = live_counts
+    opponents = [(player + rel) % 4 for rel in range(1, 4)]
+    visible = stack_visible_tile_features(rows)
+    game = build_game_features(
+        prevailing_wind=state.prevailing_wind,
+        seat_wind=player,
+        opponent_concealed_kongs=[float(state.concealed_kongs[other]) for other in opponents],
+        remaining_tile_counts=[float(live.wall_counts[(player + rel) % 4]) for rel in range(4)],
+        hand_tile_counts=[float(live.hand_counts[(player + rel) % 4]) for rel in range(4)],
+        action_mask=list(action_mask),
+    )
+    hidden = stack_hidden_tile_features(
+        [
+            torch.zeros(34),
+            torch.zeros(34),
+            torch.zeros(34),
+            counter_to_tensor(sum((state.concealed_kong_tiles[index] for index in range(4)), Counter())),
+            live_counts,
+        ]
+    )
+    return visible, game, hidden
+
+
+def runtime_any_chow(hand: Counter[str], event_tile: str) -> bool:
+    if len(event_tile) != 2 or event_tile[0] not in {"W", "T", "B"}:
+        return False
+    try:
+        rank = int(event_tile[1])
+    except ValueError:
+        return False
+    for middle_rank in range(rank - 1, rank + 2):
+        middle = f"{event_tile[0]}{middle_rank}"
+        if middle not in TILE_NAMES:
+            continue
+        try:
+            needed = chow_needed_from_hand(middle, event_tile)
+        except ValueError:
+            continue
+        if all(hand[tile] >= count for tile, count in needed.items()):
+            return True
+    return False
 
 
 def current_memory(visible: torch.Tensor, game: torch.Tensor, memory_len: int = 4) -> tuple[torch.Tensor, torch.Tensor]:
@@ -441,6 +1034,36 @@ def respond_json(
     require_encoding_version: str | None = None,
     require_paper_config: bool = False,
 ) -> str:
+    predictor = TjongCheckpointPredictor(
+        checkpoint,
+        device=device,
+        require_encoding_version=require_encoding_version,
+        require_paper_config=require_paper_config,
+    )
+    return respond_json_with_predictor(payload, predictor)
+
+
+class _ForcedReplayPredictor:
+    kind = "legal_action_ranker"
+
+    def __init__(self, response: str = "PASS"):
+        self.response = response
+
+    def predict_legal_response(
+        self,
+        input_text: str,
+        hand: Counter[str],
+        player_id: int | None,
+        request: str,
+        candidates: list[str] | None = None,
+    ) -> str:
+        return self.response
+
+    def predict_response(self, input_text: str) -> str:
+        return self.response
+
+
+def respond_json_with_predictor(payload: dict, predictor, *, fan_checker=None) -> str:
     # Import here so this module can be used in tests without adding scripts/ to sys.path.
     repo_root = Path(__file__).resolve().parents[4]
     scripts = repo_root / "scripts"
@@ -448,20 +1071,24 @@ def respond_json(
         sys.path.insert(0, str(scripts))
     from policy_bot import BotzonePolicy  # noqa: PLC0415
 
-    predictor = TjongCheckpointPredictor(
-        checkpoint,
-        device=device,
-        require_encoding_version=require_encoding_version,
-        require_paper_config=require_paper_config,
-    )
-    policy = BotzonePolicy(predictor)
     requests = [str(item) for item in payload.get("requests", [])]
     responses = [str(item) for item in payload.get("responses", [])]
+    if not requests:
+        return "PASS"
+
+    replay_predictor = _ForcedReplayPredictor()
+    policy = BotzonePolicy(replay_predictor, fan_checker=fan_checker)
     for request, expected_response in zip(requests[:-1], responses):
+        replay_predictor.response = expected_response
         actual_response = policy.respond(request)
         if actual_response != expected_response:
-            continue
-    return policy.respond(requests[-1]) if requests else "PASS"
+            raise ValueError(
+                "Botzone replay diverged before current decision: "
+                f"request={request!r} expected={expected_response!r} actual={actual_response!r}"
+            )
+
+    policy.predictor = predictor
+    return policy.respond(requests[-1])
 
 
 def main() -> int:

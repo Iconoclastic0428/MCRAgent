@@ -4,6 +4,7 @@ from pathlib import Path
 from collections import Counter
 import json
 import tempfile
+import types
 
 import torch
 
@@ -11,12 +12,16 @@ import torch
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
+import tjong_replication.audit_policy_replay as audit_policy_replay  # noqa: E402
+import tjong_replication.collect_selfplay as collect_selfplay_module  # noqa: E402
 import tjong_replication.train_supervised as train_supervised_module  # noqa: E402
+import tjong_replication.verify_platform_wrappers as verify_platform_wrappers  # noqa: E402
 from tjong_replication.actions import ACTION_NAMES, ACTION_TO_INDEX, CLAIM_SIZE, flatten_claim, unflatten_claim  # noqa: E402
 from tjong_replication.audit_tziakcha_botzone_coverage import audit_coverage  # noqa: E402
 from tjong_replication.build_ppo_rollouts import reward_to_go, rollout_rewards  # noqa: E402
 from tjong_replication.collect_selfplay import (  # noqa: E402
     SelfplaySummaryAccumulator,
+    TjongBotzoneJsonReplayPolicy,
     summarize as summarize_selfplay,
 )
 from tjong_replication.convert_tziakcha_to_botzone import convert_tziakcha_file  # noqa: E402
@@ -37,7 +42,9 @@ from tjong_replication.pipeline_status import audit_pipeline  # noqa: E402
 from tjong_replication.ppo import PPOConfig  # noqa: E402
 from tjong_replication.policy_bot import (  # noqa: E402
     TjongCheckpointPredictor,
+    build_runtime_context,
     encode_runtime_state,
+    respond_json_with_predictor,
     response_discard_label,
     response_to_labels,
     runtime_hidden_schema_rows,
@@ -114,6 +121,459 @@ def test_network_forward_shapes():
     assert out["claim_logits"].shape == (batch, 199)
     assert out["discard_logits"].shape == (batch, 34)
     assert out["value"].shape == (batch,)
+
+
+def test_tjong_runtime_context_replays_memory_and_public_discards():
+    input_text = "\n".join(
+        [
+            "REQ 0 0 1",
+            "RES PASS",
+            "REQ 1 0 0 0 0 W1 W1 W2 W3 W4 B1 B2 B3 T1 T2 T3 F1 F2",
+            "RES PASS",
+            "REQ 2 W5",
+            "RES PLAY F2",
+            "REQ 3 0 PLAY F2",
+            "RES PASS",
+            "REQ 3 1 PLAY W1",
+        ]
+    )
+    hand = Counter("W1 W1 W2 W3 W4 B1 B2 B3 T1 T2 T3 W5".split())
+    context = build_runtime_context(
+        input_text=input_text,
+        hand=hand,
+        player_id=0,
+        current_action_mask=[1, 0, 0, 0, 1, 0, 0, 0],
+        memory_len=4,
+    )
+
+    memory = context.memory_for_mask([1, 0, 0, 0, 1, 0, 0, 0], previous_action=context.last_action)
+
+    assert context.last_action == ACTION_TO_INDEX["DISCARD"]
+    assert memory.previous_actions.tolist()[-2:] == [ACTION_TO_INDEX["DISCARD"], ACTION_TO_INDEX["DISCARD"]]
+    discard_row = VISIBLE_ROW_NAMES.index("discard_p0")
+    assert memory.visible_tiles[-1, discard_row, tile_id("F2")] == 1
+    assert not torch.equal(memory.visible_tiles[-2], memory.visible_tiles[-1])
+
+
+class _HierarchicalFakeTjong(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.config = TjongConfig()
+        self.previous_action_calls = []
+
+    def forward(
+        self,
+        *,
+        visible_tiles,
+        game_features,
+        rewards=None,
+        previous_actions=None,
+        sub_visible_tiles=None,
+        sub_game_features=None,
+        sub_rewards=None,
+        sub_previous_actions=None,
+        hidden_tiles=None,
+    ):
+        self.previous_action_calls.append(
+            {
+                "previous_actions": None if previous_actions is None else previous_actions.detach().cpu().clone(),
+                "sub_previous_actions": (
+                    None if sub_previous_actions is None else sub_previous_actions.detach().cpu().clone()
+                ),
+            }
+        )
+        batch = visible_tiles.shape[0]
+        action_logits = torch.full((batch, len(ACTION_NAMES)), -20.0)
+        action_logits[:, ACTION_TO_INDEX["PONG"]] = 20.0
+        claim_logits = torch.full((batch, CLAIM_SIZE), -20.0)
+        claim_logits[:, flatten_claim("PONG", tile_id("W1"))] = 20.0
+        discard_logits = torch.full((batch, len(TILE_NAMES)), -20.0)
+        discard_logits[:, tile_id("B2")] = 20.0
+        return {
+            "action_logits": action_logits,
+            "claim_logits": claim_logits,
+            "discard_logits": discard_logits,
+            "value": torch.zeros(batch),
+        }
+
+
+def test_tjong_predictor_uses_hierarchical_claim_then_forced_discard():
+    predictor = TjongCheckpointPredictor.__new__(TjongCheckpointPredictor)
+    predictor.device = torch.device("cpu")
+    predictor.model = _HierarchicalFakeTjong()
+    input_text = "\n".join(
+        [
+            "REQ 0 0 1",
+            "RES PASS",
+            "REQ 1 0 0 0 0 W1 W1 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2 J3",
+            "RES PASS",
+            "REQ 3 1 PLAY W1",
+        ]
+    )
+
+    response = predictor.predict_legal_response(
+        input_text=input_text,
+        hand=Counter("W1 W1 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2 J3".split()),
+        player_id=0,
+        request="3 1 PLAY W1",
+        candidates=["PASS", "PENG B1", "PENG B2"],
+    )
+
+    assert response == "PENG B2"
+    assert predictor.model.previous_action_calls[0]["previous_actions"] is not None
+
+
+def test_tjong_respond_json_teacher_forces_previous_responses():
+    class RecordingPredictor:
+        kind = "legal_action_ranker"
+
+        def __init__(self):
+            self.calls = []
+
+        def predict_legal_response(self, input_text, hand, player_id, request, candidates):
+            self.calls.append(
+                {
+                    "input_text": input_text,
+                    "hand": Counter(hand),
+                    "player_id": player_id,
+                    "request": request,
+                    "candidates": list(candidates),
+                }
+            )
+            return "PENG B2"
+
+    predictor = RecordingPredictor()
+    payload = {
+        "requests": [
+            "0 0 1",
+            "1 0 0 0 0 W1 W1 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2 J3",
+            "2 W5",
+            "3 1 PLAY W1",
+        ],
+        "responses": ["PASS", "PASS", "PLAY F2"],
+    }
+
+    response = respond_json_with_predictor(payload, predictor)
+
+    assert response == "PENG B2"
+    assert len(predictor.calls) == 1
+    call = predictor.calls[0]
+    assert "REQ 2 W5\nRES PLAY F2" in call["input_text"]
+    assert call["input_text"].endswith("REQ 3 1 PLAY W1")
+    assert call["hand"]["F2"] == 0
+    assert call["hand"]["W5"] == 1
+    assert "PENG B2" in call["candidates"]
+
+
+def test_tjong_respond_json_fails_when_recorded_replay_is_not_legal():
+    class RecordingPredictor:
+        kind = "legal_action_ranker"
+
+        def predict_legal_response(self, input_text, hand, player_id, request, candidates):
+            return "PASS"
+
+    payload = {
+        "requests": [
+            "0 0 1",
+            "1 0 0 0 0 W1 W1 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2 J3",
+            "2 W5",
+            "3 1 PLAY W1",
+        ],
+        "responses": ["PASS", "PASS", "PLAY W9"],
+    }
+
+    try:
+        respond_json_with_predictor(payload, RecordingPredictor())
+    except ValueError as exc:
+        assert "Botzone replay diverged before current decision" in str(exc)
+        assert "PLAY W9" in str(exc)
+    else:
+        raise AssertionError("invalid recorded replay should fail loudly")
+
+
+def test_tjong_policy_replay_audit_uses_json_wrapper(monkeypatch, tmp_path):
+    class FakePredictor:
+        kind = "legal_action_ranker"
+
+        def predict_legal_response(self, input_text, hand, player_id, request, candidates):
+            if request == "2 W5":
+                return "PLAY W5"
+            return "PASS"
+
+    monkeypatch.setattr(audit_policy_replay, "TjongCheckpointPredictor", lambda *args, **kwargs: FakePredictor())
+    raw = tmp_path / "raw.jsonl"
+    raw.write_text(
+        json.dumps(
+            {
+                "match_id": "audit-smoke",
+                "logs": [
+                    {"output": {"content": {"0": "0 0 0"}}},
+                    {"0": {"response": "PASS"}},
+                    {
+                        "output": {
+                            "content": {
+                                "0": "1 0 0 0 0 W1 W2 W3 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2"
+                            }
+                        }
+                    },
+                    {"0": {"response": "PASS"}},
+                    {"output": {"content": {"0": "2 W5"}}},
+                    {"0": {"response": "PLAY W5"}},
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = audit_policy_replay.audit_botzone_replay(
+        checkpoint=tmp_path / "fake.pt",
+        raw_path=raw,
+        max_states=1,
+        require_encoding_version=None,
+    )
+
+    assert summary["states"] == 1
+    assert summary["exact_accuracy"] == 1.0
+    assert summary["family_accuracy"] == 1.0
+    assert summary["error_count"] == 0
+    assert summary["examples"][0]["request"] == "2 W5"
+
+
+def test_tjong_selfplay_policy_uses_botzone_json_replay(monkeypatch):
+    calls = []
+
+    def fake_respond_json_with_predictor(payload, predictor, *, fan_checker=None):
+        calls.append(
+            {
+                "payload": payload,
+                "predictor": predictor,
+                "fan_checker": fan_checker,
+            }
+        )
+        return "PASS" if len(payload["requests"]) == 1 else "PLAY W5"
+
+    monkeypatch.setattr(
+        collect_selfplay_module,
+        "respond_json_with_predictor",
+        fake_respond_json_with_predictor,
+    )
+    predictor = object()
+    fan_checker = object()
+    policy = TjongBotzoneJsonReplayPolicy(predictor, fan_checker=fan_checker)
+
+    assert policy.respond("0 0 1") == "PASS"
+    assert policy.respond("2 W5") == "PLAY W5"
+
+    assert calls[0]["payload"] == {"requests": ["0 0 1"], "responses": []}
+    assert calls[1]["payload"] == {"requests": ["0 0 1", "2 W5"], "responses": ["PASS"]}
+    assert calls[1]["predictor"] is predictor
+    assert calls[1]["fan_checker"] is fan_checker
+    assert policy.diagnostics()["kind"] == "tjong_botzone_json_replay"
+
+
+def test_collect_selfplay_uses_botzone_json_replay_policy(monkeypatch, tmp_path):
+    calls = []
+
+    class FakePredictor:
+        pass
+
+    class FakeFanChecker:
+        @classmethod
+        def default(cls):
+            return "default-fan-checker"
+
+    def fake_respond_json_with_predictor(payload, predictor, *, fan_checker=None):
+        calls.append(
+            {
+                "payload": payload,
+                "predictor": predictor,
+                "fan_checker": fan_checker,
+            }
+        )
+        request = payload["requests"][-1]
+        return "PLAY W5" if request == "2 W5" else "PASS"
+
+    def fake_load_initdata(path, limit=None, offset=0):
+        assert str(path).endswith("initdata.jsonl")
+        assert limit == 1
+        assert offset == 0
+        return [{"srand": 1234}]
+
+    def fake_run_match(policies, initdata, exe_path=None, max_turns=500):
+        responses = [
+            policies[0].respond("0 0 1"),
+            policies[0].respond("1 0 0 0 0 W1 W2 W3 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2"),
+            policies[0].respond("2 W5"),
+        ]
+        assert responses == ["PASS", "PASS", "PLAY W5"]
+        return {
+            "terminal_reason": "finish",
+            "turns": 3,
+            "scores": [0, 0, 0, 0],
+            "final_output": {"display": {"action": "HUANG"}},
+            "log": [
+                {"output": {"content": {"0": "0 0 1"}}},
+                {"0": {"response": responses[0], "raw": responses[0], "verdict": "OK"}},
+                {
+                    "output": {
+                        "content": {
+                            "0": "1 0 0 0 0 W1 W2 W3 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2"
+                        }
+                    }
+                },
+                {"0": {"response": responses[1], "raw": responses[1], "verdict": "OK"}},
+                {"output": {"content": {"0": "2 W5"}}},
+                {"0": {"response": responses[2], "raw": responses[2], "verdict": "OK"}},
+            ],
+        }
+
+    monkeypatch.setattr(collect_selfplay_module, "TjongCheckpointPredictor", lambda *args, **kwargs: FakePredictor())
+    monkeypatch.setattr(
+        collect_selfplay_module,
+        "respond_json_with_predictor",
+        fake_respond_json_with_predictor,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "official_judge_match",
+        types.SimpleNamespace(load_initdata=fake_load_initdata, run_match=fake_run_match),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "official_fan",
+        types.SimpleNamespace(OfficialFanChecker=FakeFanChecker),
+    )
+
+    raw_out = tmp_path / "selfplay_raw.jsonl"
+    fan_out = tmp_path / "fan_items.jsonl"
+    summary_out = tmp_path / "summary.json"
+    args = argparse.Namespace(
+        checkpoint="checkpoint.pt",
+        raw=str(tmp_path / "initdata.jsonl"),
+        games=1,
+        offset=0,
+        max_turns=8,
+        judge="judge.exe",
+        fan_checker=None,
+        out_raw=str(raw_out),
+        out_fan_items=str(fan_out),
+        summary_out=str(summary_out),
+        device="cpu",
+        require_encoding_version="tjong_cit2_12298_v3_hidden_concealed_kong",
+        require_paper_config=True,
+    )
+
+    summary = collect_selfplay_module.collect(args)
+
+    assert summary["policy_interface"] == "botzone_json_replay_inprocess"
+    assert json.loads(summary_out.read_text(encoding="utf-8"))["policy_interface"] == (
+        "botzone_json_replay_inprocess"
+    )
+    record = json.loads(raw_out.read_text(encoding="utf-8").splitlines()[0])
+    assert record["logs"][-1]["0"]["response"] == "PLAY W5"
+    assert calls[2]["payload"] == {
+        "requests": [
+            "0 0 1",
+            "1 0 0 0 0 W1 W2 W3 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2",
+            "2 W5",
+        ],
+        "responses": ["PASS", "PASS"],
+    }
+    assert calls[2]["fan_checker"] == "default-fan-checker"
+
+
+def test_platform_wrapper_verification_reports_cross_platform_and_replay_checks(monkeypatch, tmp_path):
+    class FakePredictor:
+        requires_botzone_history = True
+        kind = "legal_action_ranker"
+
+        def predict_legal_response(self, input_text, hand, player_id, request, candidates):
+            return "PLAY W5"
+
+    def fake_audit_botzone_replay(**kwargs):
+        return {
+            "states": 8,
+            "error_count": 0,
+            "exact_accuracy": 0.75,
+            "family_accuracy": 1.0,
+        }
+
+    monkeypatch.setattr(verify_platform_wrappers, "TjongCheckpointPredictor", lambda *args, **kwargs: FakePredictor())
+    monkeypatch.setattr(verify_platform_wrappers, "audit_botzone_replay", fake_audit_botzone_replay)
+
+    summary = verify_platform_wrappers.run_platform_wrapper_verification(
+        checkpoint=tmp_path / "checkpoint.pt",
+        raw_path=tmp_path / "raw.jsonl",
+        min_states=8,
+        min_exact_accuracy=0.7,
+        min_family_accuracy=0.99,
+    )
+
+    assert summary["ok"] is True
+    assert summary["checks"] == {
+        "tziakcha_matches_botzone_draw": True,
+        "illegal_draw_fallback_matches_botzone": True,
+        "illegal_reaction_fallback_matches_botzone": True,
+        "training_replay_no_errors": True,
+        "training_replay_min_states": True,
+        "training_replay_min_exact_accuracy": True,
+        "training_replay_min_family_accuracy": True,
+    }
+    assert summary["botzone_tziakcha_equivalence"]["ok"] is True
+    assert summary["illegal_draw_fallback"]["ok"] is True
+    assert summary["illegal_reaction_fallback"]["ok"] is True
+
+
+def test_platform_wrapper_verification_honors_optional_accuracy_thresholds(monkeypatch, tmp_path):
+    class FakePredictor:
+        requires_botzone_history = True
+        kind = "legal_action_ranker"
+
+        def predict_legal_response(self, input_text, hand, player_id, request, candidates):
+            return "PLAY W5"
+
+    monkeypatch.setattr(verify_platform_wrappers, "TjongCheckpointPredictor", lambda *args, **kwargs: FakePredictor())
+    monkeypatch.setattr(
+        verify_platform_wrappers,
+        "audit_botzone_replay",
+        lambda **kwargs: {
+            "states": 8,
+            "error_count": 0,
+            "exact_accuracy": 0.75,
+            "family_accuracy": 1.0,
+        },
+    )
+
+    summary = verify_platform_wrappers.run_platform_wrapper_verification(
+        checkpoint=tmp_path / "checkpoint.pt",
+        raw_path=tmp_path / "raw.jsonl",
+        min_exact_accuracy=0.9,
+    )
+
+    assert summary["ok"] is False
+    assert summary["checks"]["training_replay_min_exact_accuracy"] is False
+
+
+def test_platform_wrapper_gate_manifest_is_cpu_only_and_avoids_reserved_nodes():
+    manifest = (
+        ROOT.parent
+        / "k8s"
+        / "tjong-platform-wrapper-gate-cpu-20260612a.yaml"
+    ).read_text(encoding="utf-8")
+
+    assert "tjong_replication.verify_platform_wrappers" in manifest
+    assert "--fail-on-error" in manifest
+    assert "nvidia.com/gpu" not in manifest
+    assert "nautilus.io/reservation" not in manifest
+    assert "csu-tide" not in manifest
+    assert "rci-tide-gpu-11.sdsu.edu" in manifest
+    assert "TJONG_PLATFORM_CHECKPOINT" in manifest
+    assert "TJONG_PLATFORM_RAW" in manifest
+    assert "TJONG_BRANCH" in manifest
+    assert "downloaded_branch_zip" in manifest
+    assert "DATA_ROOT=/data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527" in manifest
+    assert "scripts/tjong_botzone_json_policy_bot.py" in manifest
 
 
 def test_supervised_metrics_include_epoch_breakdowns():

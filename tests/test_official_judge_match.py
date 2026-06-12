@@ -10,6 +10,7 @@ from official_judge_match import (
     BotzonePolicy,
     BotzoneJsonProcessPolicy,
     LawlorentzEffectivePolicy,
+    TjongJsonProcessPolicy,
     build_policies,
     aggregate_policy_diagnostics,
     build_response_log,
@@ -17,6 +18,7 @@ from official_judge_match import (
     make_policy,
     placement_rewards_from_scores,
     run_json_bot_process,
+    run_tjong_json_bot_process,
     run_match,
     summarize_terminals,
 )
@@ -359,11 +361,80 @@ def test_run_json_bot_process_launches_python_zip_with_current_interpreter(monke
     assert calls[0][1]["input"] == "{}"
 
 
+def test_run_tjong_json_bot_process_passes_checkpoint_and_device(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout='{"response":"PASS"}', stderr="")
+
+    monkeypatch.setattr("official_judge_match.subprocess.run", fake_run)
+
+    assert (
+        run_tjong_json_bot_process(
+            "scripts/tjong_botzone_json_policy_bot.py",
+            "{}",
+            checkpoint="models/tjong.pt",
+            device="cpu",
+        )
+        == '{"response":"PASS"}'
+    )
+
+    assert calls[0][0] == [
+        sys.executable,
+        "scripts\\tjong_botzone_json_policy_bot.py",
+        "--checkpoint",
+        "models/tjong.pt",
+        "--device",
+        "cpu",
+    ]
+    assert calls[0][1]["input"] == "{}"
+
+
 def test_make_policy_can_create_json_process_policy():
     policy = make_policy("json", model="bot.zip")
 
     assert isinstance(policy, BotzoneJsonProcessPolicy)
     assert policy.exe_path == "bot.zip"
+
+
+def test_make_policy_can_create_tjong_json_process_policy():
+    policy = make_policy(
+        "tjong_json",
+        model="models/tjong.pt",
+        tjong_json_exe="scripts/tjong_botzone_json_policy_bot.py",
+        tjong_device="cpu",
+    )
+
+    assert isinstance(policy, TjongJsonProcessPolicy)
+    assert policy.checkpoint == "models/tjong.pt"
+    assert policy.exe_path == "scripts/tjong_botzone_json_policy_bot.py"
+    assert policy.device == "cpu"
+
+
+def test_tjong_json_process_policy_sends_requests_responses_and_checkpoint():
+    calls = []
+
+    def fake_runner(exe_path, payload, *, checkpoint, device=None):
+        calls.append((exe_path, payload, checkpoint, device))
+        return '{"response":"PASS"}'
+
+    policy = TjongJsonProcessPolicy(
+        "models/tjong.pt",
+        exe_path="scripts/tjong_botzone_json_policy_bot.py",
+        device="cpu",
+        runner=fake_runner,
+    )
+
+    assert policy.respond("0 0 2") == "PASS"
+    assert policy.respond("1 0 0 0 0 W1 W2 W3 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2") == "PASS"
+
+    assert calls[0][0] == "scripts/tjong_botzone_json_policy_bot.py"
+    assert calls[0][2:] == ("models/tjong.pt", "cpu")
+    assert '"requests": ["0 0 2"]' in calls[0][1]
+    assert '"responses": []' in calls[0][1]
+    assert '"requests": ["0 0 2", "1 0 0 0 0 W1 W2 W3 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2"]' in calls[1][1]
+    assert '"responses": ["PASS"]' in calls[1][1]
 
 
 def test_build_policies_places_target_policy_at_requested_seat():

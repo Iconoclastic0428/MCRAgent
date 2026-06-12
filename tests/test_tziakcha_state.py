@@ -45,6 +45,8 @@ def test_reconnect_snapshot_extracts_hand_and_prompt():
     ]
     assert snapshot["available_actions"]["discard"] == [44]
     assert snapshot["available_actions"]["pass"] == [0]
+    assert snapshot["botzone_history_complete"] is False
+    assert snapshot["botzone_history"] == []
 
 
 def test_live_draw_and_discard_shapes_update_hand_and_prompt():
@@ -63,6 +65,84 @@ def test_live_draw_and_discard_shapes_update_hand_and_prompt():
     snapshot = state.snapshot()
     assert snapshot["last_discard"] == {"seat": 0, "tile": 72, "display": "1p"}
     assert snapshot["hand_display"] == ["1m", "2m", "1s"]
+    assert "REQ 2 B1" in snapshot["botzone_history"]
+    assert "RES PLAY B1" in snapshot["botzone_history"]
+
+
+def test_live_state_exports_botzone_history_before_current_reaction():
+    state = AdvisorState()
+    state.ingest({"m": 4, "v": 0, "i": {"t": 0}})
+    state.ingest(
+        {
+            "m": 2,
+            "r": 2,
+            "v": [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 72],
+        }
+    )
+    state.ingest({"m": 2, "r": 6, "v": 0, "t": 76, "h": 70, "a": {"2": [76]}})
+    state.ingest({"m": 2, "r": 7, "v": 0, "t": 76})
+    state.ingest({"m": 2, "r": 7, "v": 3, "t": 8, "a": {"3": [12], "8": [0]}})
+
+    snapshot = state.snapshot()
+
+    assert snapshot["botzone_history_complete"] is True
+    assert snapshot["botzone_history"][:4] == [
+        "REQ 0 0 0",
+        "RES PASS",
+        "REQ 1 0 0 0 0 W1 W2 W3 W4 W5 W6 W7 W8 W9 T1 T2 T3 B1",
+        "RES PASS",
+    ]
+    assert snapshot["botzone_history"][-2:] == ["REQ 2 B2", "RES PLAY B2"]
+    assert "REQ 3 3 PLAY W3" not in snapshot["botzone_history"]
+    assert snapshot["available_actions"] == {"chow": [12], "pass": [0]}
+
+
+def test_live_state_leaves_opponent_bugang_hu_prompt_as_current_request():
+    state = AdvisorState()
+    state.ingest({"m": 4, "v": 0, "i": {"t": 0}})
+    state.ingest(
+        {
+            "m": 2,
+            "r": 2,
+            "v": [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 72],
+        }
+    )
+    promoted_kong_pack = (3 << 8) | (40 >> 2)
+    state.ingest({"m": 2, "r": 10, "v": 1, "p": promoted_kong_pack, "a": {"6": [0], "8": [0]}})
+
+    snapshot = state.snapshot()
+
+    assert snapshot["last_win_event"] == {
+        "seat": 1,
+        "tile": 40,
+        "source": "bugang",
+        "is_self_draw": False,
+        "is_about_kong": True,
+    }
+    assert snapshot["available_actions"] == {"hu": [0], "pass": [0]}
+    assert "REQ 3 1 BUGANG T2" not in snapshot["botzone_history"]
+
+
+def test_live_state_records_opponent_claim_forced_discard_as_claim_request():
+    state = AdvisorState()
+    state.ingest({"m": 4, "v": 0, "i": {"t": 0}})
+    state.ingest(
+        {
+            "m": 2,
+            "r": 2,
+            "v": [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 72],
+        }
+    )
+    state.ingest({"m": 2, "r": 7, "v": 1, "t": 0})
+    pung_pack = (1 << 8) | (0 >> 2)
+    state.ingest({"m": 2, "r": 9, "v": 2, "p": pung_pack})
+    state.ingest({"m": 2, "r": 7, "v": 2, "t": 72})
+
+    history = state.snapshot()["botzone_history"]
+
+    assert "REQ 3 1 PLAY W1" in history
+    assert "REQ 3 2 PENG B1" in history
+    assert "REQ 3 2 PLAY B1" not in history
 
 
 def test_action_list_decodes_hiword_action_and_loword_value():

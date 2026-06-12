@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-from .policy_bot import TjongCheckpointPredictor
+from .policy_bot import TjongCheckpointPredictor, respond_json_with_predictor
 
 
 def add_scripts_to_path() -> None:
@@ -22,7 +22,6 @@ def collect(args: argparse.Namespace) -> dict:
     add_scripts_to_path()
     from official_judge_match import load_initdata, run_match  # noqa: PLC0415
     from official_fan import OfficialFanChecker  # noqa: PLC0415
-    from policy_bot import BotzonePolicy  # noqa: PLC0415
 
     initdata_items = load_initdata(Path(args.raw), limit=args.games, offset=args.offset)
     raw_out = Path(args.out_raw)
@@ -42,7 +41,9 @@ def collect(args: argparse.Namespace) -> dict:
     games = 0
     with raw_out.open("w", encoding="utf-8") as raw_file, fan_out.open("w", encoding="utf-8") as fan_file:
         for index, initdata in enumerate(initdata_items):
-            policies = [BotzonePolicy(predictor, fan_checker=fan_checker) for _ in range(4)]
+            policies = [
+                TjongBotzoneJsonReplayPolicy(predictor, fan_checker=fan_checker) for _ in range(4)
+            ]
             result = run_match(policies, initdata, exe_path=args.judge, max_turns=args.max_turns)
             match_id = f"tjong-selfplay-{args.offset + index}"
             record = {
@@ -72,6 +73,7 @@ def collect(args: argparse.Namespace) -> dict:
             "games": games,
             "out_raw": str(raw_out),
             "out_fan_items": str(fan_out),
+            "policy_interface": "botzone_json_replay_inprocess",
         }
     )
     if args.summary_out:
@@ -80,6 +82,46 @@ def collect(args: argparse.Namespace) -> dict:
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, sort_keys=True), flush=True)
     return summary
+
+
+class TjongBotzoneJsonReplayPolicy:
+    """In-process Botzone JSON policy used by official-judge self-play.
+
+    This keeps the rollout contract identical to the deployable JSON bot:
+    every decision is made from the full Botzone ``requests``/``responses``
+    arrays, then replayed through the same runtime encoder used at training
+    time. Keeping it in-process avoids spawning Python for every action.
+    """
+
+    def __init__(self, predictor, *, fan_checker=None):
+        self.predictor = predictor
+        self.fan_checker = fan_checker
+        self.requests: list[str] = []
+        self.responses: list[str] = []
+        self.error_count = 0
+        self.last_error = ""
+
+    def respond(self, request: str) -> str:
+        payload = {
+            "requests": [*self.requests, str(request)],
+            "responses": list(self.responses),
+        }
+        response = respond_json_with_predictor(
+            payload,
+            self.predictor,
+            fan_checker=self.fan_checker,
+        ).strip()
+        self.requests.append(str(request))
+        self.responses.append(response)
+        return response
+
+    def diagnostics(self) -> dict[str, int | str]:
+        return {
+            "kind": "tjong_botzone_json_replay",
+            "decisions": len(self.responses),
+            "error_count": self.error_count,
+            "last_error": self.last_error,
+        }
 
 
 def extract_fan_items(record: dict) -> dict:
