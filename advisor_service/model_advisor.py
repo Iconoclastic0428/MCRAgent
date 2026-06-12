@@ -18,7 +18,6 @@ if str(TJONG_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(TJONG_SRC_DIR))
 
 from legal_actions import generate_chi_responses  # noqa: E402
-from lawlorentz_policy import LawlorentzEffectiveScorer  # noqa: E402
 
 DEFAULT_TRANSFORMER_MODEL = (
     WORKSPACE_ROOT / "models" / "transformer_candidate_finetune_medbest_l40_20260529a.pt"
@@ -504,21 +503,34 @@ def _effective_response(
         return "HU"
     plays = [candidate for candidate in candidates if candidate.startswith("PLAY ")]
     if plays:
-        scorer = LawlorentzEffectiveScorer(
-            packs=(),
-            shown_tiles={},
-            seat_wind=_optional_int(snapshot.get("seat"), 0) or 0,
-            prevalent_wind=_optional_int(snapshot.get("prevalent_wind"), 0) or 0,
-            levels=1,
-        )
-        hand_tiles = list(hand.elements())
-        return max(
-            plays,
-            key=lambda response: scorer.discard_key(hand_tiles, response.split()[1]),
-        )
+        scorer_cls = _lawlorentz_effective_scorer()
+        if scorer_cls is not None:
+            scorer = scorer_cls(
+                packs=(),
+                shown_tiles={},
+                seat_wind=_optional_int(snapshot.get("seat"), 0) or 0,
+                prevalent_wind=_optional_int(snapshot.get("prevalent_wind"), 0) or 0,
+                levels=1,
+            )
+            hand_tiles = list(hand.elements())
+            return max(
+                plays,
+                key=lambda response: scorer.discard_key(hand_tiles, response.split()[1]),
+            )
+        return plays[0]
     if request.startswith("3 ") and "PASS" in candidates:
         return "PASS"
     return _heuristic_response(candidates, hand)
+
+
+def _lawlorentz_effective_scorer() -> Any | None:
+    try:
+        from lawlorentz_policy import LawlorentzEffectiveScorer
+    except ImportError as exc:
+        if exc.name == "MahjongGB":
+            return None
+        raise
+    return LawlorentzEffectiveScorer
 
 
 def _tile_action(

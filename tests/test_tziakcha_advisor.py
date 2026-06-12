@@ -1,6 +1,8 @@
 import sys
+from collections import Counter
 from pathlib import Path
 
+import advisor_service.model_advisor as model_advisor
 from advisor_service.advisor import recommend
 from advisor_service.model_advisor import TziakchaModelAdvisor
 from advisor_service.state import AdvisorState
@@ -149,6 +151,19 @@ def test_model_advisor_uses_model_draw_discard():
     assert rec["action"] == "discard"
     assert rec["tile_symbol"] == "T2"
     assert rec["text"] == "Discard 2s"
+
+
+def test_model_advisor_fallback_discard_without_mahjonggb(monkeypatch):
+    monkeypatch.setattr(model_advisor, "_lawlorentz_effective_scorer", lambda: None)
+
+    response = model_advisor._effective_response(
+        ["PLAY W2", "PLAY W1"],
+        Counter({"W1": 1, "W2": 1}),
+        "2 W2",
+        {},
+    )
+
+    assert response == "PLAY W2"
 
 
 def test_model_advisor_chi_recommendation_includes_shape_and_filters_offered_middle():
