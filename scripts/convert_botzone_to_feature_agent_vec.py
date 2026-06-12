@@ -46,6 +46,17 @@ class ConversionStats:
     errors: Counter[str] = field(default_factory=Counter)
     shard_examples: list[int] = field(default_factory=list)
 
+    def merge_examples(self, other: "ConversionStats") -> None:
+        self.examples_seen += other.examples_seen
+        self.examples_kept += other.examples_kept
+        self.single_action_skipped += other.single_action_skipped
+        self.label_outside_mask.update(other.label_outside_mask)
+        self.action_seen.update(other.action_seen)
+        self.action_kept.update(other.action_kept)
+        self.response_seen.update(other.response_seen)
+        self.unsupported_requests.update(other.unsupported_requests)
+        self.errors.update(other.errors)
+
     def to_json(self) -> dict[str, Any]:
         return {
             "format": "feature_agent_vec_shards_v1",
@@ -117,6 +128,18 @@ class ShardWriter:
         index_path = self.out_dir / "index.json"
         index_path.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
         return index_path
+
+
+class SampleBuffer:
+    def __init__(self) -> None:
+        self.samples: list[tuple[dict[str, np.ndarray], int]] = []
+
+    def add(self, obs: dict[str, np.ndarray], action: int) -> None:
+        self.samples.append((obs, int(action)))
+
+    def commit_to(self, writer: ShardWriter) -> None:
+        for obs, action in self.samples:
+            writer.add(obs, action)
 
 
 def add_feature_agent_path(feature_agent_dir: Path):
@@ -212,7 +235,7 @@ def action_family(agent: Any, action_id: int) -> str:
 
 
 def maybe_add_sample(
-    writer: ShardWriter,
+    writer: ShardWriter | SampleBuffer,
     stats: ConversionStats,
     agent: Any,
     obs: dict[str, np.ndarray] | None,
@@ -356,14 +379,18 @@ def convert(args: argparse.Namespace) -> dict[str, Any]:
     stats = ConversionStats()
     for record in iter_jsonl(Path(args.raw), offset=args.offset, limit=args.limit):
         stats.records_seen += 1
+        record_stats = ConversionStats()
+        record_buffer = SampleBuffer()
         try:
-            kept = convert_record(record, FeatureAgent=FeatureAgent, writer=writer, stats=stats)
+            kept = convert_record(record, FeatureAgent=FeatureAgent, writer=record_buffer, stats=record_stats)
         except Exception as exc:  # Keep a bad record from poisoning a whole shard.
             stats.records_skipped += 1
             stats.errors[type(exc).__name__] += 1
             if args.strict:
                 raise
             continue
+        record_buffer.commit_to(writer)
+        stats.merge_examples(record_stats)
         if kept > 0:
             stats.records_written += 1
         if stats.records_seen == 1 or stats.records_seen % args.progress_every == 0:
