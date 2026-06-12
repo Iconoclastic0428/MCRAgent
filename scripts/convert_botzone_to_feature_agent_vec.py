@@ -248,6 +248,9 @@ def observe_request(runtime: AgentRuntime, seat: int, request: str, stats: Conve
         agent.request2obs(" ".join(["Deal", *tokens[5:]]))
         return None
     if tokens[0] == "2" and len(tokens) >= 2:
+        if tokens[1].startswith("H"):
+            stats.unsupported_requests["FLOWER_DRAW"] += 1
+            return None
         runtime.zimo = False
         return agent.request2obs(f"Draw {tokens[1]}")
     if tokens[0] != "3" or len(tokens) < 3:
