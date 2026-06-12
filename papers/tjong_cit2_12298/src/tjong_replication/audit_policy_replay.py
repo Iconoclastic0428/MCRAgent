@@ -69,7 +69,10 @@ def audit_botzone_replay(
                     continue
                 histories[player]["requests"].append(str(request))
                 request_kind = str(request).split()[0] if str(request).split() else ""
-                if request_kind in {"2", "3"} and (not nonpass_only or response_family(actual) != "PASS"):
+                should_audit = request_kind in {"2", "3"} and (
+                    not nonpass_only or response_family(actual) != "PASS"
+                )
+                if should_audit:
                     payload = {
                         "requests": list(histories[player]["requests"]),
                         "responses": list(histories[player]["responses"]),

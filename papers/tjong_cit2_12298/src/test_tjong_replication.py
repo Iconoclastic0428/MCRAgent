@@ -340,6 +340,67 @@ def test_tjong_policy_replay_audit_uses_json_wrapper(monkeypatch, tmp_path):
     assert summary["examples"][0]["request"] == "2 W5"
 
 
+def test_tjong_policy_replay_audit_keeps_pass_history_aligned(monkeypatch, tmp_path):
+    class FakePredictor:
+        pass
+
+    payloads = []
+
+    def fake_respond_json_with_predictor(payload, predictor):
+        payloads.append(payload)
+        return "PLAY W5"
+
+    monkeypatch.setattr(audit_policy_replay, "TjongCheckpointPredictor", lambda *args, **kwargs: FakePredictor())
+    monkeypatch.setattr(audit_policy_replay, "respond_json_with_predictor", fake_respond_json_with_predictor)
+    raw = tmp_path / "raw.jsonl"
+    raw.write_text(
+        json.dumps(
+            {
+                "match_id": "audit-pass-alignment",
+                "logs": [
+                    {"output": {"content": {"0": "0 0 0"}}},
+                    {"0": {"response": "PASS"}},
+                    {
+                        "output": {
+                            "content": {
+                                "0": "1 0 0 0 0 W1 W2 W3 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2"
+                            }
+                        }
+                    },
+                    {"0": {"response": "PASS"}},
+                    {"output": {"content": {"0": "2 W4"}}},
+                    {"0": {"response": "PASS"}},
+                    {"output": {"content": {"0": "2 W5"}}},
+                    {"0": {"response": "PLAY W5"}},
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = audit_policy_replay.audit_botzone_replay(
+        checkpoint=tmp_path / "fake.pt",
+        raw_path=raw,
+        max_states=1,
+        nonpass_only=True,
+        require_encoding_version=None,
+    )
+
+    assert summary["states"] == 1
+    assert payloads == [
+        {
+            "requests": [
+                "0 0 0",
+                "1 0 0 0 0 W1 W2 W3 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2",
+                "2 W4",
+                "2 W5",
+            ],
+            "responses": ["PASS", "PASS", "PASS"],
+        }
+    ]
+
+
 def test_tjong_selfplay_policy_uses_botzone_json_replay(monkeypatch):
     calls = []
 
