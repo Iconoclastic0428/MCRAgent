@@ -163,6 +163,19 @@ def test_policy_concealed_gang_removes_all_four_tiles_from_hand():
     assert policy.hand["W1"] == 0
 
 
+def test_policy_accepts_bugang_from_tracked_peng_pack():
+    policy = BotzonePolicy(FixedPredictor("BUGANG W1"))
+    policy.respond("0 0 0")
+    policy.respond("1 0 0 0 0 W2 W3 W4 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2")
+    policy.packs.append({"type": "PENG", "tile": "W1", "offer": 1})
+
+    response = policy.respond("2 W1")
+
+    assert response == "BUGANG W1"
+    assert policy.packs[-1]["type"] == "GANG"
+    assert policy.hand["W1"] == 0
+
+
 def test_policy_falls_back_to_drawn_tile_when_model_discard_is_illegal():
     policy = BotzonePolicy(FixedPredictor("PLAY W9"))
     policy.respond("1 0 0 0 0 W1 W2 W3 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2")

@@ -304,6 +304,16 @@ def _one_hot_response_scores(candidates: list[str], predicted: str) -> list[floa
     return [1.0 if candidate == predicted else 0.0 for candidate in candidates]
 
 
+def dedupe_responses(responses: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for response in responses:
+        if response not in seen:
+            result.append(response)
+            seen.add(response)
+    return result
+
+
 def hand_elements(hand: Counter[str] | dict[str, int]) -> list[str]:
     tiles: list[str] = []
     for tile, count in hand.items():
@@ -597,13 +607,30 @@ class BotzonePolicy:
                 del self.hand[tile]
 
     def _legal_responses(self, request: str) -> list[str]:
-        responses = generate_legal_responses(self.player_id, request, self.hand)
+        responses = generate_legal_responses(
+            self.player_id,
+            request,
+            self.hand,
+            meld_count=len(self.packs),
+        )
+        responses.extend(self._bugang_responses(request))
         return [
             response
-            for response in responses
+            for response in dedupe_responses(responses)
             if self._passes_wall_legality(request, response)
             and self._passes_hu_legality(request, response)
         ]
+
+    def _bugang_responses(self, request: str) -> list[str]:
+        tokens = request.strip().split()
+        if not tokens or tokens[0] != "2":
+            return []
+        candidates = []
+        for pack in self.packs:
+            tile = str(pack.get("tile", ""))
+            if pack.get("type") == "PENG" and self.hand[tile] > 0:
+                candidates.append(f"BUGANG {tile}")
+        return sorted(candidates)
 
     def _passes_wall_legality(self, request: str, response: str) -> bool:
         action = response.split()[0].upper() if response else "PASS"
