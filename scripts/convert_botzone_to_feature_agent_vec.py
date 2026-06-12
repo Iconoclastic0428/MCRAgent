@@ -116,6 +116,7 @@ class ShardWriter:
 
     def write_index(self, stats: ConversionStats, *, source: str) -> Path:
         self.flush()
+        stats.shard_examples = [int(item["examples"]) for item in self.shards]
         index = {
             **stats.to_json(),
             "source": source,

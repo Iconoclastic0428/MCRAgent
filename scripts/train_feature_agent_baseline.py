@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import DataLoader, Dataset, IterableDataset, Subset, get_worker_info
 
 
 def add_feature_agent_path(feature_agent_dir: Path):
@@ -69,6 +69,79 @@ class FeatureAgentVecDataset(Dataset):
         )
 
 
+class StreamingFeatureAgentVecDataset(IterableDataset):
+    """Load one compact shard at a time so full-data training does not pin RAM."""
+
+    def __init__(
+        self,
+        index_path: Path,
+        *,
+        start: int,
+        end: int,
+        shuffle: bool,
+        seed: int,
+    ) -> None:
+        self.index_path = index_path
+        self.root = index_path.parent
+        self.index = json.loads(index_path.read_text(encoding="utf-8"))
+        self.shuffle = bool(shuffle)
+        self.seed = int(seed)
+        self.epoch = 0
+        self.shards: list[dict[str, int | str]] = []
+
+        cursor = 0
+        for shard in self.index.get("shards") or []:
+            count = int(shard["examples"])
+            shard_start = cursor
+            shard_end = cursor + count
+            local_start = max(int(start), shard_start) - shard_start
+            local_end = min(int(end), shard_end) - shard_start
+            if local_start < local_end:
+                self.shards.append(
+                    {
+                        "path": str(shard["path"]),
+                        "start": int(local_start),
+                        "end": int(local_end),
+                    }
+                )
+            cursor = shard_end
+        self.length = sum(int(shard["end"]) - int(shard["start"]) for shard in self.shards)
+
+    def __len__(self) -> int:
+        return int(self.length)
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __iter__(self):
+        worker = get_worker_info()
+        shard_indices = list(range(len(self.shards)))
+        rng = np.random.default_rng(self.seed + self.epoch)
+        if self.shuffle:
+            rng.shuffle(shard_indices)
+        if worker is not None:
+            shard_indices = shard_indices[worker.id :: worker.num_workers]
+
+        for shard_index in shard_indices:
+            shard = self.shards[shard_index]
+            with np.load(self.root / str(shard["path"])) as data:
+                obs = data["obs"]
+                mask = data["mask"]
+                vec = data["vec"]
+                act = data["act"]
+            local_indices = np.arange(int(shard["start"]), int(shard["end"]))
+            if self.shuffle:
+                local_rng = np.random.default_rng(self.seed + self.epoch * 1_000_003 + shard_index)
+                local_rng.shuffle(local_indices)
+            for index in local_indices:
+                yield (
+                    torch.from_numpy(obs[index]),
+                    torch.from_numpy(mask[index]),
+                    torch.from_numpy(vec[index]),
+                    torch.tensor(int(act[index]), dtype=torch.long),
+                )
+
+
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -113,6 +186,43 @@ def split_dataset(dataset: Dataset, split_ratio: float) -> tuple[Subset, Subset]
     return Subset(dataset, range(0, split)), Subset(dataset, range(split, len(dataset)))
 
 
+def index_example_count(index_path: Path, max_examples: int | None) -> int:
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    total = int(index.get("examples") or sum(int(item["examples"]) for item in index.get("shards") or []))
+    if max_examples is not None:
+        total = min(total, int(max_examples))
+    if total < 2:
+        raise ValueError(f"need at least two examples in {index_path}, got {total}")
+    return total
+
+
+def build_datasets(args: argparse.Namespace):
+    index_path = Path(args.index)
+    total = index_example_count(index_path, args.max_examples)
+    if args.load_mode == "memory":
+        dataset = FeatureAgentVecDataset(index_path, max_examples=args.max_examples)
+        train_dataset, val_dataset = split_dataset(dataset, args.split_ratio)
+        return dataset, train_dataset, val_dataset
+
+    split = int(total * float(args.split_ratio))
+    split = max(1, min(split, total - 1))
+    train_dataset = StreamingFeatureAgentVecDataset(
+        index_path,
+        start=0,
+        end=split,
+        shuffle=True,
+        seed=args.seed,
+    )
+    val_dataset = StreamingFeatureAgentVecDataset(
+        index_path,
+        start=split,
+        end=total,
+        shuffle=False,
+        seed=args.seed,
+    )
+    return None, train_dataset, val_dataset
+
+
 def run_epoch(
     *,
     model,
@@ -143,6 +253,9 @@ def run_epoch(
         with torch.set_grad_enabled(training):
             logits = model(input_dict)
             loss = F.cross_entropy(logits, target)
+            if not torch.isfinite(loss).all():
+                phase = "train" if training else "val"
+                raise FloatingPointError(f"non-finite {phase} loss at batch {batch_index}")
             if training:
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -182,12 +295,11 @@ def run_epoch(
 def train(args: argparse.Namespace) -> dict[str, Any]:
     seed_everything(args.seed)
     FeatureAgent, SelfVecModel = add_feature_agent_path(Path(args.feature_agent_dir))
-    dataset = FeatureAgentVecDataset(Path(args.index), max_examples=args.max_examples)
-    train_dataset, val_dataset = split_dataset(dataset, args.split_ratio)
+    dataset, train_dataset, val_dataset = build_datasets(args)
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=args.load_mode == "memory",
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
     )
@@ -209,18 +321,23 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         "format": "feature_agent_baseline_training_v1",
         "index": str(args.index),
         "feature_agent_dir": str(args.feature_agent_dir),
-        "dataset_examples": len(dataset),
+        "dataset_examples": len(dataset) if dataset is not None else len(train_dataset) + len(val_dataset),
         "train_examples": len(train_dataset),
         "val_examples": len(val_dataset),
         "batch_size": args.batch_size,
         "lr": args.lr,
         "optimizer": "AdamW",
-        "loss": "cross_entropy_235_way_masked_logits",
+        "loss": "cross_entropy_235_way_model_masked_logits",
+        "load_mode": args.load_mode,
         "epochs": [],
         "device": str(device),
         "seed": args.seed,
     }
     for epoch in range(args.epochs):
+        if hasattr(train_dataset, "set_epoch"):
+            train_dataset.set_epoch(epoch)
+        if hasattr(val_dataset, "set_epoch"):
+            val_dataset.set_epoch(epoch)
         checkpoint_path = out_dir / f"epoch_{epoch:03d}.pkl"
         torch.save(model.state_dict(), checkpoint_path)
         train_metrics = run_epoch(
@@ -274,6 +391,7 @@ def main() -> int:
     parser.add_argument("--max-examples", type=int, default=None)
     parser.add_argument("--max-train-batches", type=int, default=None)
     parser.add_argument("--max-val-batches", type=int, default=None)
+    parser.add_argument("--load-mode", choices=["stream", "memory"], default="stream")
     args = parser.parse_args()
     train(args)
     return 0
