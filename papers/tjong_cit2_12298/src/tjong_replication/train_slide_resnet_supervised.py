@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import time
 from pathlib import Path
@@ -35,7 +36,6 @@ from .train_supervised import (
     load_tensor_payload,
     merge_metric_sums,
     reduce_metric_sums,
-    safe_clip_grad_norm_,
     supervised_loss_components,
     tensor_dataset_from_payload,
     unpack_batch,
@@ -163,6 +163,12 @@ def train(args: argparse.Namespace) -> dict:
             device = torch.device(requested_device or "cpu")
     else:
         device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    if device.type == "cuda":
+        if bool(args.allow_tf32):
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.set_float32_matmul_precision("high")
+        torch.backends.cudnn.benchmark = bool(args.cudnn_benchmark)
     train_payload = load_tensor_payload(Path(args.train_pt), expected_encoding_version=args.require_encoding_version)
     encoding_schema = train_payload.get("encoding_schema") or {}
     dataset = tensor_dataset_from_payload(train_payload, drop_shard_file_cache=bool(args.drop_shard_file_cache))
@@ -196,6 +202,12 @@ def train(args: argparse.Namespace) -> dict:
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, int(args.epochs)))
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    amp_mode = str(args.amp).lower()
+    amp_dtype = torch.float16 if amp_mode == "fp16" else torch.bfloat16
+    amp_enabled = device.type == "cuda" and amp_mode in {"fp16", "bf16"}
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled and amp_mode == "fp16")
+    metric_sample_every_batches = int(args.metric_sample_every_batches or 1)
+    finite_check_every_batches = int(args.finite_check_every_batches or 1)
     fan_checker = None
     if args.feature_version == "v2" and (args.v2_use_official_fan or args.v2_require_official_fan):
         fan_checker = load_default_official_fan_checker()
@@ -218,6 +230,11 @@ def train(args: argparse.Namespace) -> dict:
         "v2_official_fan_available": fan_checker is not None,
         "augmentation_mode": args.augmentation_mode,
         "augmentation_transforms_per_batch": transforms_per_batch,
+        "metric_sample_every_batches": metric_sample_every_batches,
+        "finite_check_every_batches": finite_check_every_batches,
+        "amp": amp_mode if amp_enabled else "off",
+        "allow_tf32": bool(args.allow_tf32),
+        "cudnn_benchmark": bool(args.cudnn_benchmark),
         "optimizer": "AdamW",
         "lr": args.lr,
         "weight_decay": args.weight_decay,
@@ -254,7 +271,7 @@ def train(args: argparse.Namespace) -> dict:
         metric_sums: dict[str, float] = {}
         total_loss = 0.0
         total_examples = 0
-        max_grad_norm_before_clip = 0.0
+        max_grad_norm_before_clip = torch.zeros((), dtype=torch.float32, device=device)
         epoch_start = time.time()
         for batch_index, batch in enumerate(
             iter_training_batches(dataset, args, epoch=epoch, rank=rank, world_size=world_size),
@@ -264,53 +281,80 @@ def train(args: argparse.Namespace) -> dict:
             transforms = augmentation_transforms_for_batch(args, generator=augmentation_generator)
             for transform_index, transform in enumerate(transforms, start=1):
                 inputs, labels = apply_slide_symmetry(base_inputs, base_labels, transform)
-                if args.feature_version == "v2":
-                    inputs = attach_v2_search_features(
-                        inputs,
-                        fan_checker=fan_checker,
-                        levels=int(args.v2_search_levels),
-                    )
-                outputs = model(**inputs)
-                loss_components = supervised_loss_components(outputs, labels, distributed=distributed)
-                ce_loss = loss_components["total"]
-                assert ce_loss is not None
-                l1_penalty, l2_penalty = elastic_net_penalty(
-                    model,
-                    l1_lambda=args.l1_lambda,
-                    l2_lambda=args.l2_lambda,
+                autocast_context = (
+                    torch.amp.autocast(device_type=device.type, dtype=amp_dtype)
+                    if amp_enabled
+                    else nullcontext()
                 )
-                loss = ce_loss + l1_penalty + l2_penalty
-                if not torch.isfinite(loss).item():
-                    raise ValueError(
-                        f"non-finite slide supervised loss at epoch={epoch} "
-                        f"batch={batch_index} transform={transform_index}: {loss}"
-                    )
                 optimizer.zero_grad(set_to_none=True)
-                loss.backward()
+                with autocast_context:
+                    if args.feature_version == "v2":
+                        inputs = attach_v2_search_features(
+                            inputs,
+                            fan_checker=fan_checker,
+                            levels=int(args.v2_search_levels),
+                        )
+                    outputs = model(**inputs)
+                    loss_components = supervised_loss_components(outputs, labels, distributed=distributed)
+                    ce_loss = loss_components["total"]
+                    assert ce_loss is not None
+                    l1_penalty, l2_penalty = elastic_net_penalty(
+                        model,
+                        l1_lambda=args.l1_lambda,
+                        l2_lambda=args.l2_lambda,
+                    )
+                    loss = ce_loss + l1_penalty + l2_penalty
+                next_global_batch = global_batch + 1
+                if finite_check_every_batches > 0 and next_global_batch % finite_check_every_batches == 0:
+                    if not torch.isfinite(loss.detach()).item():
+                        raise ValueError(
+                            f"non-finite slide supervised loss at epoch={epoch} "
+                            f"batch={batch_index} transform={transform_index}: {loss}"
+                        )
+                if scaler.is_enabled():
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
                 if args.grad_clip > 0:
-                    grad_norm = safe_clip_grad_norm_(trainable_parameters, args.grad_clip)
-                    max_grad_norm_before_clip = max(max_grad_norm_before_clip, float(grad_norm))
-                optimizer.step()
+                    if scaler.is_enabled():
+                        scaler.unscale_(optimizer)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        trainable_parameters,
+                        args.grad_clip,
+                        error_if_nonfinite=False,
+                    )
+                    grad_norm_tensor = torch.as_tensor(grad_norm, dtype=torch.float32, device=device)
+                    max_grad_norm_before_clip = torch.maximum(max_grad_norm_before_clip, grad_norm_tensor.detach())
+                if scaler.is_enabled():
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
 
                 batch_size = int(labels[0].shape[0])
-                total_examples += batch_size
-                total_loss += float(loss.detach().item()) * batch_size
-                metric_outputs = {name: tensor.detach() for name, tensor in outputs.items()}
-                merge_metric_sums(metric_sums, batch_metric_sums(metric_outputs, labels))
                 global_batch += 1
+                log_this_batch = bool(args.log_every_batches and global_batch % int(args.log_every_batches) == 0)
+                sample_this_batch = (
+                    metric_sample_every_batches > 0
+                    and (global_batch % metric_sample_every_batches == 0 or log_this_batch)
+                )
+                if sample_this_batch:
+                    total_examples += batch_size
+                    total_loss += float(loss.detach().item()) * batch_size
+                    metric_outputs = {name: tensor.detach() for name, tensor in outputs.items()}
+                    merge_metric_sums(metric_sums, batch_metric_sums(metric_outputs, labels))
                 if args.log_every_batches and global_batch % int(args.log_every_batches) == 0:
                     display_metric_sums = reduce_metric_sums(metric_sums, device) if distributed else metric_sums
                     display_loss_sum = total_loss
                     display_examples = total_examples
-                    display_grad_norm = max_grad_norm_before_clip
+                    display_grad_norm = max_grad_norm_before_clip.detach().clone()
                     if distributed:
                         loss_tensor = torch.tensor([display_loss_sum, display_examples], dtype=torch.float64, device=device)
                         dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
                         display_loss_sum = float(loss_tensor[0].item())
                         display_examples = int(loss_tensor[1].item())
-                        grad_tensor = torch.tensor([display_grad_norm], dtype=torch.float64, device=device)
-                        dist.all_reduce(grad_tensor, op=dist.ReduceOp.MAX)
-                        display_grad_norm = float(grad_tensor.item())
+                        dist.all_reduce(display_grad_norm, op=dist.ReduceOp.MAX)
+                    display_grad_norm_value = float(display_grad_norm.item())
                     partial = finalize_metric_sums(display_metric_sums)
                     partial.update(
                         {
@@ -321,7 +365,8 @@ def train(args: argparse.Namespace) -> dict:
                             "global_batch": global_batch,
                             "optimization_loss": display_loss_sum / max(1, display_examples),
                             "lr": optimizer.param_groups[0]["lr"],
-                            "max_grad_norm_before_clip": display_grad_norm,
+                            "max_grad_norm_before_clip": display_grad_norm_value,
+                            "sampled_examples": display_examples,
                             "elapsed_seconds": time.time() - epoch_start,
                         }
                     )
@@ -335,15 +380,14 @@ def train(args: argparse.Namespace) -> dict:
         display_metric_sums = reduce_metric_sums(metric_sums, device) if distributed else metric_sums
         display_loss_sum = total_loss
         display_examples = total_examples
-        display_grad_norm = max_grad_norm_before_clip
+        display_grad_norm = max_grad_norm_before_clip.detach().clone()
         if distributed:
             loss_tensor = torch.tensor([display_loss_sum, display_examples], dtype=torch.float64, device=device)
             dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
             display_loss_sum = float(loss_tensor[0].item())
             display_examples = int(loss_tensor[1].item())
-            grad_tensor = torch.tensor([display_grad_norm], dtype=torch.float64, device=device)
-            dist.all_reduce(grad_tensor, op=dist.ReduceOp.MAX)
-            display_grad_norm = float(grad_tensor.item())
+            dist.all_reduce(display_grad_norm, op=dist.ReduceOp.MAX)
+        display_grad_norm_value = float(display_grad_norm.item())
         finalized = finalize_metric_sums(display_metric_sums)
         epoch_metrics = dict(finalized)
         epoch_metrics.update(
@@ -353,7 +397,8 @@ def train(args: argparse.Namespace) -> dict:
                 "global_batch": global_batch,
                 "optimization_loss": display_loss_sum / max(1, display_examples),
                 "lr": optimizer.param_groups[0]["lr"],
-                "max_grad_norm_before_clip": display_grad_norm,
+                "max_grad_norm_before_clip": display_grad_norm_value,
+                "sampled_examples": display_examples,
                 "elapsed_seconds": time.time() - epoch_start,
             }
         )
@@ -423,6 +468,11 @@ def main() -> int:
     parser.add_argument("--head-hidden", type=int, default=512)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--grad-clip", type=float, default=0.5)
+    parser.add_argument("--amp", choices=("off", "fp16", "bf16"), default="off")
+    parser.add_argument("--allow-tf32", action="store_true")
+    parser.add_argument("--cudnn-benchmark", action="store_true")
+    parser.add_argument("--metric-sample-every-batches", type=int, default=1)
+    parser.add_argument("--finite-check-every-batches", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--device", default=None)
     parser.add_argument("--data-parallel", action="store_true")
