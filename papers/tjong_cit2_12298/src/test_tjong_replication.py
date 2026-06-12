@@ -544,6 +544,46 @@ def test_collect_selfplay_uses_botzone_json_replay_policy(monkeypatch, tmp_path)
     assert calls[2]["fan_checker"] == "default-fan-checker"
 
 
+def test_selfplay_summary_reports_deal_in_and_fans():
+    summary = collect_selfplay_module.summarize(
+        [
+            {
+                "scores": {"0": 24, "1": -8, "2": -4, "3": -12},
+                "turn_count": 18,
+                "final_output": {
+                    "display": {
+                        "action": "HU",
+                        "player": 0,
+                        "fanCnt": 16,
+                        "fan": [
+                            {"name": "清一色", "value": 24, "cnt": 1},
+                            {"name": "门前清", "value": 2, "cnt": 1},
+                        ],
+                    }
+                },
+            },
+            {
+                "scores": {"0": 0, "1": 0, "2": 0, "3": 0},
+                "turn_count": 24,
+                "final_output": {"display": {"action": "HUANG"}},
+            },
+        ]
+    )
+
+    assert summary["games"] == 2
+    assert summary["hu_rate"] == 0.5
+    assert summary["huang_rate"] == 0.5
+    assert summary["hu_turn_average"] == 18.0
+    assert summary["hu_fan_average"] == 16.0
+    assert summary["per_player"]["0"]["hu_rate"] == 0.5
+    assert summary["per_player"]["3"]["deal_in_rate"] == 0.5
+    assert summary["fan_breakdown"]["清一色"] == {
+        "hu_hands": 1,
+        "occurrences": 1.0,
+        "score_total": 24.0,
+    }
+
+
 def test_platform_wrapper_verification_reports_cross_platform_and_replay_checks(monkeypatch, tmp_path):
     class FakePredictor:
         requires_botzone_history = True

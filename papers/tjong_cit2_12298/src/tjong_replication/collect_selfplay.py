@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Iterable
 
@@ -146,12 +147,21 @@ class SelfplaySummaryAccumulator:
         self.total = 0
         self.terminal_actions: dict[str, int] = {}
         self.hu_turns: list[float] = []
+        self.hu_fan_totals: list[float] = []
+        self.fan_breakdown: Counter[str] = Counter()
+        self.fan_occurrences: Counter[str] = Counter()
+        self.fan_score_totals: Counter[str] = Counter()
+        self.deal_in_counts = [0, 0, 0, 0]
         self.per_player = {
             str(player): {
                 "score_label": chr(ord("A") + player),
                 "hu_count": 0,
                 "hu_turns": [],
+                "hu_fan_totals": [],
                 "raw_score_total": 0.0,
+                "fan_breakdown": Counter(),
+                "fan_occurrences": Counter(),
+                "fan_score_totals": Counter(),
                 "position_counts": {"1": 0, "2": 0, "3": 0, "4": 0},
             }
             for player in range(4)
@@ -177,6 +187,32 @@ class SelfplaySummaryAccumulator:
                 self.per_player[str(winner)]["hu_count"] += 1
                 if turn is not None:
                     self.per_player[str(winner)]["hu_turns"].append(turn)
+                fan_total = numeric_turn(display.get("fanCnt"))
+                if fan_total is not None:
+                    self.hu_fan_totals.append(fan_total)
+                    self.per_player[str(winner)]["hu_fan_totals"].append(fan_total)
+                self._add_fans(display, winner)
+            loser = infer_deal_in_loser(scores, winner)
+            if loser is not None:
+                self.deal_in_counts[loser] += 1
+
+    def _add_fans(self, display: dict, winner: int) -> None:
+        player_item = self.per_player[str(winner)]
+        seen_names: set[str] = set()
+        for fan in display.get("fan") or []:
+            name = str(fan.get("name") or "").strip() or "UNKNOWN"
+            count = numeric_turn(fan.get("cnt"))
+            value = numeric_turn(fan.get("value"))
+            count = float(count) if count is not None else 1.0
+            value = float(value) if value is not None else 0.0
+            seen_names.add(name)
+            self.fan_occurrences[name] += count
+            self.fan_score_totals[name] += value * count
+            player_item["fan_occurrences"][name] += count
+            player_item["fan_score_totals"][name] += value * count
+        for name in seen_names:
+            self.fan_breakdown[name] += 1
+            player_item["fan_breakdown"][name] += 1
 
     def to_summary(self) -> dict:
         hu_count = int(self.terminal_actions.get("HU", 0))
@@ -186,17 +222,28 @@ class SelfplaySummaryAccumulator:
         for player in range(4):
             item = self.per_player[str(player)]
             player_hu_turns = [float(value) for value in item["hu_turns"]]
+            player_fan_totals = [float(value) for value in item["hu_fan_totals"]]
             raw_score_total = float(item["raw_score_total"])
             player_summary = {
                 "score_label": item["score_label"],
                 "hu_count": int(item["hu_count"]),
+                "deal_in_count": int(self.deal_in_counts[player]),
                 "position_counts": dict(item["position_counts"]),
                 "player": player,
                 "hu_rate": float(item["hu_count"] / self.total) if self.total else None,
+                "deal_in_rate": float(self.deal_in_counts[player] / self.total) if self.total else None,
                 "average_hu_turn": (
                     float(sum(player_hu_turns) / len(player_hu_turns)) if player_hu_turns else None
                 ),
+                "average_hu_fan": (
+                    float(sum(player_fan_totals) / len(player_fan_totals)) if player_fan_totals else None
+                ),
                 "average_raw_score": float(raw_score_total / self.total) if self.total else None,
+                "fan_breakdown": fan_breakdown_summary(
+                    item["fan_breakdown"],
+                    item["fan_occurrences"],
+                    item["fan_score_totals"],
+                ),
             }
             per_player_summary[str(player)] = player_summary
             score_table.append(dict(player_summary))
@@ -206,11 +253,22 @@ class SelfplaySummaryAccumulator:
             "hu_count": hu_count,
             "hu_rate": float(hu_count / self.total) if self.total else None,
             "hu_turn_average": float(sum(self.hu_turns) / len(self.hu_turns)) if self.hu_turns else None,
+            "hu_fan_average": (
+                float(sum(self.hu_fan_totals) / len(self.hu_fan_totals)) if self.hu_fan_totals else None
+            ),
+            "hu_fan_min": float(min(self.hu_fan_totals)) if self.hu_fan_totals else None,
+            "hu_fan_max": float(max(self.hu_fan_totals)) if self.hu_fan_totals else None,
             "huang_count": huang_count,
             "huang_rate": float(huang_count / self.total) if self.total else None,
             "hu_rate_definition": "seat HU count divided by total games; all four player rates sum to total HU rate",
             "hu_turn_definition": "average judge turn_count among games where the seat HU",
+            "deal_in_definition": "seat count as unique lowest non-winner score on HU terminal divided by total games; self-draw/tied loser terminals count as no deal-in",
             "raw_score_definition": "average official judge final raw score over all games for that seat",
+            "fan_breakdown": fan_breakdown_summary(
+                self.fan_breakdown,
+                self.fan_occurrences,
+                self.fan_score_totals,
+            ),
             "per_player": per_player_summary,
             "score_table": score_table,
         }
@@ -254,6 +312,33 @@ def numeric_turn(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def infer_deal_in_loser(scores: list[float], winner: int | None) -> int | None:
+    if winner is None or not 0 <= int(winner) < 4 or len(scores) < 4:
+        return None
+    others = [(player, float(score)) for player, score in enumerate(scores[:4]) if player != int(winner)]
+    if not others:
+        return None
+    minimum = min(score for _, score in others)
+    losers = [player for player, score in others if score == minimum]
+    return losers[0] if len(losers) == 1 else None
+
+
+def fan_breakdown_summary(
+    hand_counts: Counter[str],
+    occurrence_counts: Counter[str],
+    score_totals: Counter[str],
+) -> dict[str, dict[str, float | int]]:
+    names = sorted(set(hand_counts) | set(occurrence_counts) | set(score_totals))
+    return {
+        name: {
+            "hu_hands": int(hand_counts.get(name, 0)),
+            "occurrences": float(occurrence_counts.get(name, 0.0)),
+            "score_total": float(score_totals.get(name, 0.0)),
+        }
+        for name in names
+    }
 
 
 def main() -> int:
