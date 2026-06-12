@@ -109,7 +109,7 @@ spec:
               export TRAIN_PT TENSORIZE_SUMMARY TENSOR_ENCODING_VERSION
               L1_LAMBDA="${TJONG_L1_LAMBDA:-0.0}"
               L2_LAMBDA="${TJONG_L2_LAMBDA:-0.0}"
-              BATCH_SIZE="${TJONG_BATCH_SIZE:-32768}"
+              BATCH_SIZE="${TJONG_BATCH_SIZE:-65536}"
               LR="${TJONG_LR:-0.0005}"
               HIDDEN_ARGS=""
               if [ "${TJONG_USE_HIDDEN_TILES:-0}" = "1" ]; then
