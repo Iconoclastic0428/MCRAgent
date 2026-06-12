@@ -89,7 +89,10 @@ from tjong_replication.train_ppo import (  # noqa: E402
     validate_paper_ppo_args,
     validate_rollout_reward_source,
 )
-from tjong_replication.train_slide_resnet_supervised import divergence_guard_reasons  # noqa: E402
+from tjong_replication.train_slide_resnet_supervised import (  # noqa: E402
+    divergence_guard_reasons,
+    slide_checkpoint_payload,
+)
 from tjong_replication.train_supervised import (  # noqa: E402
     ShardedTensorDataset,
     batch_metric_sums,
@@ -302,6 +305,39 @@ def test_slide_divergence_guard_reasons():
     assert any("discard_loss" in reason for reason in reasons)
     assert any("max_grad_norm_before_clip" in reason for reason in reasons)
     assert not any("optimization_loss" in reason for reason in reasons)
+
+
+def test_slide_checkpoint_payload_records_resume_state():
+    config = SlideResNetConfig(base_channels=8, head_hidden=16, dropout=0.0)
+    model = SlideMahjongResNetDueling(config)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=4)
+    metrics = {
+        "checkpoint_encoding_version": TENSOR_ENCODING_VERSION,
+        "epochs": [{"epoch": 1, "discard_loss": 1.0}],
+        "epochs_completed": 1,
+        "global_batch": 12,
+    }
+
+    payload = slide_checkpoint_payload(
+        raw_model=model,
+        model=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        config=config,
+        metrics=metrics,
+        completed_epochs=1,
+        data_parallel_enabled=False,
+    )
+
+    assert payload["epoch"] == 1
+    assert payload["tensor_encoding_version"] == TENSOR_ENCODING_VERSION
+    assert payload["parallel_model_state_dict"] is None
+    assert payload["metrics"]["global_batch"] == 12
+    assert "model_state_dict" in payload
+    assert "optimizer" in payload
+    assert "scheduler" in payload
+    assert payload["config"]["base_channels"] == 8
 
 
 def test_slide_v2_search_features_from_encoded_tensors():

@@ -162,6 +162,57 @@ def divergence_guard_reasons(args: argparse.Namespace, epoch_metrics: dict[str, 
     return reasons
 
 
+def slide_checkpoint_payload(
+    *,
+    raw_model: torch.nn.Module,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    config: SlideResNetConfig,
+    metrics: dict[str, object],
+    completed_epochs: int,
+    data_parallel_enabled: bool,
+) -> dict[str, object]:
+    return {
+        "model_state_dict": raw_model.state_dict(),
+        "parallel_model_state_dict": model.state_dict() if data_parallel_enabled else None,
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "config": config.to_dict(),
+        "metrics": metrics,
+        "epoch": completed_epochs,
+        "tensor_encoding_version": metrics["checkpoint_encoding_version"],
+    }
+
+
+def save_slide_checkpoint(
+    path: Path,
+    *,
+    raw_model: torch.nn.Module,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    config: SlideResNetConfig,
+    metrics: dict[str, object],
+    completed_epochs: int,
+    data_parallel_enabled: bool,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        slide_checkpoint_payload(
+            raw_model=raw_model,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            config=config,
+            metrics=metrics,
+            completed_epochs=completed_epochs,
+            data_parallel_enabled=data_parallel_enabled,
+        ),
+        path,
+    )
+
+
 def attach_v2_search_features(
     inputs: dict[str, torch.Tensor],
     *,
@@ -300,6 +351,22 @@ def train(args: argparse.Namespace) -> dict:
     finite_check_every_batches = int(args.finite_check_every_batches or 1)
     use_local_loss_normalization = bool(args.local_loss_normalization)
     profile_timing = bool(args.profile_timing)
+    resume_epoch = 0
+    resume_global_batch = 0
+    resume_metrics_epochs: list[dict[str, object]] = []
+    resume_from = getattr(args, "resume_from", None)
+    checkpoint_every_epoch = bool(getattr(args, "checkpoint_every_epoch", False))
+    if resume_from:
+        checkpoint = torch.load(Path(resume_from), map_location=device)
+        raw_model.load_state_dict(checkpoint["model_state_dict"])
+        if checkpoint.get("optimizer"):
+            optimizer.load_state_dict(checkpoint["optimizer"])
+        if checkpoint.get("scheduler"):
+            scheduler.load_state_dict(checkpoint["scheduler"])
+        resume_epoch = int(checkpoint.get("epoch", 0) or 0)
+        checkpoint_metrics = checkpoint.get("metrics") if isinstance(checkpoint.get("metrics"), dict) else {}
+        resume_global_batch = int(checkpoint_metrics.get("global_batch", 0) or 0)
+        resume_metrics_epochs = list(checkpoint_metrics.get("epochs") or [])
     fan_checker = None
     if args.feature_version == "v2" and (args.v2_use_official_fan or args.v2_require_official_fan):
         fan_checker = load_default_official_fan_checker()
@@ -345,6 +412,8 @@ def train(args: argparse.Namespace) -> dict:
         "elastic_net_l2_lambda": args.l2_lambda,
         "batch_size": args.batch_size,
         "epochs_requested": args.epochs,
+        "resume_from": resume_from,
+        "resumed_epoch": resume_epoch,
         "seed": args.seed,
         "device": str(device),
         "cuda_device_count": cuda_device_count,
@@ -364,13 +433,13 @@ def train(args: argparse.Namespace) -> dict:
         "checkpoint_encoding_version": encoding_schema.get("version") or args.require_encoding_version,
         "model_config": config.to_dict(),
         "model_parameters": raw_model.parameter_count(),
-        "epochs": [],
+        "epochs": resume_metrics_epochs,
     }
 
     start = time.time()
-    global_batch = 0
-    completed_epochs = 0
-    for epoch in range(1, int(args.epochs) + 1):
+    global_batch = resume_global_batch
+    completed_epochs = resume_epoch
+    for epoch in range(resume_epoch + 1, int(args.epochs) + 1):
         model.train()
         metric_sums: dict[str, float] = {}
         total_loss = 0.0
@@ -575,6 +644,21 @@ def train(args: argparse.Namespace) -> dict:
         if divergence_reasons:
             raise RuntimeError(f"slide training divergence guard triggered at epoch {epoch}: {divergence_reasons}")
         scheduler.step()
+        metrics["epochs_completed"] = completed_epochs
+        metrics["global_batch"] = global_batch
+        metrics["elapsed_seconds"] = time.time() - start
+        if checkpoint_every_epoch and args.checkpoint_out and is_rank0():
+            save_slide_checkpoint(
+                Path(args.checkpoint_out),
+                raw_model=raw_model,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                config=config,
+                metrics=metrics,
+                completed_epochs=completed_epochs,
+                data_parallel_enabled=data_parallel_enabled,
+            )
         if args.max_steps and global_batch >= int(args.max_steps):
             break
 
@@ -583,20 +667,16 @@ def train(args: argparse.Namespace) -> dict:
     metrics["elapsed_seconds"] = time.time() - start
 
     if args.checkpoint_out and is_rank0():
-        checkpoint_path = Path(args.checkpoint_out)
-        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            {
-                "model_state_dict": raw_model.state_dict(),
-                "parallel_model_state_dict": model.state_dict() if data_parallel_enabled else None,
-                "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict(),
-                "config": config.to_dict(),
-                "metrics": metrics,
-                "epoch": completed_epochs,
-                "tensor_encoding_version": metrics["checkpoint_encoding_version"],
-            },
-            checkpoint_path,
+        save_slide_checkpoint(
+            Path(args.checkpoint_out),
+            raw_model=raw_model,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            config=config,
+            metrics=metrics,
+            completed_epochs=completed_epochs,
+            data_parallel_enabled=data_parallel_enabled,
         )
     if args.metrics_out and is_rank0():
         metrics_path = Path(args.metrics_out)
@@ -612,6 +692,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-pt", required=True)
     parser.add_argument("--checkpoint-out", default="models/tjong_slide_resnet_supervised.pt")
+    parser.add_argument("--checkpoint-every-epoch", action="store_true")
+    parser.add_argument("--resume-from", default=None)
     parser.add_argument("--metrics-out", default="runs/tjong_slide_resnet_supervised_metrics.json")
     parser.add_argument("--metrics-jsonl", default=None)
     parser.add_argument("--feature-version", choices=("v1", "v2"), default="v1")
