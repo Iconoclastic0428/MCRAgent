@@ -156,11 +156,12 @@ spec:
                 --head-hidden 512 \
                 --dropout 0.1 \
                 --grad-clip 0.5 \
-                --amp fp16 \
+                --amp bf16 \
                 --allow-tf32 \
                 --cudnn-benchmark \
-                --metric-sample-every-batches 100 \
-                --finite-check-every-batches 100 \
+                --metric-sample-every-batches 1000 \
+                --finite-check-every-batches 1000 \
+                --local-loss-normalization \
                 --num-workers 0 \
                 --device cuda \
                 --distributed \
@@ -168,18 +169,19 @@ spec:
                 --require-encoding-version "${TENSOR_ENCODING_VERSION}" \
                 --optimized-sharded-loader \
                 --shard-prefetch 4 \
-                --log-every-batches 100 \
+                --pin-memory \
+                --log-every-batches 1000 \
                 ${HIDDEN_ARGS}
           resources:
             limits:
-              cpu: "16"
-              memory: 128Gi
-              ephemeral-storage: 220Gi
+              cpu: "8"
+              memory: 64Gi
+              ephemeral-storage: 100Gi
               nvidia.com/gpu: 4
             requests:
-              cpu: "16"
-              memory: 128Gi
-              ephemeral-storage: 160Gi
+              cpu: "4"
+              memory: 32Gi
+              ephemeral-storage: 60Gi
               nvidia.com/gpu: 4
           volumeMounts:
             - name: idl-data
