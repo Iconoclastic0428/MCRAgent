@@ -104,6 +104,8 @@ def apply_slide_symmetry(
     labels: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     transform: tuple[tuple[str, str, str], bool],
 ) -> tuple[dict[str, torch.Tensor], tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    if transform == IDENTITY_TRANSFORM:
+        return inputs, labels
     suit_permutation, mirror = transform
     augmented_inputs = dict(inputs)
     for key in ("visible_tiles", "sub_visible_tiles", "hidden_tiles"):
@@ -245,6 +247,7 @@ def train(args: argparse.Namespace) -> dict:
     metric_sample_every_batches = int(args.metric_sample_every_batches or 1)
     finite_check_every_batches = int(args.finite_check_every_batches or 1)
     use_local_loss_normalization = bool(args.local_loss_normalization)
+    profile_timing = bool(args.profile_timing)
     fan_checker = None
     if args.feature_version == "v2" and (args.v2_use_official_fan or args.v2_require_official_fan):
         fan_checker = load_default_official_fan_checker()
@@ -270,6 +273,7 @@ def train(args: argparse.Namespace) -> dict:
         "metric_sample_every_batches": metric_sample_every_batches,
         "finite_check_every_batches": finite_check_every_batches,
         "loss_normalization": "local" if use_local_loss_normalization else ("distributed" if distributed else "local"),
+        "profile_timing": profile_timing,
         "amp": amp_mode if amp_enabled else "off",
         "allow_tf32": bool(args.allow_tf32),
         "cudnn_benchmark": bool(args.cudnn_benchmark),
@@ -309,16 +313,40 @@ def train(args: argparse.Namespace) -> dict:
         metric_sums: dict[str, float] = {}
         total_loss = 0.0
         total_examples = 0
+        timing_sums = {
+            "data_wait": 0.0,
+            "unpack": 0.0,
+            "augment": 0.0,
+            "forward_loss": 0.0,
+            "backward_step": 0.0,
+            "metrics": 0.0,
+        }
+        timing_last_log = dict(timing_sums)
+        timing_last_global_batch = global_batch
         max_grad_norm_before_clip = torch.zeros((), dtype=torch.float32, device=device)
         epoch_start = time.time()
+        batch_fetch_start = time.time() if profile_timing else 0.0
         for batch_index, batch in enumerate(
             iter_training_batches(dataset, args, epoch=epoch, rank=rank, world_size=world_size),
             start=1,
         ):
+            if profile_timing:
+                now = time.time()
+                timing_sums["data_wait"] += now - batch_fetch_start
+                phase_start = now
             base_inputs, base_labels = unpack_batch(batch, device, include_hidden_tiles=True)
+            if profile_timing:
+                now = time.time()
+                timing_sums["unpack"] += now - phase_start
             transforms = augmentation_transforms_for_batch(args, generator=augmentation_generator)
             for transform_index, transform in enumerate(transforms, start=1):
+                if profile_timing:
+                    phase_start = time.time()
                 inputs, labels = apply_slide_symmetry(base_inputs, base_labels, transform)
+                if profile_timing:
+                    now = time.time()
+                    timing_sums["augment"] += now - phase_start
+                    phase_start = now
                 autocast_context = (
                     torch.amp.autocast(device_type=device.type, dtype=amp_dtype)
                     if amp_enabled
@@ -346,6 +374,10 @@ def train(args: argparse.Namespace) -> dict:
                         l2_lambda=args.l2_lambda,
                     )
                     loss = ce_loss + l1_penalty + l2_penalty
+                if profile_timing:
+                    now = time.time()
+                    timing_sums["forward_loss"] += now - phase_start
+                    phase_start = now
                 next_global_batch = global_batch + 1
                 if finite_check_every_batches > 0 and next_global_batch % finite_check_every_batches == 0:
                     if not torch.isfinite(loss.detach()).item():
@@ -372,6 +404,8 @@ def train(args: argparse.Namespace) -> dict:
                     scaler.update()
                 else:
                     optimizer.step()
+                if profile_timing:
+                    timing_sums["backward_step"] += time.time() - phase_start
 
                 batch_size = int(labels[0].shape[0])
                 global_batch += 1
@@ -380,11 +414,14 @@ def train(args: argparse.Namespace) -> dict:
                     metric_sample_every_batches > 0
                     and (global_batch % metric_sample_every_batches == 0 or log_this_batch)
                 )
+                metric_start = time.time() if profile_timing and (sample_this_batch or log_this_batch) else 0.0
                 if sample_this_batch:
                     total_examples += batch_size
                     total_loss += float(loss.detach().item()) * batch_size
                     metric_outputs = {name: tensor.detach() for name, tensor in outputs.items()}
                     merge_metric_sums(metric_sums, batch_metric_sums(metric_outputs, labels))
+                if profile_timing and sample_this_batch and not log_this_batch:
+                    timing_sums["metrics"] += time.time() - metric_start
                 if args.log_every_batches and global_batch % int(args.log_every_batches) == 0:
                     display_metric_sums = reduce_metric_sums(metric_sums, device) if distributed else metric_sums
                     display_loss_sum = total_loss
@@ -412,10 +449,24 @@ def train(args: argparse.Namespace) -> dict:
                             "elapsed_seconds": time.time() - epoch_start,
                         }
                     )
+                    if profile_timing:
+                        timing_sums["metrics"] += time.time() - metric_start
+                        recent_timing = {
+                            name: timing_sums[name] - timing_last_log[name]
+                            for name in timing_sums
+                        }
+                        recent_batches = global_batch - timing_last_global_batch
+                        partial["timing_seconds"] = dict(timing_sums)
+                        partial["recent_timing_seconds"] = recent_timing
+                        partial["recent_timed_batches"] = recent_batches
+                        timing_last_log = dict(timing_sums)
+                        timing_last_global_batch = global_batch
                     if is_rank0():
                         print(json.dumps(partial, sort_keys=True), flush=True)
                 if args.max_steps and global_batch >= int(args.max_steps):
                     break
+            if profile_timing:
+                batch_fetch_start = time.time()
             if args.max_steps and global_batch >= int(args.max_steps):
                 break
 
@@ -444,6 +495,8 @@ def train(args: argparse.Namespace) -> dict:
                 "elapsed_seconds": time.time() - epoch_start,
             }
         )
+        if profile_timing:
+            epoch_metrics["timing_seconds"] = dict(timing_sums)
         if is_rank0():
             metrics["epochs"].append(epoch_metrics)
         completed_epochs = epoch
@@ -516,6 +569,7 @@ def main() -> int:
     parser.add_argument("--metric-sample-every-batches", type=int, default=1)
     parser.add_argument("--finite-check-every-batches", type=int, default=1)
     parser.add_argument("--local-loss-normalization", action="store_true")
+    parser.add_argument("--profile-timing", action="store_true")
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--device", default=None)
     parser.add_argument("--data-parallel", action="store_true")
