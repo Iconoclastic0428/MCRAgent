@@ -219,25 +219,47 @@ def train(args: argparse.Namespace) -> dict:
         dropout=args.dropout,
         use_hidden_tiles=bool(args.use_hidden_tiles),
         require_search_features=bool(args.require_search_features or args.feature_version == "v2"),
+        fuse_sub_encode=bool(args.fuse_sub_encode),
+        channels_last=bool(args.channels_last),
     )
     raw_model = SlideMahjongResNetDueling(config).to(device)
+    if bool(args.channels_last):
+        raw_model = raw_model.to(memory_format=torch.channels_last)
     cuda_device_count = torch.cuda.device_count() if device.type == "cuda" else 0
     data_parallel_enabled = bool(
         not distributed and args.data_parallel and device.type == "cuda" and cuda_device_count > 1
     )
     if distributed:
-        model: torch.nn.Module = DistributedDataParallel(
-            raw_model,
-            device_ids=[local_rank] if device.type == "cuda" else None,
-            output_device=local_rank if device.type == "cuda" else None,
-            find_unused_parameters=False,
-            gradient_as_bucket_view=True,
-        )
+        ddp_kwargs = {
+            "device_ids": [local_rank] if device.type == "cuda" else None,
+            "output_device": local_rank if device.type == "cuda" else None,
+            "find_unused_parameters": False,
+            "gradient_as_bucket_view": True,
+        }
+        if bool(args.ddp_static_graph):
+            ddp_kwargs["static_graph"] = True
+        try:
+            model: torch.nn.Module = DistributedDataParallel(raw_model, **ddp_kwargs)
+        except TypeError:
+            if "static_graph" not in ddp_kwargs:
+                raise
+            ddp_kwargs.pop("static_graph")
+            model = DistributedDataParallel(raw_model, **ddp_kwargs)
     elif data_parallel_enabled:
         model = torch.nn.DataParallel(raw_model)
     else:
         model = raw_model
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    fused_adamw = bool(args.fused_adamw and device.type == "cuda")
+    try:
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            fused=True,
+        ) if fused_adamw else torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    except (RuntimeError, TypeError):
+        fused_adamw = False
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, int(args.epochs)))
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     amp_mode = str(args.amp).lower()
@@ -277,6 +299,10 @@ def train(args: argparse.Namespace) -> dict:
         "amp": amp_mode if amp_enabled else "off",
         "allow_tf32": bool(args.allow_tf32),
         "cudnn_benchmark": bool(args.cudnn_benchmark),
+        "fuse_sub_encode": bool(args.fuse_sub_encode),
+        "channels_last": bool(args.channels_last),
+        "ddp_static_graph": bool(args.ddp_static_graph),
+        "fused_adamw": fused_adamw,
         "optimizer": "AdamW",
         "lr": args.lr,
         "weight_decay": args.weight_decay,
@@ -566,6 +592,10 @@ def main() -> int:
     parser.add_argument("--amp", choices=("off", "fp16", "bf16"), default="off")
     parser.add_argument("--allow-tf32", action="store_true")
     parser.add_argument("--cudnn-benchmark", action="store_true")
+    parser.add_argument("--fuse-sub-encode", action="store_true")
+    parser.add_argument("--channels-last", action="store_true")
+    parser.add_argument("--ddp-static-graph", action="store_true")
+    parser.add_argument("--fused-adamw", action="store_true")
     parser.add_argument("--metric-sample-every-batches", type=int, default=1)
     parser.add_argument("--finite-check-every-batches", type=int, default=1)
     parser.add_argument("--local-loss-normalization", action="store_true")

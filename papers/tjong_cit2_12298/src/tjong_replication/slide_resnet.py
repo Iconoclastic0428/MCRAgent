@@ -45,6 +45,8 @@ class SlideResNetConfig:
     discard_size: int = DISCARD_SIZE
     use_hidden_tiles: bool = False
     require_search_features: bool = False
+    fuse_sub_encode: bool = False
+    channels_last: bool = False
 
     def resolved_in_channels(self) -> int:
         if self.in_channels is not None:
@@ -406,6 +408,8 @@ class SlideMahjongResNetDueling(nn.Module):
         )
         if features.shape[1] != self.in_channels:
             raise ValueError(f"expected {self.in_channels} feature channels, got {features.shape[1]}")
+        if self.config.channels_last:
+            features = features.contiguous(memory_format=torch.channels_last)
         x = self.stem(features)
         x = self.layer1(x)
         x = self.layer2(x)
@@ -429,23 +433,47 @@ class SlideMahjongResNetDueling(nn.Module):
         sub_search_features: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         del rewards, previous_actions, sub_rewards, sub_previous_actions
-        policy_state = self._encode(
-            visible_tiles=visible_tiles,
-            game_features=game_features,
-            hidden_tiles=hidden_tiles,
-            search_features=search_features,
-        )
         if sub_visible_tiles is None and sub_game_features is None:
+            policy_state = self._encode(
+                visible_tiles=visible_tiles,
+                game_features=game_features,
+                hidden_tiles=hidden_tiles,
+                search_features=search_features,
+            )
             tile_state = policy_state
         else:
             if sub_visible_tiles is None or sub_game_features is None:
                 raise ValueError("sub_visible_tiles and sub_game_features must be provided together")
-            tile_state = self._encode(
-                visible_tiles=sub_visible_tiles,
-                game_features=sub_game_features,
-                hidden_tiles=hidden_tiles,
-                search_features=sub_search_features if sub_search_features is not None else search_features,
-            )
+            if self.config.fuse_sub_encode:
+                pair_visible = torch.cat((visible_tiles, sub_visible_tiles), dim=0)
+                pair_game = torch.cat((game_features, sub_game_features), dim=0)
+                pair_hidden = torch.cat((hidden_tiles, hidden_tiles), dim=0) if hidden_tiles is not None else None
+                pair_search = None
+                if search_features is not None or sub_search_features is not None:
+                    if search_features is None:
+                        raise ValueError("search_features must be provided when sub_search_features are provided")
+                    second_search = sub_search_features if sub_search_features is not None else search_features
+                    pair_search = torch.cat((search_features, second_search), dim=0)
+                pair_state = self._encode(
+                    visible_tiles=pair_visible,
+                    game_features=pair_game,
+                    hidden_tiles=pair_hidden,
+                    search_features=pair_search,
+                )
+                policy_state, tile_state = pair_state.split(visible_tiles.shape[0], dim=0)
+            else:
+                policy_state = self._encode(
+                    visible_tiles=visible_tiles,
+                    game_features=game_features,
+                    hidden_tiles=hidden_tiles,
+                    search_features=search_features,
+                )
+                tile_state = self._encode(
+                    visible_tiles=sub_visible_tiles,
+                    game_features=sub_game_features,
+                    hidden_tiles=hidden_tiles,
+                    search_features=sub_search_features if sub_search_features is not None else search_features,
+                )
         return {
             "action_logits": self.action_head(policy_state),
             "claim_logits": self.claim_head(tile_state),

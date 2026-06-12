@@ -152,6 +152,10 @@ spec:
                 --amp bf16 \
                 --allow-tf32 \
                 --cudnn-benchmark \
+                --fuse-sub-encode \
+                --channels-last \
+                --ddp-static-graph \
+                --fused-adamw \
                 --metric-sample-every-batches 100 \
                 --finite-check-every-batches 1000 \
                 --local-loss-normalization \
