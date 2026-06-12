@@ -63,6 +63,10 @@ spec:
               value: ignore
             - name: CUBLAS_WORKSPACE_CONFIG
               value: ":4096:8"
+            - name: TORCH_NCCL_ASYNC_ERROR_HANDLING
+              value: "1"
+            - name: TJONG_GPU_COUNT
+              value: "2"
             - name: TJONG_RUN
               value: tjong_slide_resnet_v1_2x4090_20260612a
             - name: TJONG_BRANCH
@@ -133,7 +137,8 @@ spec:
                   "shards": len(summary.get("shards") or []),
               }, sort_keys=True), flush=True)
               PY
-              python -m tjong_replication.train_slide_resnet_supervised \
+              python -m torch.distributed.run --standalone --nproc_per_node="${TJONG_GPU_COUNT}" \
+                -m tjong_replication.train_slide_resnet_supervised \
                 --train-pt "${TRAIN_PT}" \
                 --checkpoint-out "${DATA_ROOT}/models/${TJONG_RUN}.pt" \
                 --metrics-out "${DATA_ROOT}/runs/${TJONG_RUN}_metrics.json" \
@@ -152,7 +157,7 @@ spec:
                 --grad-clip 0.5 \
                 --num-workers 0 \
                 --device cuda \
-                --data-parallel \
+                --distributed \
                 --seed 0 \
                 --require-encoding-version "${TENSOR_ENCODING_VERSION}" \
                 --optimized-sharded-loader \

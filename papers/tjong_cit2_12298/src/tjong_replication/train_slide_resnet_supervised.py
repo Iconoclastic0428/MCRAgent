@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 
 from .slide_resnet import (
     SLIDE_SYMMETRY_TRANSFORMS,
@@ -26,10 +28,13 @@ from .train_supervised import (
     configure_seed,
     dataset_data_format,
     finalize_metric_sums,
+    initialize_distributed,
     iter_optimized_sharded_batches,
     iter_supervised_batches,
+    is_rank0,
     load_tensor_payload,
     merge_metric_sums,
+    reduce_metric_sums,
     safe_clip_grad_norm_,
     supervised_loss_components,
     tensor_dataset_from_payload,
@@ -121,6 +126,8 @@ def iter_training_batches(
     args: argparse.Namespace,
     *,
     epoch: int,
+    rank: int = 0,
+    world_size: int = 1,
 ):
     if bool(args.optimized_sharded_loader):
         if not isinstance(dataset, ShardedTensorDataset):
@@ -130,6 +137,8 @@ def iter_training_batches(
             batch_size=args.batch_size,
             shuffle=True,
             seed=int(args.seed) + int(epoch),
+            rank=rank,
+            world_size=world_size,
             prefetch_shards=args.shard_prefetch,
             pin_memory=args.pin_memory,
         )
@@ -144,11 +153,21 @@ def iter_training_batches(
 
 
 def train(args: argparse.Namespace) -> dict:
+    distributed, local_rank, rank, world_size = initialize_distributed(args)
     configure_seed(int(args.seed))
-    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    if distributed:
+        requested_device = args.device
+        if torch.cuda.is_available() and (requested_device is None or str(requested_device).startswith("cuda")):
+            device = torch.device(f"cuda:{local_rank}")
+        else:
+            device = torch.device(requested_device or "cpu")
+    else:
+        device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     train_payload = load_tensor_payload(Path(args.train_pt), expected_encoding_version=args.require_encoding_version)
     encoding_schema = train_payload.get("encoding_schema") or {}
     dataset = tensor_dataset_from_payload(train_payload, drop_shard_file_cache=bool(args.drop_shard_file_cache))
+    if distributed and not bool(args.optimized_sharded_loader):
+        raise ValueError("--distributed requires --optimized-sharded-loader")
     config = SlideResNetConfig(
         feature_version=args.feature_version,
         base_channels=args.base_channels,
@@ -159,8 +178,21 @@ def train(args: argparse.Namespace) -> dict:
     )
     raw_model = SlideMahjongResNetDueling(config).to(device)
     cuda_device_count = torch.cuda.device_count() if device.type == "cuda" else 0
-    data_parallel_enabled = bool(args.data_parallel and device.type == "cuda" and cuda_device_count > 1)
-    model: torch.nn.Module = torch.nn.DataParallel(raw_model) if data_parallel_enabled else raw_model
+    data_parallel_enabled = bool(
+        not distributed and args.data_parallel and device.type == "cuda" and cuda_device_count > 1
+    )
+    if distributed:
+        model: torch.nn.Module = DistributedDataParallel(
+            raw_model,
+            device_ids=[local_rank] if device.type == "cuda" else None,
+            output_device=local_rank if device.type == "cuda" else None,
+            find_unused_parameters=False,
+            gradient_as_bucket_view=True,
+        )
+    elif data_parallel_enabled:
+        model = torch.nn.DataParallel(raw_model)
+    else:
+        model = raw_model
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, int(args.epochs)))
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
@@ -198,7 +230,11 @@ def train(args: argparse.Namespace) -> dict:
         "device": str(device),
         "cuda_device_count": cuda_device_count,
         "data_parallel": data_parallel_enabled,
-        "effective_gpu_count": cuda_device_count if data_parallel_enabled else (1 if device.type == "cuda" else 0),
+        "distributed": distributed,
+        "distributed_rank": rank,
+        "distributed_world_size": world_size,
+        "local_rank": local_rank,
+        "effective_gpu_count": world_size if distributed else (cuda_device_count if data_parallel_enabled else (1 if device.type == "cuda" else 0)),
         "train_examples": len(dataset),
         "train_data_format": dataset_data_format(dataset),
         "train_shard_count": dataset.shard_count if isinstance(dataset, ShardedTensorDataset) else 0,
@@ -220,7 +256,10 @@ def train(args: argparse.Namespace) -> dict:
         total_examples = 0
         max_grad_norm_before_clip = 0.0
         epoch_start = time.time()
-        for batch_index, batch in enumerate(iter_training_batches(dataset, args, epoch=epoch), start=1):
+        for batch_index, batch in enumerate(
+            iter_training_batches(dataset, args, epoch=epoch, rank=rank, world_size=world_size),
+            start=1,
+        ):
             base_inputs, base_labels = unpack_batch(batch, device, include_hidden_tiles=True)
             transforms = augmentation_transforms_for_batch(args, generator=augmentation_generator)
             for transform_index, transform in enumerate(transforms, start=1):
@@ -232,7 +271,7 @@ def train(args: argparse.Namespace) -> dict:
                         levels=int(args.v2_search_levels),
                     )
                 outputs = model(**inputs)
-                loss_components = supervised_loss_components(outputs, labels)
+                loss_components = supervised_loss_components(outputs, labels, distributed=distributed)
                 ce_loss = loss_components["total"]
                 assert ce_loss is not None
                 l1_penalty, l2_penalty = elastic_net_penalty(
@@ -260,7 +299,19 @@ def train(args: argparse.Namespace) -> dict:
                 merge_metric_sums(metric_sums, batch_metric_sums(metric_outputs, labels))
                 global_batch += 1
                 if args.log_every_batches and global_batch % int(args.log_every_batches) == 0:
-                    partial = finalize_metric_sums(metric_sums)
+                    display_metric_sums = reduce_metric_sums(metric_sums, device) if distributed else metric_sums
+                    display_loss_sum = total_loss
+                    display_examples = total_examples
+                    display_grad_norm = max_grad_norm_before_clip
+                    if distributed:
+                        loss_tensor = torch.tensor([display_loss_sum, display_examples], dtype=torch.float64, device=device)
+                        dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+                        display_loss_sum = float(loss_tensor[0].item())
+                        display_examples = int(loss_tensor[1].item())
+                        grad_tensor = torch.tensor([display_grad_norm], dtype=torch.float64, device=device)
+                        dist.all_reduce(grad_tensor, op=dist.ReduceOp.MAX)
+                        display_grad_norm = float(grad_tensor.item())
+                    partial = finalize_metric_sums(display_metric_sums)
                     partial.update(
                         {
                             "event": "batch",
@@ -268,37 +319,53 @@ def train(args: argparse.Namespace) -> dict:
                             "batch": batch_index,
                             "batch_transform": transform_index,
                             "global_batch": global_batch,
-                            "optimization_loss": total_loss / max(1, total_examples),
+                            "optimization_loss": display_loss_sum / max(1, display_examples),
                             "lr": optimizer.param_groups[0]["lr"],
+                            "max_grad_norm_before_clip": display_grad_norm,
                             "elapsed_seconds": time.time() - epoch_start,
                         }
                     )
-                    print(json.dumps(partial, sort_keys=True), flush=True)
+                    if is_rank0():
+                        print(json.dumps(partial, sort_keys=True), flush=True)
                 if args.max_steps and global_batch >= int(args.max_steps):
                     break
             if args.max_steps and global_batch >= int(args.max_steps):
                 break
 
-        finalized = finalize_metric_sums(metric_sums)
+        display_metric_sums = reduce_metric_sums(metric_sums, device) if distributed else metric_sums
+        display_loss_sum = total_loss
+        display_examples = total_examples
+        display_grad_norm = max_grad_norm_before_clip
+        if distributed:
+            loss_tensor = torch.tensor([display_loss_sum, display_examples], dtype=torch.float64, device=device)
+            dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+            display_loss_sum = float(loss_tensor[0].item())
+            display_examples = int(loss_tensor[1].item())
+            grad_tensor = torch.tensor([display_grad_norm], dtype=torch.float64, device=device)
+            dist.all_reduce(grad_tensor, op=dist.ReduceOp.MAX)
+            display_grad_norm = float(grad_tensor.item())
+        finalized = finalize_metric_sums(display_metric_sums)
         epoch_metrics = dict(finalized)
         epoch_metrics.update(
             {
                 "event": "epoch",
                 "epoch": epoch,
                 "global_batch": global_batch,
-                "optimization_loss": total_loss / max(1, total_examples),
+                "optimization_loss": display_loss_sum / max(1, display_examples),
                 "lr": optimizer.param_groups[0]["lr"],
-                "max_grad_norm_before_clip": max_grad_norm_before_clip,
+                "max_grad_norm_before_clip": display_grad_norm,
                 "elapsed_seconds": time.time() - epoch_start,
             }
         )
-        metrics["epochs"].append(epoch_metrics)
+        if is_rank0():
+            metrics["epochs"].append(epoch_metrics)
         completed_epochs = epoch
-        if args.metrics_jsonl:
+        if args.metrics_jsonl and is_rank0():
             Path(args.metrics_jsonl).parent.mkdir(parents=True, exist_ok=True)
             with Path(args.metrics_jsonl).open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(epoch_metrics, sort_keys=True) + "\n")
-        print(json.dumps(epoch_metrics, sort_keys=True), flush=True)
+        if is_rank0():
+            print(json.dumps(epoch_metrics, sort_keys=True), flush=True)
         scheduler.step()
         if args.max_steps and global_batch >= int(args.max_steps):
             break
@@ -307,7 +374,7 @@ def train(args: argparse.Namespace) -> dict:
     metrics["global_batch"] = global_batch
     metrics["elapsed_seconds"] = time.time() - start
 
-    if args.checkpoint_out:
+    if args.checkpoint_out and is_rank0():
         checkpoint_path = Path(args.checkpoint_out)
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
@@ -323,10 +390,13 @@ def train(args: argparse.Namespace) -> dict:
             },
             checkpoint_path,
         )
-    if args.metrics_out:
+    if args.metrics_out and is_rank0():
         metrics_path = Path(args.metrics_out)
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
         metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
+    if distributed:
+        dist.barrier()
+        dist.destroy_process_group()
     return metrics
 
 
@@ -356,6 +426,7 @@ def main() -> int:
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--device", default=None)
     parser.add_argument("--data-parallel", action="store_true")
+    parser.add_argument("--distributed", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--require-encoding-version", default=None)
     parser.add_argument("--optimized-sharded-loader", action="store_true")
