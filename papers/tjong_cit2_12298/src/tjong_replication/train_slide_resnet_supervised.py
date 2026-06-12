@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from contextlib import nullcontext
 import json
+import math
 import time
 from pathlib import Path
 
@@ -135,6 +136,30 @@ def augmentation_transforms_for_batch(
         index = int(torch.randint(len(SLIDE_SYMMETRY_TRANSFORMS), (1,), generator=generator).item())
         return (SLIDE_SYMMETRY_TRANSFORMS[index],)
     raise ValueError(f"unknown augmentation mode: {args.augmentation_mode!r}")
+
+
+def divergence_guard_reasons(args: argparse.Namespace, epoch_metrics: dict[str, object]) -> list[str]:
+    after_epochs = int(getattr(args, "divergence_guard_after_epochs", 0) or 0)
+    epoch = int(epoch_metrics.get("epoch", 0) or 0)
+    if after_epochs <= 0 or epoch < after_epochs:
+        return []
+
+    checks = (
+        ("discard_loss", float(getattr(args, "divergence_guard_max_discard_loss", 0.0) or 0.0)),
+        ("optimization_loss", float(getattr(args, "divergence_guard_max_optimization_loss", 0.0) or 0.0)),
+        ("max_grad_norm_before_clip", float(getattr(args, "divergence_guard_max_grad_norm", 0.0) or 0.0)),
+    )
+    reasons: list[str] = []
+    for name, threshold in checks:
+        if threshold <= 0.0:
+            continue
+        value = epoch_metrics.get(name)
+        if value is None:
+            continue
+        numeric = float(value)
+        if not math.isfinite(numeric) or numeric > threshold:
+            reasons.append(f"{name}={numeric:.6g} exceeds {threshold:.6g}")
+    return reasons
 
 
 def attach_v2_search_features(
@@ -299,6 +324,10 @@ def train(args: argparse.Namespace) -> dict:
         "augmentation_transforms_per_batch": transforms_per_batch,
         "metric_sample_every_batches": metric_sample_every_batches,
         "finite_check_every_batches": finite_check_every_batches,
+        "divergence_guard_after_epochs": args.divergence_guard_after_epochs,
+        "divergence_guard_max_discard_loss": args.divergence_guard_max_discard_loss,
+        "divergence_guard_max_optimization_loss": args.divergence_guard_max_optimization_loss,
+        "divergence_guard_max_grad_norm": args.divergence_guard_max_grad_norm,
         "loss_normalization": "local" if use_local_loss_normalization else ("distributed" if distributed else "local"),
         "profile_timing": profile_timing,
         "amp": amp_mode if amp_enabled else "off",
@@ -530,6 +559,10 @@ def train(args: argparse.Namespace) -> dict:
         )
         if profile_timing:
             epoch_metrics["timing_seconds"] = dict(timing_sums)
+        divergence_reasons = divergence_guard_reasons(args, epoch_metrics)
+        if divergence_reasons:
+            epoch_metrics["divergence_guard_triggered"] = True
+            epoch_metrics["divergence_guard_reasons"] = divergence_reasons
         if is_rank0():
             metrics["epochs"].append(epoch_metrics)
         completed_epochs = epoch
@@ -539,6 +572,8 @@ def train(args: argparse.Namespace) -> dict:
                 handle.write(json.dumps(epoch_metrics, sort_keys=True) + "\n")
         if is_rank0():
             print(json.dumps(epoch_metrics, sort_keys=True), flush=True)
+        if divergence_reasons:
+            raise RuntimeError(f"slide training divergence guard triggered at epoch {epoch}: {divergence_reasons}")
         scheduler.step()
         if args.max_steps and global_batch >= int(args.max_steps):
             break
@@ -605,6 +640,10 @@ def main() -> int:
     parser.add_argument("--fused-adamw", action="store_true")
     parser.add_argument("--metric-sample-every-batches", type=int, default=1)
     parser.add_argument("--finite-check-every-batches", type=int, default=1)
+    parser.add_argument("--divergence-guard-after-epochs", type=int, default=0)
+    parser.add_argument("--divergence-guard-max-discard-loss", type=float, default=0.0)
+    parser.add_argument("--divergence-guard-max-optimization-loss", type=float, default=0.0)
+    parser.add_argument("--divergence-guard-max-grad-norm", type=float, default=0.0)
     parser.add_argument("--local-loss-normalization", action="store_true")
     parser.add_argument("--profile-timing", action="store_true")
     parser.add_argument("--num-workers", type=int, default=2)

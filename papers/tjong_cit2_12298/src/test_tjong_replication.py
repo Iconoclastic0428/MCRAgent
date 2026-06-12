@@ -89,6 +89,7 @@ from tjong_replication.train_ppo import (  # noqa: E402
     validate_paper_ppo_args,
     validate_rollout_reward_source,
 )
+from tjong_replication.train_slide_resnet_supervised import divergence_guard_reasons  # noqa: E402
 from tjong_replication.train_supervised import (  # noqa: E402
     ShardedTensorDataset,
     batch_metric_sums,
@@ -223,6 +224,39 @@ def test_slide_symmetry_transforms_tile_and_claim_labels():
         flatten_claim("CHOW", chow_claim_index("T8", "T9")),
         flatten_claim("PONG", tile_id("W7")),
     ]
+
+
+def test_slide_divergence_guard_reasons():
+    args = argparse.Namespace(
+        divergence_guard_after_epochs=2,
+        divergence_guard_max_discard_loss=5.0,
+        divergence_guard_max_optimization_loss=10.0,
+        divergence_guard_max_grad_norm=1000.0,
+    )
+    assert (
+        divergence_guard_reasons(
+            args,
+            {
+                "epoch": 1,
+                "discard_loss": 100.0,
+                "optimization_loss": 100.0,
+                "max_grad_norm_before_clip": 10000.0,
+            },
+        )
+        == []
+    )
+    reasons = divergence_guard_reasons(
+        args,
+        {
+            "epoch": 2,
+            "discard_loss": 10.0,
+            "optimization_loss": 2.0,
+            "max_grad_norm_before_clip": 2000.0,
+        },
+    )
+    assert any("discard_loss" in reason for reason in reasons)
+    assert any("max_grad_norm_before_clip" in reason for reason in reasons)
+    assert not any("optimization_loss" in reason for reason in reasons)
 
 
 def test_slide_v2_search_features_from_encoded_tensors():
