@@ -52,6 +52,24 @@ from tjong_replication.policy_bot import (  # noqa: E402
 from tjong_replication.populate_fan_backward_rewards import infer_loser, populate_file  # noqa: E402
 from tjong_replication.plot_supervised_progress import load_epoch_metrics, summarize_epochs  # noqa: E402
 from tjong_replication.selfplay_dashboard import analyze_records, format_dashboard_text  # noqa: E402
+from tjong_replication.slide_resnet import (  # noqa: E402
+    SLIDE_V1_CHANNELS,
+    SLIDE_V2_CHANNELS,
+    SLIDE_GRID_SUIT_ROWS,
+    SlideMahjongResNetDueling,
+    SlideResNetConfig,
+    build_slide_feature_planes,
+    tile_vectors_to_grid,
+    transform_claim_labels,
+    transform_discard_labels,
+    transform_tile_id,
+    transform_tile_tensor,
+)
+from tjong_replication.slide_v2_features import (  # noqa: E402
+    SlideV2SearchContext,
+    build_batch_search_features_from_tensors,
+    build_search_feature_planes,
+)
 from tjong_replication.tensorize_botzone import (  # noqa: E402
     HIDDEN_TILE_ROW_NAMES,
     SHARD_INDEX_FORMAT,
@@ -122,6 +140,134 @@ def test_network_forward_shapes():
     assert out["claim_logits"].shape == (batch, 199)
     assert out["discard_logits"].shape == (batch, 34)
     assert out["value"].shape == (batch,)
+
+
+def test_slide_feature_planes_match_v1_and_v2_channel_counts():
+    batch = 2
+    visible = torch.zeros(batch, 4, 22, 34)
+    game = torch.zeros(batch, 4, 24)
+    hidden = torch.zeros(batch, 5, 34)
+    visible[0, 0, 0, tile_id("W1")] = 2.0
+    game[0, 0, 0] = 3.0
+    hidden[0, 0, tile_id("J3")] = 1.0
+
+    tile_grid = tile_vectors_to_grid(visible[0, 0, 0])
+    assert tile_grid.shape == (4, 9)
+    assert SLIDE_GRID_SUIT_ROWS == ("T", "W", "B")
+    assert tile_grid[1, 0] == 2.0
+
+    v1 = build_slide_feature_planes(
+        visible_tiles=visible,
+        game_features=game,
+        hidden_tiles=hidden,
+        feature_version="v1",
+        use_hidden_tiles=True,
+    )
+    assert v1.shape == (batch, SLIDE_V1_CHANNELS, 4, 9)
+    assert v1[0, 0, 1, 0] == 2.0
+    assert v1[0, 88, :, :].unique().tolist() == [3.0]
+    assert v1[0, 184, 3, 6] == 1.0
+    assert v1[:, -1].eq(1.0).all()
+
+    search = torch.ones(batch, 30, 4, 9)
+    v2 = build_slide_feature_planes(
+        visible_tiles=visible,
+        game_features=game,
+        hidden_tiles=hidden,
+        search_features=search,
+        feature_version="v2",
+    )
+    assert v2.shape == (batch, SLIDE_V2_CHANNELS, 4, 9)
+    assert v2[:, SLIDE_V1_CHANNELS:].eq(1.0).all()
+
+
+def test_slide_feature_planes_can_require_v2_search_features():
+    visible = torch.zeros(1, 4, 22, 34)
+    game = torch.zeros(1, 4, 24)
+    try:
+        build_slide_feature_planes(
+            visible_tiles=visible,
+            game_features=game,
+            feature_version="v2",
+            require_search_features=True,
+        )
+    except ValueError as exc:
+        assert "search feature" in str(exc)
+    else:
+        raise AssertionError("expected v2 feature builder to require search features")
+
+
+def test_slide_symmetry_transforms_tile_and_claim_labels():
+    transform = (("T", "B", "W"), True)
+    suit_permutation, mirror = transform
+    assert transform_tile_id(tile_id("W1"), suit_permutation, mirror=mirror) == tile_id("T9")
+    assert transform_tile_id(tile_id("T2"), suit_permutation, mirror=mirror) == tile_id("B8")
+    assert transform_tile_id(tile_id("B3"), suit_permutation, mirror=mirror) == tile_id("W7")
+    assert transform_tile_id(tile_id("J2"), suit_permutation, mirror=mirror) == tile_id("J2")
+
+    tile_tensor = torch.zeros(1, 34)
+    tile_tensor[0, tile_id("W1")] = 2.0
+    tile_tensor[0, tile_id("J2")] = 1.0
+    transformed_tiles = transform_tile_tensor(tile_tensor, suit_permutation, mirror=mirror)
+    assert transformed_tiles[0, tile_id("T9")] == 2.0
+    assert transformed_tiles[0, tile_id("J2")] == 1.0
+
+    discard = torch.tensor([tile_id("W1"), tile_id("J2")])
+    transformed_discard = transform_discard_labels(discard, suit_permutation, mirror=mirror)
+    assert transformed_discard.tolist() == [tile_id("T9"), tile_id("J2")]
+
+    chow = flatten_claim("CHOW", chow_claim_index("W2", "W1"))
+    pong = flatten_claim("PONG", tile_id("B3"))
+    transformed_claim = transform_claim_labels(torch.tensor([chow, pong]), suit_permutation, mirror=mirror)
+    assert transformed_claim.tolist() == [
+        flatten_claim("CHOW", chow_claim_index("T8", "T9")),
+        flatten_claim("PONG", tile_id("W7")),
+    ]
+
+
+def test_slide_v2_search_features_from_encoded_tensors():
+    visible = torch.zeros(1, 4, 22, 34)
+    game = torch.zeros(1, 4, 24)
+    visible[0, -1, VISIBLE_ROW_NAMES.index("hand_self"), tile_id("W1")] = 2.0
+    visible[0, -1, VISIBLE_ROW_NAMES.index("remaining_tiles_p0"), tile_id("T5")] = 4.0
+    game[0, -1, 1] = 1.0
+
+    search = build_batch_search_features_from_tensors(visible, game, levels=1)
+    assert search.shape == (1, 30, 4, 9)
+    assert search[0, 0, 1, 0] == 0.5
+    assert search[0, 1, 0, 4] == 1.0
+
+    context_search = build_search_feature_planes(
+        SlideV2SearchContext(
+            hand=Counter({"W1": 2}),
+            live_counts=Counter({"T5": 4}),
+            visible_counts=Counter(),
+        ),
+        levels=1,
+    )
+    assert context_search.shape == (30, 4, 9)
+    assert context_search[0, 1, 0] == 0.5
+
+
+def test_slide_resnet_dueling_forward_shapes():
+    config = SlideResNetConfig(feature_version="v1", base_channels=8, head_hidden=32, dropout=0.0)
+    model = SlideMahjongResNetDueling(config)
+    batch = 2
+    visible = torch.zeros(batch, 4, 22, 34)
+    game = torch.zeros(batch, 4, 24)
+    sub_visible = torch.zeros(batch, 4, 22, 34)
+    sub_game = torch.zeros(batch, 4, 24)
+    hidden = torch.zeros(batch, 5, 34)
+    out = model(
+        visible_tiles=visible,
+        game_features=game,
+        sub_visible_tiles=sub_visible,
+        sub_game_features=sub_game,
+        hidden_tiles=hidden,
+    )
+    assert out["action_logits"].shape == (batch, 8)
+    assert out["claim_logits"].shape == (batch, 199)
+    assert out["discard_logits"].shape == (batch, 34)
 
 
 def test_tjong_runtime_context_replays_memory_and_public_discards():
