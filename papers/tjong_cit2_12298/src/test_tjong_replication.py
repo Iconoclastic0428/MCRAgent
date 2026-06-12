@@ -51,6 +51,7 @@ from tjong_replication.policy_bot import (  # noqa: E402
 )
 from tjong_replication.populate_fan_backward_rewards import infer_loser, populate_file  # noqa: E402
 from tjong_replication.plot_supervised_progress import load_epoch_metrics, summarize_epochs  # noqa: E402
+from tjong_replication.selfplay_dashboard import analyze_records, format_dashboard_text  # noqa: E402
 from tjong_replication.tensorize_botzone import (  # noqa: E402
     HIDDEN_TILE_ROW_NAMES,
     SHARD_INDEX_FORMAT,
@@ -2155,6 +2156,113 @@ def test_selfplay_streaming_accumulator_matches_batch_summary():
         accumulator.add(record)
 
     assert accumulator.to_summary() == summarize_selfplay(records)
+
+
+def test_selfplay_dashboard_reports_turn_fans_and_coufan_sections():
+    records = [
+        {
+            "match_id": "dashboard-self-draw",
+            "scores": {"0": 48, "1": -16, "2": -16, "3": -16},
+            "final_output": {
+                "display": {
+                    "action": "HU",
+                    "player": 0,
+                    "fanCnt": 8,
+                    "fan": [
+                        {"name": "门前清", "value": 2, "cnt": 1},
+                        {"name": "平和", "value": 2, "cnt": 1},
+                        {"name": "断幺", "value": 2, "cnt": 1},
+                        {"name": "自摸", "value": 1, "cnt": 1},
+                        {"name": "无字", "value": 1, "cnt": 1},
+                    ],
+                }
+            },
+            "logs": [
+                {
+                    "output": {
+                        "display": {"action": "DRAW", "player": 0, "canHu": [8, -4, -4, -4]},
+                        "content": {
+                            "0": "2 W1",
+                            "1": "3 0 DRAW",
+                            "2": "3 0 DRAW",
+                            "3": "3 0 DRAW",
+                        },
+                    }
+                },
+                {
+                    "0": {"raw": "HU"},
+                    "1": {"raw": "PASS"},
+                    "2": {"raw": "PASS"},
+                    "3": {"raw": "PASS"},
+                },
+            ],
+        },
+        {
+            "match_id": "dashboard-discard-hu",
+            "scores": {"0": -8, "1": -20, "2": 44, "3": -8},
+            "final_output": {
+                "display": {
+                    "action": "HU",
+                    "player": 2,
+                    "fanCnt": 12,
+                    "fan": [{"name": "全不靠", "value": 12, "cnt": 1}],
+                }
+            },
+            "logs": [
+                {
+                    "output": {
+                        "display": {"action": "DRAW", "player": 1, "canHu": [-4, -4, -4, -4]},
+                        "content": {
+                            "0": "3 1 DRAW",
+                            "1": "2 W2",
+                            "2": "3 1 DRAW",
+                            "3": "3 1 DRAW",
+                        },
+                    }
+                },
+                {
+                    "0": {"raw": "PASS"},
+                    "1": {"raw": "PLAY W2"},
+                    "2": {"raw": "PASS"},
+                    "3": {"raw": "PASS"},
+                },
+                {
+                    "output": {
+                        "display": {"action": "PLAY", "player": 1, "canHu": [-4, -4, 12, -4]},
+                        "content": {
+                            "0": "3 1 PLAY W2",
+                            "1": "3 1 PLAY W2",
+                            "2": "3 1 PLAY W2",
+                            "3": "3 1 PLAY W2",
+                        },
+                    }
+                },
+                {
+                    "0": {"raw": "PASS"},
+                    "1": {"raw": "PASS"},
+                    "2": {"raw": "HU"},
+                    "3": {"raw": "PASS"},
+                },
+            ],
+        },
+    ]
+
+    summary = analyze_records(records)
+    text = format_dashboard_text(summary)
+
+    assert summary["hu_count"] == 2
+    assert summary["turns"]["和牌巡数"] == 1.0
+    assert summary["turns"]["点和巡数"] == 1.0
+    assert summary["turns"]["自摸巡数"] == 1.0
+    assert summary["turns"]["听牌巡数"] == 1.0
+    assert summary["fans"]["平均和牌番"] == 10.0
+    assert summary["fan_table"]["12番"][0]["name"] == "全不靠"
+    assert summary["fan_table"]["12番"][0]["count"] == 1
+    assert summary["coufan_hands"] == 1
+    assert summary["coufan_table"]["基础"][1]["name"] == "门清平和断幺"
+    assert summary["coufan_table"]["基础"][1]["count"] == 1
+    assert "巡数相关" in text
+    assert "全不靠\t1 (50.000%)\t1.000" in text
 
 
 def test_merge_selfplay_shards_preserves_order_and_quality_summary():
