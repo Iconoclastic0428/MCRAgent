@@ -1,11 +1,11 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: tjong-slide-resnet-v1-adamw-resume13-2x4090-20260613a
+  name: tjong-slide-resnet-v1-adamw-resume13-1x4090-20260613a
   namespace: nourish-sdsc
   labels:
     app: tjong-replication
-    task: slide-resnet-v1-adamw-resume13-2x
+    task: slide-resnet-v1-adamw-resume13-1x
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 172800
@@ -14,7 +14,7 @@ spec:
     metadata:
       labels:
         app: tjong-replication
-        task: slide-resnet-v1-adamw-resume13-2x
+        task: slide-resnet-v1-adamw-resume13-1x
     spec:
       restartPolicy: Never
       tolerations:
@@ -63,9 +63,9 @@ spec:
             - name: TORCH_NCCL_ASYNC_ERROR_HANDLING
               value: "1"
             - name: TJONG_GPU_COUNT
-              value: "2"
+              value: "1"
             - name: TJONG_RUN
-              value: tjong_slide_resnet_v1_adamw_resume13_2x4090_20260613a
+              value: tjong_slide_resnet_v1_adamw_resume13_1x4090_20260613a
             - name: TJONG_BATCH_SIZE
               value: "16384"
             - name: TJONG_LR
@@ -85,7 +85,7 @@ spec:
             - |
               set -eux
               DATA_ROOT=/data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
-              DOWNLOAD_ROOT=/tmp/mcragent_tjong_slide_resnet_v1_adamw_resume13_2x4090_20260613a
+              DOWNLOAD_ROOT=/tmp/mcragent_tjong_slide_resnet_v1_adamw_resume13_1x4090_20260613a
               rm -rf "${DOWNLOAD_ROOT}"
               python - <<'PY'
               import os
@@ -96,8 +96,8 @@ spec:
 
               branch = os.environ["TJONG_BRANCH"]
               url = f"https://github.com/Iconoclastic0428/MCRAgent/archive/refs/heads/{branch}.zip"
-              root = Path("/tmp/mcragent_tjong_slide_resnet_v1_adamw_resume13_2x4090_20260613a")
-              archive = Path("/tmp/mcragent_tjong_slide_resnet_v1_adamw_resume13_2x4090_20260613a.zip")
+              root = Path("/tmp/mcragent_tjong_slide_resnet_v1_adamw_resume13_1x4090_20260613a")
+              archive = Path("/tmp/mcragent_tjong_slide_resnet_v1_adamw_resume13_1x4090_20260613a.zip")
               shutil.rmtree(root, ignore_errors=True)
               root.mkdir(parents=True, exist_ok=True)
               urllib.request.urlretrieve(url, archive)
@@ -145,7 +145,7 @@ spec:
               checkpoint_metrics = checkpoint.get("metrics") if isinstance(checkpoint.get("metrics"), dict) else {}
               checkpoint_epoch = int(checkpoint.get("epoch") or checkpoint_metrics.get("epochs_completed") or 0)
               assert checkpoint_epoch == 13, checkpoint_epoch
-              print("slide_resnet_v1_adamw_resume13_2x4090_preflight", json.dumps({
+              print("slide_resnet_v1_adamw_resume13_1x4090_preflight", json.dumps({
                   "run": os.environ["TJONG_RUN"],
                   "torch": torch.__version__,
                   "cuda": torch.cuda.is_available(),
@@ -211,12 +211,12 @@ spec:
               cpu: "4"
               memory: 24Gi
               ephemeral-storage: 30Gi
-              nvidia.com/gpu: 2
+              nvidia.com/gpu: 1
             requests:
               cpu: "4"
               memory: 24Gi
               ephemeral-storage: 30Gi
-              nvidia.com/gpu: 2
+              nvidia.com/gpu: 1
           volumeMounts:
             - name: idl-data
               mountPath: /data/idl
