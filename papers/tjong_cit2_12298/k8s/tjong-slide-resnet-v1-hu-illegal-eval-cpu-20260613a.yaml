@@ -143,7 +143,6 @@ spec:
                 --require-encoding-version "${TENSOR_ENCODING_VERSION}" \
                 --optimized-sharded-loader \
                 --shard-prefetch 8 \
-                --pin-memory \
                 --shuffle \
                 --seed 260613
           resources:
