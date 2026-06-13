@@ -208,14 +208,14 @@ spec:
                 ${HIDDEN_ARGS}
           resources:
             limits:
-              cpu: "8"
-              memory: 48Gi
-              ephemeral-storage: 50Gi
+              cpu: "4"
+              memory: 24Gi
+              ephemeral-storage: 30Gi
               nvidia.com/gpu: 2
             requests:
-              cpu: "8"
-              memory: 48Gi
-              ephemeral-storage: 50Gi
+              cpu: "4"
+              memory: 24Gi
+              ephemeral-storage: 30Gi
               nvidia.com/gpu: 2
           volumeMounts:
             - name: idl-data
