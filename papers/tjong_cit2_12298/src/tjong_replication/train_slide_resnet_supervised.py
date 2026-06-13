@@ -14,7 +14,7 @@ import torch.distributed as dist
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
 
-from .actions import ACTION_TO_INDEX
+from .actions import ACTION_NAMES, ACTION_TO_INDEX, CLAIM_ACTION_NAMES, CLAIM_GROUP_SIZES, CLAIM_OFFSETS, DISCARD_SIZE
 from .slide_resnet import (
     SLIDE_SYMMETRY_TRANSFORMS,
     SlideMahjongResNetDueling,
@@ -28,6 +28,8 @@ from .tiles import SUIT_ORDER
 from .tensorize_botzone import TENSOR_ENCODING_VERSION
 from .train_supervised import (
     ShardedTensorDataset,
+    ACTION_MASK_OFFSET,
+    HAND_SELF_VISIBLE_ROW,
     batch_metric_sums,
     configure_seed,
     dataset_data_format,
@@ -71,6 +73,9 @@ def elastic_net_penalty(
 def fast_local_supervised_loss_components(
     outputs: dict[str, torch.Tensor],
     labels: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    inputs: dict[str, torch.Tensor] | None = None,
+    *,
+    loss_mode: str = "head_sum",
 ) -> dict[str, torch.Tensor]:
     action_label, claim_label, discard_label = labels
     claim_mask = (
@@ -81,14 +86,19 @@ def fast_local_supervised_loss_components(
         | (action_label == CLAIM_ACTION_INDICES[4])
     )
     discard_mask = action_label == DISCARD_ACTION_INDEX
+    zero = outputs["action_logits"].sum() * 0.0
     action_sum = F.cross_entropy(outputs["action_logits"], action_label, reduction="sum")
     raw_claim_count = claim_mask.sum()
     raw_discard_count = discard_mask.sum()
-    claim_sum = F.cross_entropy(outputs["claim_logits"][claim_mask], claim_label[claim_mask], reduction="sum")
-    discard_sum = F.cross_entropy(
-        outputs["discard_logits"][discard_mask],
-        discard_label[discard_mask],
-        reduction="sum",
+    claim_sum = (
+        F.cross_entropy(outputs["claim_logits"][claim_mask], claim_label[claim_mask], reduction="sum")
+        if bool(claim_mask.any().item())
+        else zero + outputs["claim_logits"].sum() * 0.0
+    )
+    discard_sum = (
+        F.cross_entropy(outputs["discard_logits"][discard_mask], discard_label[discard_mask], reduction="sum")
+        if bool(discard_mask.any().item())
+        else zero + outputs["discard_logits"].sum() * 0.0
     )
     example_count = torch.as_tensor(action_label.numel(), device=action_sum.device, dtype=action_sum.dtype).clamp_min(1)
     claim_count = raw_claim_count.clamp_min(1).to(device=claim_sum.device, dtype=claim_sum.dtype)
@@ -101,21 +111,99 @@ def fast_local_supervised_loss_components(
     action_loss = action_sum / example_count
     claim_loss = claim_sum / claim_count
     discard_loss = discard_sum / discard_count
-    hierarchical_loss = (action_sum + claim_sum + discard_sum) / example_count
+    legacy_head_sum = action_loss + claim_loss + discard_loss
+    unmasked_hierarchical_loss = (action_sum + claim_sum + discard_sum) / example_count
     per_decision_loss = (action_sum + claim_sum + discard_sum) / decision_count
+    if loss_mode == "head_sum":
+        total = legacy_head_sum
+        masked_hierarchical_loss = unmasked_hierarchical_loss
+    elif loss_mode == "hierarchical":
+        total = unmasked_hierarchical_loss
+        masked_hierarchical_loss = unmasked_hierarchical_loss
+    elif loss_mode == "masked_hierarchical":
+        if inputs is None:
+            raise ValueError("masked_hierarchical loss requires training inputs for legal masks")
+        masked_hierarchical_loss = masked_hierarchical_loss_components(outputs, labels, inputs)["total"]
+        total = masked_hierarchical_loss
+    else:
+        raise ValueError(f"unknown slide loss mode: {loss_mode!r}")
     return {
         "action": action_loss,
         "claim": claim_loss,
         "discard": discard_loss,
-        "total": action_loss + claim_loss + discard_loss,
-        "head_sum": action_loss + claim_loss + discard_loss,
-        "hierarchical_per_example": hierarchical_loss,
+        "total": total,
+        "head_sum": legacy_head_sum,
+        "legacy_head_sum_ce": legacy_head_sum,
+        "hierarchical_per_example": unmasked_hierarchical_loss,
+        "masked_hierarchical_nll": masked_hierarchical_loss,
         "per_decision": per_decision_loss,
         "action_sum": action_sum,
         "claim_sum": claim_sum,
         "discard_sum": discard_sum,
         "claim_fraction": raw_claim_count.to(device=action_sum.device, dtype=action_sum.dtype) / example_count,
         "discard_fraction": raw_discard_count.to(device=action_sum.device, dtype=action_sum.dtype) / example_count,
+    }
+
+
+def _large_negative_for_logits(logits: torch.Tensor) -> float:
+    return -1.0e4 if logits.dtype == torch.float16 else -1.0e9
+
+
+def _masked_logits(logits: torch.Tensor, legal_mask: torch.Tensor) -> torch.Tensor:
+    if legal_mask.shape != logits.shape:
+        raise ValueError(f"legal mask shape {tuple(legal_mask.shape)} does not match logits {tuple(logits.shape)}")
+    return logits.masked_fill(~legal_mask.bool(), _large_negative_for_logits(logits))
+
+
+def masked_hierarchical_loss_components(
+    outputs: dict[str, torch.Tensor],
+    labels: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    inputs: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    action_label, claim_label, discard_label = labels
+    action_logits = outputs["action_logits"]
+    claim_logits = outputs["claim_logits"]
+    discard_logits = outputs["discard_logits"]
+    game_features = inputs.get("game_features")
+    sub_visible_tiles = inputs.get("sub_visible_tiles")
+    if game_features is None:
+        raise ValueError("masked hierarchical loss requires game_features")
+    if sub_visible_tiles is None:
+        raise ValueError("masked hierarchical loss requires sub_visible_tiles")
+    action_mask = game_features[:, -1, ACTION_MASK_OFFSET : ACTION_MASK_OFFSET + len(ACTION_NAMES)] > 0
+    masked_action_logits = _masked_logits(action_logits, action_mask)
+    action_sum = F.cross_entropy(masked_action_logits, action_label, reduction="sum")
+
+    claim_sum = claim_logits.sum() * 0.0
+    for family in CLAIM_ACTION_NAMES:
+        family_mask = action_label == ACTION_TO_INDEX[family]
+        if not bool(family_mask.any().item()):
+            continue
+        offset = CLAIM_OFFSETS[family]
+        size = CLAIM_GROUP_SIZES[family]
+        local_labels = claim_label[family_mask] - offset
+        claim_sum = claim_sum + F.cross_entropy(
+            claim_logits[family_mask, offset : offset + size],
+            local_labels,
+            reduction="sum",
+        )
+
+    discard_mask = action_label == DISCARD_ACTION_INDEX
+    discard_sum = discard_logits.sum() * 0.0
+    if bool(discard_mask.any().item()):
+        legal_discards = sub_visible_tiles[:, -1, HAND_SELF_VISIBLE_ROW, :DISCARD_SIZE] > 0
+        masked_discard_logits = _masked_logits(discard_logits[discard_mask], legal_discards[discard_mask])
+        discard_sum = F.cross_entropy(masked_discard_logits, discard_label[discard_mask], reduction="sum")
+
+    example_count = torch.as_tensor(action_label.numel(), device=action_sum.device, dtype=action_sum.dtype).clamp_min(1)
+    return {
+        "action": action_sum / example_count,
+        "claim": claim_sum / example_count,
+        "discard": discard_sum / example_count,
+        "total": (action_sum + claim_sum + discard_sum) / example_count,
+        "action_sum": action_sum,
+        "claim_sum": claim_sum,
+        "discard_sum": discard_sum,
     }
 
 
@@ -370,22 +458,28 @@ def train(args: argparse.Namespace) -> dict:
     finite_check_every_batches = int(args.finite_check_every_batches or 1)
     use_local_loss_normalization = bool(args.local_loss_normalization)
     profile_timing = bool(args.profile_timing)
+    loss_mode = str(args.loss_mode)
     resume_epoch = 0
     resume_global_batch = 0
     resume_metrics_epochs: list[dict[str, object]] = []
     resume_from = getattr(args, "resume_from", None)
     checkpoint_every_epoch = bool(getattr(args, "checkpoint_every_epoch", False))
+    optimizer_state_loaded = False
+    scheduler_state_loaded = False
     if resume_from:
         checkpoint = torch.load(Path(resume_from), map_location=device)
         raw_model.load_state_dict(checkpoint["model_state_dict"])
-        if checkpoint.get("optimizer"):
+        if checkpoint.get("optimizer") and not bool(args.resume_model_only):
             optimizer.load_state_dict(checkpoint["optimizer"])
-        if checkpoint.get("scheduler"):
+            optimizer_state_loaded = True
+        if checkpoint.get("scheduler") and not bool(args.resume_model_only):
             scheduler.load_state_dict(checkpoint["scheduler"])
+            scheduler_state_loaded = True
         resume_epoch = int(checkpoint.get("epoch", 0) or 0)
         checkpoint_metrics = checkpoint.get("metrics") if isinstance(checkpoint.get("metrics"), dict) else {}
-        resume_global_batch = int(checkpoint_metrics.get("global_batch", 0) or 0)
-        resume_metrics_epochs = list(checkpoint_metrics.get("epochs") or [])
+        if not bool(args.resume_model_only):
+            resume_global_batch = int(checkpoint_metrics.get("global_batch", 0) or 0)
+            resume_metrics_epochs = list(checkpoint_metrics.get("epochs") or [])
     fan_checker = None
     if args.feature_version == "v2" and (args.v2_use_official_fan or args.v2_require_official_fan):
         fan_checker = load_default_official_fan_checker()
@@ -410,11 +504,12 @@ def train(args: argparse.Namespace) -> dict:
         "augmentation_transforms_per_batch": transforms_per_batch,
         "metric_sample_every_batches": metric_sample_every_batches,
         "finite_check_every_batches": finite_check_every_batches,
+        "loss_mode": loss_mode,
         "divergence_guard_after_epochs": args.divergence_guard_after_epochs,
         "divergence_guard_max_discard_loss": args.divergence_guard_max_discard_loss,
         "divergence_guard_max_optimization_loss": args.divergence_guard_max_optimization_loss,
         "divergence_guard_max_grad_norm": args.divergence_guard_max_grad_norm,
-        "loss_normalization": "local" if use_local_loss_normalization else ("distributed" if distributed else "local"),
+        "loss_normalization": "local" if (use_local_loss_normalization or loss_mode != "head_sum") else ("distributed" if distributed else "local"),
         "profile_timing": profile_timing,
         "amp": amp_mode if amp_enabled else "off",
         "allow_tf32": bool(args.allow_tf32),
@@ -433,6 +528,9 @@ def train(args: argparse.Namespace) -> dict:
         "epochs_requested": args.epochs,
         "resume_from": resume_from,
         "resumed_epoch": resume_epoch,
+        "resume_model_only": bool(args.resume_model_only),
+        "resume_optimizer_state_loaded": optimizer_state_loaded,
+        "resume_scheduler_state_loaded": scheduler_state_loaded,
         "seed": args.seed,
         "device": str(device),
         "cuda_device_count": cuda_device_count,
@@ -463,6 +561,8 @@ def train(args: argparse.Namespace) -> dict:
         metric_sums: dict[str, float] = {}
         total_loss = 0.0
         total_ce_loss = 0.0
+        total_legacy_head_sum_ce = 0.0
+        total_masked_hierarchical_nll = 0.0
         total_l1_penalty = 0.0
         total_l2_penalty = 0.0
         total_examples = 0
@@ -515,8 +615,8 @@ def train(args: argparse.Namespace) -> dict:
                         )
                     outputs = model(**inputs)
                     loss_components = (
-                        fast_local_supervised_loss_components(outputs, labels)
-                        if use_local_loss_normalization
+                        fast_local_supervised_loss_components(outputs, labels, inputs, loss_mode=loss_mode)
+                        if use_local_loss_normalization or loss_mode != "head_sum"
                         else supervised_loss_components(outputs, labels, distributed=distributed)
                     )
                     ce_loss = loss_components["total"]
@@ -572,6 +672,12 @@ def train(args: argparse.Namespace) -> dict:
                     total_examples += batch_size
                     total_loss += float(loss.detach().item()) * batch_size
                     total_ce_loss += float(ce_loss.detach().item()) * batch_size
+                    total_legacy_head_sum_ce += float(
+                        loss_components.get("legacy_head_sum_ce", ce_loss).detach().item()
+                    ) * batch_size
+                    total_masked_hierarchical_nll += float(
+                        loss_components.get("masked_hierarchical_nll", ce_loss).detach().item()
+                    ) * batch_size
                     total_l1_penalty += float(l1_penalty.detach().item()) * batch_size
                     total_l2_penalty += float(l2_penalty.detach().item()) * batch_size
                     metric_outputs = {name: tensor.detach() for name, tensor in outputs.items()}
@@ -582,6 +688,8 @@ def train(args: argparse.Namespace) -> dict:
                     display_metric_sums = reduce_metric_sums(metric_sums, device) if distributed else metric_sums
                     display_loss_sum = total_loss
                     display_ce_loss_sum = total_ce_loss
+                    display_legacy_head_sum_ce_sum = total_legacy_head_sum_ce
+                    display_masked_hierarchical_nll_sum = total_masked_hierarchical_nll
                     display_l1_penalty_sum = total_l1_penalty
                     display_l2_penalty_sum = total_l2_penalty
                     display_examples = total_examples
@@ -594,6 +702,8 @@ def train(args: argparse.Namespace) -> dict:
                                 display_l1_penalty_sum,
                                 display_l2_penalty_sum,
                                 display_examples,
+                                display_legacy_head_sum_ce_sum,
+                                display_masked_hierarchical_nll_sum,
                             ],
                             dtype=torch.float64,
                             device=device,
@@ -604,6 +714,8 @@ def train(args: argparse.Namespace) -> dict:
                         display_l1_penalty_sum = float(loss_tensor[2].item())
                         display_l2_penalty_sum = float(loss_tensor[3].item())
                         display_examples = int(loss_tensor[4].item())
+                        display_legacy_head_sum_ce_sum = float(loss_tensor[5].item())
+                        display_masked_hierarchical_nll_sum = float(loss_tensor[6].item())
                         dist.all_reduce(display_grad_norm, op=dist.ReduceOp.MAX)
                     display_grad_norm_value = float(display_grad_norm.item())
                     display_denominator = max(1, display_examples)
@@ -619,6 +731,8 @@ def train(args: argparse.Namespace) -> dict:
                             "global_batch": global_batch,
                             "optimization_loss": display_loss_sum / display_denominator,
                             "cross_entropy_loss": display_ce_loss_sum / display_denominator,
+                            "legacy_head_sum_ce": display_legacy_head_sum_ce_sum / display_denominator,
+                            "masked_hierarchical_nll": display_masked_hierarchical_nll_sum / display_denominator,
                             "elastic_net_l1_penalty": display_l1_penalty,
                             "elastic_net_l2_penalty": display_l2_penalty,
                             "regularization_loss": display_l1_penalty + display_l2_penalty,
@@ -652,6 +766,8 @@ def train(args: argparse.Namespace) -> dict:
         display_metric_sums = reduce_metric_sums(metric_sums, device) if distributed else metric_sums
         display_loss_sum = total_loss
         display_ce_loss_sum = total_ce_loss
+        display_legacy_head_sum_ce_sum = total_legacy_head_sum_ce
+        display_masked_hierarchical_nll_sum = total_masked_hierarchical_nll
         display_l1_penalty_sum = total_l1_penalty
         display_l2_penalty_sum = total_l2_penalty
         display_examples = total_examples
@@ -664,6 +780,8 @@ def train(args: argparse.Namespace) -> dict:
                     display_l1_penalty_sum,
                     display_l2_penalty_sum,
                     display_examples,
+                    display_legacy_head_sum_ce_sum,
+                    display_masked_hierarchical_nll_sum,
                 ],
                 dtype=torch.float64,
                 device=device,
@@ -674,6 +792,8 @@ def train(args: argparse.Namespace) -> dict:
             display_l1_penalty_sum = float(loss_tensor[2].item())
             display_l2_penalty_sum = float(loss_tensor[3].item())
             display_examples = int(loss_tensor[4].item())
+            display_legacy_head_sum_ce_sum = float(loss_tensor[5].item())
+            display_masked_hierarchical_nll_sum = float(loss_tensor[6].item())
             dist.all_reduce(display_grad_norm, op=dist.ReduceOp.MAX)
         display_grad_norm_value = float(display_grad_norm.item())
         display_denominator = max(1, display_examples)
@@ -688,6 +808,8 @@ def train(args: argparse.Namespace) -> dict:
                 "global_batch": global_batch,
                 "optimization_loss": display_loss_sum / display_denominator,
                 "cross_entropy_loss": display_ce_loss_sum / display_denominator,
+                "legacy_head_sum_ce": display_legacy_head_sum_ce_sum / display_denominator,
+                "masked_hierarchical_nll": display_masked_hierarchical_nll_sum / display_denominator,
                 "elastic_net_l1_penalty": display_l1_penalty,
                 "elastic_net_l2_penalty": display_l2_penalty,
                 "regularization_loss": display_l1_penalty + display_l2_penalty,
@@ -765,6 +887,7 @@ def main() -> int:
     parser.add_argument("--checkpoint-out", default="models/tjong_slide_resnet_supervised.pt")
     parser.add_argument("--checkpoint-every-epoch", action="store_true")
     parser.add_argument("--resume-from", default=None)
+    parser.add_argument("--resume-model-only", action="store_true")
     parser.add_argument("--metrics-out", default="runs/tjong_slide_resnet_supervised_metrics.json")
     parser.add_argument("--metrics-jsonl", default=None)
     parser.add_argument("--feature-version", choices=("v1", "v2"), default="v1")
@@ -798,6 +921,7 @@ def main() -> int:
     parser.add_argument("--divergence-guard-max-optimization-loss", type=float, default=0.0)
     parser.add_argument("--divergence-guard-max-grad-norm", type=float, default=0.0)
     parser.add_argument("--local-loss-normalization", action="store_true")
+    parser.add_argument("--loss-mode", choices=("head_sum", "hierarchical", "masked_hierarchical"), default="head_sum")
     parser.add_argument("--profile-timing", action="store_true")
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--device", default=None)

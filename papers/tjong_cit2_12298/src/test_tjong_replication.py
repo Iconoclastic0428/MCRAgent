@@ -94,6 +94,7 @@ from tjong_replication.train_ppo import (  # noqa: E402
 from tjong_replication.train_slide_resnet_supervised import (  # noqa: E402
     divergence_guard_reasons,
     elastic_net_penalty,
+    fast_local_supervised_loss_components,
     slide_checkpoint_payload,
 )
 from tjong_replication.train_supervised import (  # noqa: E402
@@ -320,6 +321,44 @@ def test_slide_elastic_net_penalty_uses_l1_and_l2_lambdas():
 
     assert torch.isclose(l1_penalty, torch.tensor(0.6))
     assert torch.isclose(l2_penalty, torch.tensor(0.14))
+
+
+def test_slide_masked_hierarchical_loss_is_optimized_total():
+    n = 2
+    action_label = torch.tensor([ACTION_TO_INDEX["DISCARD"], ACTION_TO_INDEX["PONG"]], dtype=torch.long)
+    claim_label = torch.tensor([0, flatten_claim("PONG", tile_id("W1"))], dtype=torch.long)
+    discard_label = torch.tensor([tile_id("W1"), 0], dtype=torch.long)
+    action_logits = torch.zeros(n, len(ACTION_NAMES))
+    action_logits[0, ACTION_TO_INDEX["HU"]] = 20.0
+    action_logits[1, ACTION_TO_INDEX["CHOW"]] = 20.0
+    claim_logits = torch.zeros(n, CLAIM_SIZE)
+    claim_logits[1, flatten_claim("CHOW", 0)] = 20.0
+    claim_logits[1, flatten_claim("PONG", tile_id("W1"))] = 8.0
+    discard_logits = torch.zeros(n, len(TILE_NAMES))
+    discard_logits[0, tile_id("T9")] = 20.0
+    game = torch.zeros(n, 4, 24)
+    game[0, -1, -8 + ACTION_TO_INDEX["DISCARD"]] = 1.0
+    game[1, -1, -8 + ACTION_TO_INDEX["PONG"]] = 1.0
+    sub_visible = torch.zeros(n, 4, 22, 34)
+    sub_visible[0, -1, 0, tile_id("W1")] = 1.0
+
+    components = fast_local_supervised_loss_components(
+        {
+            "action_logits": action_logits,
+            "claim_logits": claim_logits,
+            "discard_logits": discard_logits,
+        },
+        (action_label, claim_label, discard_label),
+        {
+            "game_features": game,
+            "sub_visible_tiles": sub_visible,
+        },
+        loss_mode="masked_hierarchical",
+    )
+
+    assert torch.isclose(components["total"], components["masked_hierarchical_nll"])
+    assert components["total"] < 0.1
+    assert components["legacy_head_sum_ce"] > 30.0
 
 
 def test_slide_checkpoint_payload_records_resume_state():
