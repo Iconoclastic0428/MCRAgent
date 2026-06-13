@@ -1,0 +1,235 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tjong-slide-resnet-v1-validation-cpu-20260613a
+  namespace: nourish-sdsc
+  labels:
+    app: tjong-replication
+    task: slide-resnet-v1-validation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 7200
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: tjong-replication
+        task: slide-resnet-v1-validation
+    spec:
+      restartPolicy: Never
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - rci-tide-gpu-01.sdsu.edu
+                      - rci-tide-gpu-02.sdsu.edu
+                      - rci-tide-gpu-03.sdsu.edu
+                      - rci-tide-gpu-04.sdsu.edu
+                      - rci-tide-gpu-05.sdsu.edu
+                      - rci-tide-gpu-06.sdsu.edu
+                      - rci-tide-gpu-07.sdsu.edu
+                      - rci-tide-gpu-08.sdsu.edu
+                      - rci-tide-gpu-09.sdsu.edu
+                      - rci-tide-gpu-10.sdsu.edu
+                      - rci-tide-gpu-11.sdsu.edu
+                      - rci-tide-gpu-12.sdsu.edu
+                      - rci-tide-gpu-13.sdsu.edu
+                      - rci-tide-gpu-14.sdsu.edu
+                      - rci-tide-gpu-15.sdsu.edu
+                      - rci-tide-gpu-16.sdsu.edu
+                      - rci-tide-gpu-17.sdsu.edu
+      containers:
+        - name: slide-resnet-v1-validation
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          workingDir: /data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+            - name: TJONG_BRANCH
+              value: codex/tjong-paper-ppo-gate
+            - name: TJONG_RUN
+              value: tjong_slide_resnet_v1_elastic_1x4090_20260612g
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              DATA_ROOT=/data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+              DOWNLOAD_ROOT=/tmp/mcragent_tjong_slide_resnet_v1_validation_20260613a
+              rm -rf "${DOWNLOAD_ROOT}"
+              python - <<'PY'
+              import os
+              import shutil
+              import urllib.request
+              import zipfile
+              from pathlib import Path
+
+              branch = os.environ["TJONG_BRANCH"]
+              url = f"https://github.com/Iconoclastic0428/MCRAgent/archive/refs/heads/{branch}.zip"
+              root = Path("/tmp/mcragent_tjong_slide_resnet_v1_validation_20260613a")
+              archive = Path("/tmp/mcragent_tjong_slide_resnet_v1_validation_20260613a.zip")
+              shutil.rmtree(root, ignore_errors=True)
+              root.mkdir(parents=True, exist_ok=True)
+              urllib.request.urlretrieve(url, archive)
+              with zipfile.ZipFile(archive) as src:
+                  src.extractall(root)
+              children = [p for p in root.iterdir() if p.is_dir()]
+              if len(children) != 1:
+                  raise RuntimeError(f"unexpected archive layout: {children}")
+              Path("/tmp/mcragent_tjong_slide_resnet_v1_validation_repo_path.txt").write_text(str(children[0]), encoding="utf-8")
+              print("downloaded_branch_zip", url, children[0], flush=True)
+              PY
+              TEST_REPO=$(cat /tmp/mcragent_tjong_slide_resnet_v1_validation_repo_path.txt)
+              cd "${TEST_REPO}"
+              export PYTHONPATH="${TEST_REPO}/papers/tjong_cit2_12298/src:${TEST_REPO}/scripts:${PYTHONPATH:-}"
+              TENSOR_ENCODING_VERSION="${TJONG_TENSOR_ENCODING_VERSION:-tjong_cit2_12298_v3_hidden_concealed_kong}"
+              CHECKPOINT="${DATA_ROOT}/models/${TJONG_RUN}.pt"
+              SNAPSHOT="${DATA_ROOT}/models/${TJONG_RUN}_validation_snapshot_20260613a.pt"
+              VAL_HUMAN="${DATA_ROOT}/data/processed/high_elo2300/tziakcha_human256_elo2300_eval.jsonl"
+              VAL_CHAGA="${DATA_ROOT}/data/processed/high_elo2300/tziakcha_chaga0208_elo2300_eval.jsonl"
+              VAL_RAW="${DATA_ROOT}/data/processed/tjong/tjong_slide_validation_high_elo2300_20260613a.jsonl"
+              VAL_SUMMARY="${DATA_ROOT}/runs/tjong_slide_validation_high_elo2300_20260613a_validation.json"
+              VAL_PT="${DATA_ROOT}/data/processed/tjong/tjong_slide_validation_high_elo2300_20260613a_tensorized.pt"
+              VAL_TENSORIZE_SUMMARY="${DATA_ROOT}/runs/tjong_slide_validation_high_elo2300_20260613a_tensorize_summary.json"
+              VAL_METRICS="${DATA_ROOT}/runs/${TJONG_RUN}_high_elo2300_val_full_20260613a.json"
+              EXPECTED_RECORDS=59
+              test -s "${CHECKPOINT}"
+              test -s "${VAL_HUMAN}"
+              test -s "${VAL_CHAGA}"
+              test -s papers/tjong_cit2_12298/src/tjong_replication/evaluate_slide_resnet_supervised.py
+              mkdir -p "$(dirname "${VAL_RAW}")" "$(dirname "${VAL_SUMMARY}")" "$(dirname "${VAL_PT}")" "$(dirname "${SNAPSHOT}")"
+              if [ ! -s "${VAL_RAW}" ]; then
+                cat "${VAL_HUMAN}" "${VAL_CHAGA}" > "${VAL_RAW}"
+              fi
+              export VAL_RAW VAL_SUMMARY VAL_PT VAL_TENSORIZE_SUMMARY VAL_METRICS CHECKPOINT SNAPSHOT EXPECTED_RECORDS TENSOR_ENCODING_VERSION
+              python - <<'PY'
+              import os
+              from pathlib import Path
+              path = Path(os.environ["VAL_RAW"])
+              count = sum(1 for _ in path.open(encoding="utf-8"))
+              expected = int(os.environ["EXPECTED_RECORDS"])
+              if count != expected:
+                  raise RuntimeError(f"validation record count mismatch: {count} != {expected}")
+              print("slide_validation_raw_ready", {"path": str(path), "records": count}, flush=True)
+              PY
+              if [ ! -s "${VAL_SUMMARY}" ]; then
+                python -m tjong_replication.validate_paper_corpus \
+                  --in "${VAL_RAW}" \
+                  --expected-records "${EXPECTED_RECORDS}" \
+                  --summary-out "${VAL_SUMMARY}"
+              fi
+              python - <<'PY'
+              import json
+              import os
+              from pathlib import Path
+              summary = json.loads(Path(os.environ["VAL_SUMMARY"]).read_text(encoding="utf-8"))
+              assert summary.get("path") == os.environ["VAL_RAW"], summary
+              assert int(summary.get("records", -1)) == int(os.environ["EXPECTED_RECORDS"]), summary
+              assert bool(summary.get("valid_for_paper_supervised")), summary
+              assert int(summary.get("error_count", -1)) == 0, summary
+              print("slide_validation_corpus_validated", json.dumps({
+                  "records": summary["records"],
+                  "sha256": summary.get("sha256"),
+              }, sort_keys=True), flush=True)
+              PY
+              if [ ! -s "${VAL_PT}" ]; then
+                python -m tjong_replication.tensorize_botzone \
+                  --in "${VAL_RAW}" \
+                  --out "${VAL_PT}" \
+                  --summary-out "${VAL_TENSORIZE_SUMMARY}" \
+                  --corpus-validation "${VAL_SUMMARY}" \
+                  --compact-metadata \
+                  --compact-storage
+              fi
+              python - <<'PY'
+              import json
+              import os
+              from pathlib import Path
+              summary = json.loads(Path(os.environ["VAL_TENSORIZE_SUMMARY"]).read_text(encoding="utf-8"))
+              assert summary.get("input") == os.environ["VAL_RAW"], summary
+              assert summary.get("output") == os.environ["VAL_PT"], summary
+              assert int(summary.get("stats", {}).get("matches", 0)) == int(os.environ["EXPECTED_RECORDS"]), summary
+              assert (summary.get("encoding_schema") or {}).get("version") == os.environ["TENSOR_ENCODING_VERSION"], summary
+              assert int(summary.get("examples", 0)) > 0, summary
+              print("slide_validation_tensor_ready", json.dumps({
+                  "examples": int(summary.get("examples", 0)),
+                  "matches": int(summary.get("stats", {}).get("matches", 0)),
+              }, sort_keys=True), flush=True)
+              PY
+              python - <<'PY'
+              import os
+              import time
+              from pathlib import Path
+              import torch
+
+              checkpoint = Path(os.environ["CHECKPOINT"])
+              snapshot = Path(os.environ["SNAPSHOT"])
+              last_error = None
+              for attempt in range(12):
+                  try:
+                      payload = torch.load(checkpoint, map_location="cpu")
+                      if not isinstance(payload, dict) or "model_state_dict" not in payload:
+                          raise RuntimeError("checkpoint is missing model_state_dict")
+                      torch.save(payload, snapshot)
+                      metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+                      print("slide_validation_checkpoint_snapshot", {
+                          "source": str(checkpoint),
+                          "snapshot": str(snapshot),
+                          "epoch": int(payload.get("epoch", 0) or 0),
+                          "global_batch": int(metrics.get("global_batch", 0) or 0),
+                      }, flush=True)
+                      break
+                  except Exception as exc:
+                      last_error = exc
+                      print("slide_validation_checkpoint_snapshot_retry", {"attempt": attempt + 1, "error": str(exc)}, flush=True)
+                      time.sleep(10)
+              else:
+                  raise RuntimeError(f"could not snapshot checkpoint: {last_error}")
+              PY
+              python -m tjong_replication.evaluate_slide_resnet_supervised \
+                --checkpoint "${SNAPSHOT}" \
+                --eval-pt "${VAL_PT}" \
+                --metrics-out "${VAL_METRICS}" \
+                --batch-size 512 \
+                --device cpu \
+                --require-encoding-version "${TENSOR_ENCODING_VERSION}" \
+                --seed 0
+              python - <<'PY'
+              import json
+              import os
+              from pathlib import Path
+              metrics = json.loads(Path(os.environ["VAL_METRICS"]).read_text(encoding="utf-8"))
+              print("slide_resnet_validation_full_summary", json.dumps({
+                  "checkpoint_epoch": metrics.get("checkpoint_epoch"),
+                  "checkpoint_global_batch": metrics.get("checkpoint_global_batch"),
+                  "evaluated_examples": metrics.get("evaluated_examples"),
+                  "cross_entropy_loss": metrics.get("cross_entropy_loss"),
+                  "optimization_loss": metrics.get("optimization_loss"),
+                  "decision_loss": metrics.get("decision_loss"),
+                  "discard_accuracy": metrics.get("discard_accuracy"),
+                  "claim_accuracy": metrics.get("claim_accuracy"),
+                  "action_accuracy": metrics.get("action_accuracy"),
+              }, sort_keys=True), flush=True)
+              PY
+          resources:
+            limits:
+              cpu: "8"
+              memory: 64Gi
+              ephemeral-storage: 80Gi
+            requests:
+              cpu: "8"
+              memory: 64Gi
+              ephemeral-storage: 80Gi
+          volumeMounts:
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

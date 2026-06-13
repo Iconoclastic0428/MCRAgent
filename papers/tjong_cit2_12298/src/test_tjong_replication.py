@@ -29,6 +29,7 @@ from tjong_replication.convert_tziakcha_to_initdata import convert_tziakcha_init
 from tjong_replication.encoding import VISIBLE_ROW_NAMES  # noqa: E402
 from tjong_replication.evaluate_supervised import load_model  # noqa: E402
 from tjong_replication.evaluate_checkpoints import evaluate_checkpoints  # noqa: E402
+from tjong_replication.evaluate_slide_resnet_supervised import evaluate as evaluate_slide_resnet  # noqa: E402
 from tjong_replication.fan_attribution import attribute_display_fans  # noqa: E402
 from tjong_replication.fan_backward import FanItem, calculate_score, winning_reward  # noqa: E402
 from tjong_replication.merge_selfplay_shards import merge_shards  # noqa: E402
@@ -351,6 +352,110 @@ def test_slide_checkpoint_payload_records_resume_state():
     assert "optimizer" in payload
     assert "scheduler" in payload
     assert payload["config"]["base_channels"] == 8
+
+
+def test_evaluate_slide_resnet_reports_full_pass_metrics():
+    config = SlideResNetConfig(base_channels=8, head_hidden=16, dropout=0.0, use_hidden_tiles=True)
+    model = SlideMahjongResNetDueling(config)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=4)
+    metrics = {
+        "checkpoint_encoding_version": TENSOR_ENCODING_VERSION,
+        "epochs": [],
+        "epochs_completed": 0,
+        "global_batch": 0,
+        "l1_lambda": 1e-7,
+        "l2_lambda": 1e-5,
+    }
+    visible = torch.zeros(3, 4, 22, 34)
+    game = torch.zeros(3, 4, 24)
+    hidden = torch.zeros(3, 5, 34)
+    action_label = torch.tensor(
+        [
+            ACTION_TO_INDEX["DISCARD"],
+            ACTION_TO_INDEX["CHOW"],
+            ACTION_TO_INDEX["PONG"],
+        ],
+        dtype=torch.long,
+    )
+    claim_label = torch.tensor(
+        [
+            0,
+            flatten_claim("CHOW", chow_claim_index("W2", "W1")),
+            flatten_claim("PONG", tile_id("W1")),
+        ],
+        dtype=torch.long,
+    )
+    discard_label = torch.tensor([tile_id("W1"), tile_id("W2"), tile_id("W3")], dtype=torch.long)
+
+    with tempfile.TemporaryDirectory(dir=ROOT) as tmp_dir:
+        tmp = Path(tmp_dir)
+        checkpoint = tmp / "slide.pt"
+        eval_pt = tmp / "eval.pt"
+        metrics_out = tmp / "metrics.json"
+        torch.save(
+            slide_checkpoint_payload(
+                raw_model=model,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                config=config,
+                metrics=metrics,
+                completed_epochs=0,
+                data_parallel_enabled=False,
+            ),
+            checkpoint,
+        )
+        torch.save(
+            {
+                "visible_tiles": visible,
+                "game_features": game,
+                "hidden_tiles": hidden,
+                "action_label": action_label,
+                "claim_label": claim_label,
+                "discard_label": discard_label,
+                "examples": 3,
+                "encoding_schema": tensor_encoding_schema(),
+            },
+            eval_pt,
+        )
+
+        result = evaluate_slide_resnet(
+            argparse.Namespace(
+                checkpoint=str(checkpoint),
+                eval_pt=str(eval_pt),
+                metrics_out=str(metrics_out),
+                batch_size=2,
+                num_workers=0,
+                device="cpu",
+                amp="off",
+                allow_tf32=False,
+                require_encoding_version=TENSOR_ENCODING_VERSION,
+                seed=0,
+                strict_deterministic=False,
+                optimized_sharded_loader=False,
+                shard_prefetch=1,
+                pin_memory=False,
+                drop_shard_file_cache=False,
+                mmap_shards=False,
+                max_batches=0,
+                progress_every_batches=0,
+                l1_lambda=None,
+                l2_lambda=None,
+                v2_search_levels=1,
+                v2_use_official_fan=False,
+                v2_require_official_fan=False,
+            )
+        )
+        written_examples = json.loads(metrics_out.read_text(encoding="utf-8"))["evaluated_examples"]
+
+    assert result["full_pass"]
+    assert result["evaluated_examples"] == 3
+    assert result["action_count"] == 3
+    assert result["claim_count"] == 2
+    assert result["discard_count"] == 1
+    assert result["cross_entropy_loss"] > 0
+    assert written_examples == 3
 
 
 def test_slide_v2_search_features_from_encoded_tensors():
