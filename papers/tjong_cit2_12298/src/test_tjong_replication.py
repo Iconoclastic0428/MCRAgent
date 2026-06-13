@@ -6,6 +6,7 @@ import json
 import tempfile
 import types
 
+import pytest
 import torch
 
 
@@ -458,6 +459,11 @@ def test_evaluate_slide_resnet_reports_full_pass_metrics():
     assert result["l2_lambda"] == 1e-5
     assert result["regularization_loss"] > 0
     assert result["cross_entropy_loss"] > 0
+    assert result["head_sum_cross_entropy_loss"] > 0
+    assert result["hierarchical_per_example_loss"] > 0
+    assert result["per_decision_loss"] > 0
+    assert result["claim_fraction"] == pytest.approx(2 / 3)
+    assert result["discard_fraction"] == pytest.approx(1 / 3)
     assert written_examples == 3
 
 

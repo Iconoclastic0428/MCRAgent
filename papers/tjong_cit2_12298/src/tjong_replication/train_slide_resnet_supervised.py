@@ -81,22 +81,41 @@ def fast_local_supervised_loss_components(
         | (action_label == CLAIM_ACTION_INDICES[4])
     )
     discard_mask = action_label == DISCARD_ACTION_INDEX
-    action_loss = F.cross_entropy(outputs["action_logits"], action_label)
+    action_sum = F.cross_entropy(outputs["action_logits"], action_label, reduction="sum")
+    raw_claim_count = claim_mask.sum()
+    raw_discard_count = discard_mask.sum()
     claim_sum = F.cross_entropy(outputs["claim_logits"][claim_mask], claim_label[claim_mask], reduction="sum")
     discard_sum = F.cross_entropy(
         outputs["discard_logits"][discard_mask],
         discard_label[discard_mask],
         reduction="sum",
     )
-    claim_count = claim_mask.sum().clamp_min(1).to(dtype=claim_sum.dtype)
-    discard_count = discard_mask.sum().clamp_min(1).to(dtype=discard_sum.dtype)
+    example_count = torch.as_tensor(action_label.numel(), device=action_sum.device, dtype=action_sum.dtype).clamp_min(1)
+    claim_count = raw_claim_count.clamp_min(1).to(device=claim_sum.device, dtype=claim_sum.dtype)
+    discard_count = raw_discard_count.clamp_min(1).to(device=discard_sum.device, dtype=discard_sum.dtype)
+    decision_count = (
+        example_count
+        + raw_claim_count.to(device=action_sum.device, dtype=action_sum.dtype)
+        + raw_discard_count.to(device=action_sum.device, dtype=action_sum.dtype)
+    ).clamp_min(1)
+    action_loss = action_sum / example_count
     claim_loss = claim_sum / claim_count
     discard_loss = discard_sum / discard_count
+    hierarchical_loss = (action_sum + claim_sum + discard_sum) / example_count
+    per_decision_loss = (action_sum + claim_sum + discard_sum) / decision_count
     return {
         "action": action_loss,
         "claim": claim_loss,
         "discard": discard_loss,
         "total": action_loss + claim_loss + discard_loss,
+        "head_sum": action_loss + claim_loss + discard_loss,
+        "hierarchical_per_example": hierarchical_loss,
+        "per_decision": per_decision_loss,
+        "action_sum": action_sum,
+        "claim_sum": claim_sum,
+        "discard_sum": discard_sum,
+        "claim_fraction": raw_claim_count.to(device=action_sum.device, dtype=action_sum.dtype) / example_count,
+        "discard_fraction": raw_discard_count.to(device=action_sum.device, dtype=action_sum.dtype) / example_count,
     }
 
 

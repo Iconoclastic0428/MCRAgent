@@ -1246,6 +1246,10 @@ def finalize_metric_sums(metric_sums: dict[str, float]) -> dict[str, float | Non
     claim_count = metric_sums.get("claim_count", 0.0)
     discard_count = metric_sums.get("discard_count", 0.0)
     decision_count = action_count + claim_count + discard_count
+    action_loss = metric_sums.get("action_loss_sum", 0.0) / action_count if action_count else None
+    claim_loss = metric_sums.get("claim_loss_sum", 0.0) / claim_count if claim_count else None
+    discard_loss = metric_sums.get("discard_loss_sum", 0.0) / discard_count if discard_count else None
+    present_head_losses = [float(value) for value in (action_loss, claim_loss, discard_loss) if value is not None]
     decision_loss_sum = (
         metric_sums.get("action_loss_sum", 0.0)
         + metric_sums.get("claim_loss_sum", 0.0)
@@ -1253,13 +1257,18 @@ def finalize_metric_sums(metric_sums: dict[str, float]) -> dict[str, float | Non
     )
     metrics = {
         "decision_loss": decision_loss_sum / decision_count if decision_count else None,
-        "action_loss": metric_sums.get("action_loss_sum", 0.0) / action_count if action_count else None,
+        "per_decision_loss": decision_loss_sum / decision_count if decision_count else None,
+        "hierarchical_per_example_loss": decision_loss_sum / action_count if action_count else None,
+        "head_sum_cross_entropy_loss": sum(present_head_losses) if present_head_losses else None,
+        "claim_fraction": claim_count / action_count if action_count else None,
+        "discard_fraction": discard_count / action_count if action_count else None,
+        "action_loss": action_loss,
         "action_accuracy": metric_sums.get("action_correct", 0.0) / action_count if action_count else None,
         "action_count": int(action_count),
-        "claim_loss": metric_sums.get("claim_loss_sum", 0.0) / claim_count if claim_count else None,
+        "claim_loss": claim_loss,
         "claim_accuracy": metric_sums.get("claim_correct", 0.0) / claim_count if claim_count else None,
         "claim_count": int(claim_count),
-        "discard_loss": metric_sums.get("discard_loss_sum", 0.0) / discard_count if discard_count else None,
+        "discard_loss": discard_loss,
         "discard_accuracy": metric_sums.get("discard_correct", 0.0) / discard_count if discard_count else None,
         "discard_count": int(discard_count),
     }
