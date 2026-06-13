@@ -284,6 +284,7 @@ def test_slide_divergence_guard_reasons():
         divergence_guard_max_discard_loss=5.0,
         divergence_guard_max_optimization_loss=10.0,
         divergence_guard_max_grad_norm=1000.0,
+        loss_mode="head_sum",
     )
     assert (
         divergence_guard_reasons(
@@ -309,6 +310,26 @@ def test_slide_divergence_guard_reasons():
     assert any("discard_loss" in reason for reason in reasons)
     assert any("max_grad_norm_before_clip" in reason for reason in reasons)
     assert not any("optimization_loss" in reason for reason in reasons)
+
+    masked_args = argparse.Namespace(
+        divergence_guard_after_epochs=2,
+        divergence_guard_max_discard_loss=5.0,
+        divergence_guard_max_optimization_loss=10.0,
+        divergence_guard_max_grad_norm=1000.0,
+        loss_mode="masked_hierarchical",
+    )
+    masked_reasons = divergence_guard_reasons(
+        masked_args,
+        {
+            "epoch": 2,
+            "discard_loss": 10.0,
+            "optimization_loss": 2.0,
+            "max_grad_norm_before_clip": 200.0,
+        },
+    )
+    assert masked_reasons == []
+    masked_args.loss_mode = "masked_hierarchical_balanced"
+    assert divergence_guard_reasons(masked_args, {"epoch": 2, "discard_loss": 10.0}) == []
 
 
 def test_slide_elastic_net_penalty_uses_l1_and_l2_lambdas():
@@ -358,6 +379,54 @@ def test_slide_masked_hierarchical_loss_is_optimized_total():
     assert components["legacy_head_sum_ce"] > 30.0
     assert int(components["action_target_mask_repairs"].item()) == 2
     assert int(components["discard_target_mask_repairs"].item()) == 1
+
+
+def test_slide_masked_hierarchical_balanced_loss_uses_legal_smoothing():
+    n = 2
+    action_label = torch.tensor([ACTION_TO_INDEX["DISCARD"], ACTION_TO_INDEX["PONG"]], dtype=torch.long)
+    claim_label = torch.tensor([0, flatten_claim("PONG", tile_id("W1"))], dtype=torch.long)
+    discard_label = torch.tensor([tile_id("W1"), 0], dtype=torch.long)
+    action_logits = torch.zeros(n, len(ACTION_NAMES))
+    action_logits[0, ACTION_TO_INDEX["DISCARD"]] = 8.0
+    action_logits[1, ACTION_TO_INDEX["PONG"]] = 8.0
+    claim_logits = torch.zeros(n, CLAIM_SIZE)
+    claim_logits[1, flatten_claim("PONG", tile_id("W1"))] = 8.0
+    discard_logits = torch.zeros(n, len(TILE_NAMES))
+    discard_logits[0, tile_id("W1")] = 8.0
+    game = torch.zeros(n, 4, 24)
+    game[0, -1, 16 + ACTION_TO_INDEX["DISCARD"]] = 1.0
+    game[1, -1, 16 + ACTION_TO_INDEX["PASS"]] = 1.0
+    game[1, -1, 16 + ACTION_TO_INDEX["PONG"]] = 1.0
+    sub_visible = torch.zeros(n, 4, 22, 34)
+    sub_visible[0, -1, 0, tile_id("W1")] = 1.0
+    sub_visible[0, -1, 0, tile_id("W2")] = 1.0
+
+    components = fast_local_supervised_loss_components(
+        {
+            "action_logits": action_logits,
+            "claim_logits": claim_logits,
+            "discard_logits": discard_logits,
+        },
+        (action_label, claim_label, discard_label),
+        {
+            "game_features": game,
+            "sub_visible_tiles": sub_visible,
+        },
+        loss_mode="masked_hierarchical_balanced",
+        action_loss_weight=1.0,
+        discard_loss_weight=0.5,
+        claim_loss_weight=0.2,
+        action_label_smoothing=0.02,
+        discard_label_smoothing=0.05,
+        claim_label_smoothing=0.01,
+    )
+
+    assert torch.isclose(components["total"], components["balanced_masked_hierarchical_ce"])
+    assert components["total"] > 0
+    assert components["masked_hierarchical_nll"] > 0
+    assert components["masked_discard_loss_conditional"] > 0
+    assert int(components["action_target_mask_repairs"].item()) == 0
+    assert int(components["discard_target_mask_repairs"].item()) == 0
 
 
 def test_slide_checkpoint_payload_records_resume_state():
@@ -481,6 +550,7 @@ def test_evaluate_slide_resnet_reports_full_pass_metrics():
                 progress_every_batches=0,
                 l1_lambda=None,
                 l2_lambda=None,
+                loss_mode="masked_hierarchical",
                 v2_search_levels=1,
                 v2_use_official_fan=False,
                 v2_require_official_fan=False,
@@ -495,8 +565,11 @@ def test_evaluate_slide_resnet_reports_full_pass_metrics():
     assert result["discard_count"] == 1
     assert result["l1_lambda"] == 1e-7
     assert result["l2_lambda"] == 1e-5
+    assert result["loss_mode"] == "masked_hierarchical"
     assert result["regularization_loss"] > 0
     assert result["cross_entropy_loss"] > 0
+    assert result["masked_hierarchical_nll"] == pytest.approx(result["cross_entropy_loss"])
+    assert result["head_sum"] > 0
     assert result["head_sum_cross_entropy_loss"] > 0
     assert result["hierarchical_per_example_loss"] > 0
     assert result["per_decision_loss"] > 0
@@ -532,6 +605,8 @@ def test_slide_v2_search_features_from_encoded_tensors():
 def test_slide_resnet_dueling_forward_shapes():
     config = SlideResNetConfig(feature_version="v1", base_channels=8, head_hidden=32, dropout=0.0)
     model = SlideMahjongResNetDueling(config)
+    assert isinstance(model.policy_norm, torch.nn.LayerNorm)
+    assert isinstance(model.tile_norm, torch.nn.LayerNorm)
     batch = 2
     visible = torch.zeros(batch, 4, 22, 34)
     game = torch.zeros(batch, 4, 24)

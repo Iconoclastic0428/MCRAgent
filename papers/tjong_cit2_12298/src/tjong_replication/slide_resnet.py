@@ -378,6 +378,8 @@ class SlideMahjongResNetDueling(nn.Module):
         self.layer4 = self._make_layer(base * 8, blocks=3, stride=2)
         final_channels = base * 8
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.policy_norm = nn.LayerNorm(final_channels)
+        self.tile_norm = nn.LayerNorm(final_channels)
         self.action_head = DuelingHead(final_channels, self.config.action_size, self.config.head_hidden, self.config.dropout)
         self.claim_head = DuelingHead(final_channels, self.config.claim_size, self.config.head_hidden, self.config.dropout)
         self.discard_head = DuelingHead(final_channels, self.config.discard_size, self.config.head_hidden, self.config.dropout)
@@ -474,6 +476,8 @@ class SlideMahjongResNetDueling(nn.Module):
                     hidden_tiles=hidden_tiles,
                     search_features=sub_search_features if sub_search_features is not None else search_features,
                 )
+        policy_state = self.policy_norm(policy_state)
+        tile_state = self.tile_norm(tile_state)
         return {
             "action_logits": self.action_head(policy_state),
             "claim_logits": self.claim_head(tile_state),

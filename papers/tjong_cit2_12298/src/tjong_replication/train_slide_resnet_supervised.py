@@ -76,6 +76,12 @@ def fast_local_supervised_loss_components(
     inputs: dict[str, torch.Tensor] | None = None,
     *,
     loss_mode: str = "head_sum",
+    action_loss_weight: float = 1.0,
+    discard_loss_weight: float = 0.5,
+    claim_loss_weight: float = 0.2,
+    action_label_smoothing: float = 0.0,
+    discard_label_smoothing: float = 0.0,
+    claim_label_smoothing: float = 0.0,
 ) -> dict[str, torch.Tensor]:
     action_label, claim_label, discard_label = labels
     claim_mask = (
@@ -127,6 +133,23 @@ def fast_local_supervised_loss_components(
         masked_components = masked_hierarchical_loss_components(outputs, labels, inputs)
         masked_hierarchical_loss = masked_components["total"]
         total = masked_hierarchical_loss
+    elif loss_mode == "masked_hierarchical_balanced":
+        if inputs is None:
+            raise ValueError("masked_hierarchical_balanced loss requires training inputs for legal masks")
+        masked_components = masked_hierarchical_loss_components(
+            outputs,
+            labels,
+            inputs,
+            balanced=True,
+            action_loss_weight=action_loss_weight,
+            discard_loss_weight=discard_loss_weight,
+            claim_loss_weight=claim_loss_weight,
+            action_label_smoothing=action_label_smoothing,
+            discard_label_smoothing=discard_label_smoothing,
+            claim_label_smoothing=claim_label_smoothing,
+        )
+        masked_hierarchical_loss = masked_components["masked_hierarchical_nll"]
+        total = masked_components["total"]
     else:
         raise ValueError(f"unknown slide loss mode: {loss_mode!r}")
     result = {
@@ -145,7 +168,14 @@ def fast_local_supervised_loss_components(
         "claim_fraction": raw_claim_count.to(device=action_sum.device, dtype=action_sum.dtype) / example_count,
         "discard_fraction": raw_discard_count.to(device=action_sum.device, dtype=action_sum.dtype) / example_count,
     }
-    for name in ("action_target_mask_repairs", "discard_target_mask_repairs"):
+    for name in (
+        "action_target_mask_repairs",
+        "discard_target_mask_repairs",
+        "balanced_masked_hierarchical_ce",
+        "masked_action_loss",
+        "masked_claim_loss_conditional",
+        "masked_discard_loss_conditional",
+    ):
         if name in masked_components:
             result[name] = masked_components[name]
     return result
@@ -161,10 +191,46 @@ def _masked_logits(logits: torch.Tensor, legal_mask: torch.Tensor) -> torch.Tens
     return logits.masked_fill(~legal_mask.bool(), _large_negative_for_logits(logits))
 
 
+def masked_smooth_cross_entropy_sum(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    legal_mask: torch.Tensor,
+    *,
+    label_smoothing: float,
+) -> torch.Tensor:
+    if logits.shape != legal_mask.shape:
+        raise ValueError(f"legal mask shape {tuple(legal_mask.shape)} does not match logits {tuple(logits.shape)}")
+    logits = logits.float()
+    target = target.long()
+    legal_mask = legal_mask.bool().clone()
+    legal_mask.scatter_(1, target[:, None], True)
+    masked_logits = logits.masked_fill(~legal_mask, _large_negative_for_logits(logits))
+    log_probs = F.log_softmax(masked_logits, dim=-1)
+    eps = float(label_smoothing)
+    if eps <= 0.0:
+        return F.nll_loss(log_probs, target, reduction="sum")
+    legal_count = legal_mask.sum(dim=-1, keepdim=True).clamp_min(1).to(log_probs.dtype)
+    target_dist = legal_mask.to(log_probs.dtype) * (eps / legal_count)
+    target_dist.scatter_add_(
+        1,
+        target[:, None],
+        torch.full((target.shape[0], 1), 1.0 - eps, device=log_probs.device, dtype=log_probs.dtype),
+    )
+    return -(target_dist * log_probs).sum(dim=-1).sum()
+
+
 def masked_hierarchical_loss_components(
     outputs: dict[str, torch.Tensor],
     labels: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     inputs: dict[str, torch.Tensor],
+    *,
+    balanced: bool = False,
+    action_loss_weight: float = 1.0,
+    discard_loss_weight: float = 0.5,
+    claim_loss_weight: float = 0.2,
+    action_label_smoothing: float = 0.0,
+    discard_label_smoothing: float = 0.0,
+    claim_label_smoothing: float = 0.0,
 ) -> dict[str, torch.Tensor]:
     action_label, claim_label, discard_label = labels
     action_logits = outputs["action_logits"]
@@ -180,10 +246,15 @@ def masked_hierarchical_loss_components(
     action_target_mask = F.one_hot(action_label, num_classes=len(ACTION_NAMES)).bool()
     action_target_outside_mask = ~action_mask.gather(1, action_label[:, None]).squeeze(1)
     action_mask = action_mask | action_target_mask
-    masked_action_logits = _masked_logits(action_logits, action_mask)
-    action_sum = F.cross_entropy(masked_action_logits, action_label, reduction="sum")
+    action_sum = masked_smooth_cross_entropy_sum(
+        action_logits,
+        action_label,
+        action_mask,
+        label_smoothing=action_label_smoothing,
+    )
 
     claim_sum = claim_logits.sum() * 0.0
+    raw_claim_count = torch.zeros((), device=action_sum.device, dtype=torch.long)
     for family in CLAIM_ACTION_NAMES:
         family_mask = action_label == ACTION_TO_INDEX[family]
         if not bool(family_mask.any().item()):
@@ -192,10 +263,12 @@ def masked_hierarchical_loss_components(
         size = CLAIM_GROUP_SIZES[family]
         local_labels = claim_label[family_mask] - offset
         claim_sum = claim_sum + F.cross_entropy(
-            claim_logits[family_mask, offset : offset + size],
+            claim_logits[family_mask, offset : offset + size].float(),
             local_labels,
             reduction="sum",
+            label_smoothing=float(claim_label_smoothing),
         )
+        raw_claim_count = raw_claim_count + family_mask.sum()
 
     discard_mask = action_label == DISCARD_ACTION_INDEX
     discard_sum = discard_logits.sum() * 0.0
@@ -206,16 +279,36 @@ def masked_hierarchical_loss_components(
         discard_target_mask = F.one_hot(safe_discard_label, num_classes=DISCARD_SIZE).bool()
         discard_target_outside_mask = discard_mask & ~legal_discards.gather(1, safe_discard_label[:, None]).squeeze(1)
         legal_discards = legal_discards | (discard_mask[:, None] & discard_target_mask)
-        masked_discard_logits = _masked_logits(discard_logits[discard_mask], legal_discards[discard_mask])
-        discard_sum = F.cross_entropy(masked_discard_logits, discard_label[discard_mask], reduction="sum")
+        discard_sum = masked_smooth_cross_entropy_sum(
+            discard_logits[discard_mask],
+            discard_label[discard_mask],
+            legal_discards[discard_mask],
+            label_smoothing=discard_label_smoothing,
+        )
 
     example_count = torch.as_tensor(action_label.numel(), device=action_sum.device, dtype=action_sum.dtype).clamp_min(1)
+    claim_count = raw_claim_count.clamp_min(1).to(device=claim_sum.device, dtype=claim_sum.dtype)
+    discard_count = discard_mask.sum().clamp_min(1).to(device=discard_sum.device, dtype=discard_sum.dtype)
+    action_loss = action_sum / example_count
+    claim_loss_conditional = claim_sum / claim_count
+    discard_loss_conditional = discard_sum / discard_count
+    masked_hierarchical_nll = (action_sum + claim_sum + discard_sum) / example_count
+    balanced_total = (
+        float(action_loss_weight) * action_loss
+        + float(discard_loss_weight) * discard_loss_conditional
+        + float(claim_loss_weight) * claim_loss_conditional
+    )
     repair_dtype = action_sum.dtype
     return {
-        "action": action_sum / example_count,
+        "action": action_loss,
         "claim": claim_sum / example_count,
         "discard": discard_sum / example_count,
-        "total": (action_sum + claim_sum + discard_sum) / example_count,
+        "total": balanced_total if balanced else masked_hierarchical_nll,
+        "masked_hierarchical_nll": masked_hierarchical_nll,
+        "balanced_masked_hierarchical_ce": balanced_total,
+        "masked_action_loss": action_loss,
+        "masked_claim_loss_conditional": claim_loss_conditional,
+        "masked_discard_loss_conditional": discard_loss_conditional,
         "action_sum": action_sum,
         "claim_sum": claim_sum,
         "discard_sum": discard_sum,
@@ -268,11 +361,12 @@ def divergence_guard_reasons(args: argparse.Namespace, epoch_metrics: dict[str, 
     if after_epochs <= 0 or epoch < after_epochs:
         return []
 
-    checks = (
-        ("discard_loss", float(getattr(args, "divergence_guard_max_discard_loss", 0.0) or 0.0)),
+    checks = [
         ("optimization_loss", float(getattr(args, "divergence_guard_max_optimization_loss", 0.0) or 0.0)),
         ("max_grad_norm_before_clip", float(getattr(args, "divergence_guard_max_grad_norm", 0.0) or 0.0)),
-    )
+    ]
+    if str(getattr(args, "loss_mode", "")).lower() not in {"masked_hierarchical", "masked_hierarchical_balanced"}:
+        checks.insert(0, ("discard_loss", float(getattr(args, "divergence_guard_max_discard_loss", 0.0) or 0.0)))
     reasons: list[str] = []
     for name, threshold in checks:
         if threshold <= 0.0:
@@ -335,6 +429,23 @@ def save_slide_checkpoint(
         ),
         path,
     )
+
+
+def adamw_parameter_groups(model: torch.nn.Module, *, weight_decay: float) -> list[dict[str, object]]:
+    decay: list[torch.nn.Parameter] = []
+    no_decay: list[torch.nn.Parameter] = []
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        lname = name.lower()
+        if parameter.ndim <= 1 or name.endswith(".bias") or "bn" in lname or "norm" in lname:
+            no_decay.append(parameter)
+        else:
+            decay.append(parameter)
+    return [
+        {"params": decay, "weight_decay": float(weight_decay)},
+        {"params": no_decay, "weight_decay": 0.0},
+    ]
 
 
 def attach_v2_search_features(
@@ -454,17 +565,19 @@ def train(args: argparse.Namespace) -> dict:
         model = torch.nn.DataParallel(raw_model)
     else:
         model = raw_model
+    optimizer_parameters = adamw_parameter_groups(model, weight_decay=args.weight_decay)
     fused_adamw = bool(args.fused_adamw and device.type == "cuda")
     try:
         optimizer = torch.optim.AdamW(
-            model.parameters(),
+            optimizer_parameters,
             lr=args.lr,
-            weight_decay=args.weight_decay,
+            weight_decay=0.0,
             fused=True,
-        ) if fused_adamw else torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        ) if fused_adamw else torch.optim.AdamW(optimizer_parameters, lr=args.lr, weight_decay=0.0)
     except (RuntimeError, TypeError):
         fused_adamw = False
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        optimizer_parameters = adamw_parameter_groups(model, weight_decay=args.weight_decay)
+        optimizer = torch.optim.AdamW(optimizer_parameters, lr=args.lr, weight_decay=0.0)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, int(args.epochs)))
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     amp_mode = str(args.amp).lower()
@@ -535,9 +648,16 @@ def train(args: argparse.Namespace) -> dict:
         "channels_last": bool(args.channels_last),
         "ddp_static_graph": bool(args.ddp_static_graph),
         "fused_adamw": fused_adamw,
+        "adamw_parameter_groups": "decay_no_decay_norm_bias",
         "optimizer": "AdamW",
         "lr": args.lr,
         "weight_decay": args.weight_decay,
+        "action_loss_weight": args.action_loss_weight,
+        "discard_loss_weight": args.discard_loss_weight,
+        "claim_loss_weight": args.claim_loss_weight,
+        "action_label_smoothing": args.action_label_smoothing,
+        "discard_label_smoothing": args.discard_label_smoothing,
+        "claim_label_smoothing": args.claim_label_smoothing,
         "scheduler": "CosineAnnealingLR",
         "elastic_net_l1_lambda": args.l1_lambda,
         "elastic_net_l2_lambda": args.l2_lambda,
@@ -548,6 +668,7 @@ def train(args: argparse.Namespace) -> dict:
         "resume_model_only": bool(args.resume_model_only),
         "resume_optimizer_state_loaded": optimizer_state_loaded,
         "resume_scheduler_state_loaded": scheduler_state_loaded,
+        "checkpoint_archive_dir": args.checkpoint_archive_dir,
         "seed": args.seed,
         "device": str(device),
         "cuda_device_count": cuda_device_count,
@@ -580,6 +701,10 @@ def train(args: argparse.Namespace) -> dict:
         total_ce_loss = 0.0
         total_legacy_head_sum_ce = 0.0
         total_masked_hierarchical_nll = 0.0
+        total_balanced_masked_hierarchical_ce = 0.0
+        total_masked_action_loss = 0.0
+        total_masked_claim_loss_conditional = 0.0
+        total_masked_discard_loss_conditional = 0.0
         total_action_target_mask_repairs = 0.0
         total_discard_target_mask_repairs = 0.0
         total_l1_penalty = 0.0
@@ -634,7 +759,18 @@ def train(args: argparse.Namespace) -> dict:
                         )
                     outputs = model(**inputs)
                     loss_components = (
-                        fast_local_supervised_loss_components(outputs, labels, inputs, loss_mode=loss_mode)
+                        fast_local_supervised_loss_components(
+                            outputs,
+                            labels,
+                            inputs,
+                            loss_mode=loss_mode,
+                            action_loss_weight=args.action_loss_weight,
+                            discard_loss_weight=args.discard_loss_weight,
+                            claim_loss_weight=args.claim_loss_weight,
+                            action_label_smoothing=args.action_label_smoothing,
+                            discard_label_smoothing=args.discard_label_smoothing,
+                            claim_label_smoothing=args.claim_label_smoothing,
+                        )
                         if use_local_loss_normalization or loss_mode != "head_sum"
                         else supervised_loss_components(outputs, labels, distributed=distributed)
                     )
@@ -697,6 +833,18 @@ def train(args: argparse.Namespace) -> dict:
                     total_masked_hierarchical_nll += float(
                         loss_components.get("masked_hierarchical_nll", ce_loss).detach().item()
                     ) * batch_size
+                    total_balanced_masked_hierarchical_ce += float(
+                        loss_components.get("balanced_masked_hierarchical_ce", ce_loss).detach().item()
+                    ) * batch_size
+                    total_masked_action_loss += float(
+                        loss_components.get("masked_action_loss", ce_loss).detach().item()
+                    ) * batch_size
+                    total_masked_claim_loss_conditional += float(
+                        loss_components.get("masked_claim_loss_conditional", ce_loss).detach().item()
+                    ) * batch_size
+                    total_masked_discard_loss_conditional += float(
+                        loss_components.get("masked_discard_loss_conditional", ce_loss).detach().item()
+                    ) * batch_size
                     total_action_target_mask_repairs += float(
                         loss_components.get("action_target_mask_repairs", ce_loss.detach() * 0.0).detach().item()
                     )
@@ -715,6 +863,10 @@ def train(args: argparse.Namespace) -> dict:
                     display_ce_loss_sum = total_ce_loss
                     display_legacy_head_sum_ce_sum = total_legacy_head_sum_ce
                     display_masked_hierarchical_nll_sum = total_masked_hierarchical_nll
+                    display_balanced_masked_hierarchical_ce_sum = total_balanced_masked_hierarchical_ce
+                    display_masked_action_loss_sum = total_masked_action_loss
+                    display_masked_claim_loss_conditional_sum = total_masked_claim_loss_conditional
+                    display_masked_discard_loss_conditional_sum = total_masked_discard_loss_conditional
                     display_action_target_mask_repairs = total_action_target_mask_repairs
                     display_discard_target_mask_repairs = total_discard_target_mask_repairs
                     display_l1_penalty_sum = total_l1_penalty
@@ -733,6 +885,10 @@ def train(args: argparse.Namespace) -> dict:
                                 display_masked_hierarchical_nll_sum,
                                 display_action_target_mask_repairs,
                                 display_discard_target_mask_repairs,
+                                display_balanced_masked_hierarchical_ce_sum,
+                                display_masked_action_loss_sum,
+                                display_masked_claim_loss_conditional_sum,
+                                display_masked_discard_loss_conditional_sum,
                             ],
                             dtype=torch.float64,
                             device=device,
@@ -747,6 +903,10 @@ def train(args: argparse.Namespace) -> dict:
                         display_masked_hierarchical_nll_sum = float(loss_tensor[6].item())
                         display_action_target_mask_repairs = float(loss_tensor[7].item())
                         display_discard_target_mask_repairs = float(loss_tensor[8].item())
+                        display_balanced_masked_hierarchical_ce_sum = float(loss_tensor[9].item())
+                        display_masked_action_loss_sum = float(loss_tensor[10].item())
+                        display_masked_claim_loss_conditional_sum = float(loss_tensor[11].item())
+                        display_masked_discard_loss_conditional_sum = float(loss_tensor[12].item())
                         dist.all_reduce(display_grad_norm, op=dist.ReduceOp.MAX)
                     display_grad_norm_value = float(display_grad_norm.item())
                     display_denominator = max(1, display_examples)
@@ -764,6 +924,10 @@ def train(args: argparse.Namespace) -> dict:
                             "cross_entropy_loss": display_ce_loss_sum / display_denominator,
                             "legacy_head_sum_ce": display_legacy_head_sum_ce_sum / display_denominator,
                             "masked_hierarchical_nll": display_masked_hierarchical_nll_sum / display_denominator,
+                            "balanced_masked_hierarchical_ce": display_balanced_masked_hierarchical_ce_sum / display_denominator,
+                            "masked_action_loss": display_masked_action_loss_sum / display_denominator,
+                            "masked_claim_loss_conditional": display_masked_claim_loss_conditional_sum / display_denominator,
+                            "masked_discard_loss_conditional": display_masked_discard_loss_conditional_sum / display_denominator,
                             "action_target_mask_repairs": int(display_action_target_mask_repairs),
                             "discard_target_mask_repairs": int(display_discard_target_mask_repairs),
                             "elastic_net_l1_penalty": display_l1_penalty,
@@ -801,6 +965,10 @@ def train(args: argparse.Namespace) -> dict:
         display_ce_loss_sum = total_ce_loss
         display_legacy_head_sum_ce_sum = total_legacy_head_sum_ce
         display_masked_hierarchical_nll_sum = total_masked_hierarchical_nll
+        display_balanced_masked_hierarchical_ce_sum = total_balanced_masked_hierarchical_ce
+        display_masked_action_loss_sum = total_masked_action_loss
+        display_masked_claim_loss_conditional_sum = total_masked_claim_loss_conditional
+        display_masked_discard_loss_conditional_sum = total_masked_discard_loss_conditional
         display_action_target_mask_repairs = total_action_target_mask_repairs
         display_discard_target_mask_repairs = total_discard_target_mask_repairs
         display_l1_penalty_sum = total_l1_penalty
@@ -819,10 +987,26 @@ def train(args: argparse.Namespace) -> dict:
                     display_masked_hierarchical_nll_sum,
                     display_action_target_mask_repairs,
                     display_discard_target_mask_repairs,
+                    display_balanced_masked_hierarchical_ce_sum,
+                    display_masked_action_loss_sum,
+                    display_masked_claim_loss_conditional_sum,
+                    display_masked_discard_loss_conditional_sum,
                 ],
                 dtype=torch.float64,
                 device=device,
             )
+            if getattr(args, "checkpoint_archive_dir", None):
+                save_slide_checkpoint(
+                    Path(args.checkpoint_archive_dir) / f"epoch_{epoch:03d}.pt",
+                    raw_model=raw_model,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    config=config,
+                    metrics=metrics,
+                    completed_epochs=completed_epochs,
+                    data_parallel_enabled=data_parallel_enabled,
+                )
             dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
             display_loss_sum = float(loss_tensor[0].item())
             display_ce_loss_sum = float(loss_tensor[1].item())
@@ -833,6 +1017,10 @@ def train(args: argparse.Namespace) -> dict:
             display_masked_hierarchical_nll_sum = float(loss_tensor[6].item())
             display_action_target_mask_repairs = float(loss_tensor[7].item())
             display_discard_target_mask_repairs = float(loss_tensor[8].item())
+            display_balanced_masked_hierarchical_ce_sum = float(loss_tensor[9].item())
+            display_masked_action_loss_sum = float(loss_tensor[10].item())
+            display_masked_claim_loss_conditional_sum = float(loss_tensor[11].item())
+            display_masked_discard_loss_conditional_sum = float(loss_tensor[12].item())
             dist.all_reduce(display_grad_norm, op=dist.ReduceOp.MAX)
         display_grad_norm_value = float(display_grad_norm.item())
         display_denominator = max(1, display_examples)
@@ -849,6 +1037,10 @@ def train(args: argparse.Namespace) -> dict:
                 "cross_entropy_loss": display_ce_loss_sum / display_denominator,
                 "legacy_head_sum_ce": display_legacy_head_sum_ce_sum / display_denominator,
                 "masked_hierarchical_nll": display_masked_hierarchical_nll_sum / display_denominator,
+                "balanced_masked_hierarchical_ce": display_balanced_masked_hierarchical_ce_sum / display_denominator,
+                "masked_action_loss": display_masked_action_loss_sum / display_denominator,
+                "masked_claim_loss_conditional": display_masked_claim_loss_conditional_sum / display_denominator,
+                "masked_discard_loss_conditional": display_masked_discard_loss_conditional_sum / display_denominator,
                 "action_target_mask_repairs": int(display_action_target_mask_repairs),
                 "discard_target_mask_repairs": int(display_discard_target_mask_repairs),
                 "elastic_net_l1_penalty": display_l1_penalty,
@@ -927,6 +1119,7 @@ def main() -> int:
     parser.add_argument("--train-pt", required=True)
     parser.add_argument("--checkpoint-out", default="models/tjong_slide_resnet_supervised.pt")
     parser.add_argument("--checkpoint-every-epoch", action="store_true")
+    parser.add_argument("--checkpoint-archive-dir", default=None)
     parser.add_argument("--resume-from", default=None)
     parser.add_argument("--resume-model-only", action="store_true")
     parser.add_argument("--metrics-out", default="runs/tjong_slide_resnet_supervised_metrics.json")
@@ -962,7 +1155,17 @@ def main() -> int:
     parser.add_argument("--divergence-guard-max-optimization-loss", type=float, default=0.0)
     parser.add_argument("--divergence-guard-max-grad-norm", type=float, default=0.0)
     parser.add_argument("--local-loss-normalization", action="store_true")
-    parser.add_argument("--loss-mode", choices=("head_sum", "hierarchical", "masked_hierarchical"), default="head_sum")
+    parser.add_argument(
+        "--loss-mode",
+        choices=("head_sum", "hierarchical", "masked_hierarchical", "masked_hierarchical_balanced"),
+        default="head_sum",
+    )
+    parser.add_argument("--action-loss-weight", type=float, default=1.0)
+    parser.add_argument("--discard-loss-weight", type=float, default=0.5)
+    parser.add_argument("--claim-loss-weight", type=float, default=0.2)
+    parser.add_argument("--action-label-smoothing", type=float, default=0.02)
+    parser.add_argument("--discard-label-smoothing", type=float, default=0.05)
+    parser.add_argument("--claim-label-smoothing", type=float, default=0.01)
     parser.add_argument("--profile-timing", action="store_true")
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--device", default=None)

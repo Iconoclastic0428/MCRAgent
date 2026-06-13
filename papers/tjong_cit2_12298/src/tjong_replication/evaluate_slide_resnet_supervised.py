@@ -97,6 +97,13 @@ def _checkpoint_metric_float(metrics: dict[str, Any], *names: str, default: floa
     return float(default)
 
 
+def _arg_or_checkpoint_float(args: argparse.Namespace, metrics: dict[str, Any], name: str, default: float) -> float:
+    value = getattr(args, name, None)
+    if value is not None:
+        return float(value)
+    return _checkpoint_metric_float(metrics, name, default=default)
+
+
 def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     configure_deterministic_eval(getattr(args, "seed", 0), strict=getattr(args, "strict_deterministic", False))
     if torch.cuda.is_available() and bool(args.allow_tf32):
@@ -140,11 +147,19 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         if args.l2_lambda is not None
         else _checkpoint_metric_float(checkpoint_metrics, "elastic_net_l2_lambda", "l2_lambda")
     )
+    loss_mode = str(getattr(args, "loss_mode", None) or checkpoint_metrics.get("loss_mode") or "head_sum")
+    action_loss_weight = _arg_or_checkpoint_float(args, checkpoint_metrics, "action_loss_weight", 1.0)
+    discard_loss_weight = _arg_or_checkpoint_float(args, checkpoint_metrics, "discard_loss_weight", 0.5)
+    claim_loss_weight = _arg_or_checkpoint_float(args, checkpoint_metrics, "claim_loss_weight", 0.2)
+    action_label_smoothing = _arg_or_checkpoint_float(args, checkpoint_metrics, "action_label_smoothing", 0.02)
+    discard_label_smoothing = _arg_or_checkpoint_float(args, checkpoint_metrics, "discard_label_smoothing", 0.05)
+    claim_label_smoothing = _arg_or_checkpoint_float(args, checkpoint_metrics, "claim_label_smoothing", 0.01)
     l1_penalty, l2_penalty = elastic_net_penalty(model, l1_lambda=l1_lambda, l2_lambda=l2_lambda)
     regularization_loss = float((l1_penalty + l2_penalty).detach().cpu().item())
 
     metric_sums: dict[str, float] = {}
-    cross_entropy_sum = 0.0
+    selected_loss_sum = 0.0
+    loss_component_sums: dict[str, float] = {}
     evaluated_examples = 0
     batch_count = 0
     started = time.time()
@@ -155,9 +170,33 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                 inputs = attach_v2_search_features(inputs, fan_checker=fan_checker, levels=args.v2_search_levels)
             with autocast_context:
                 outputs = model(**inputs)
-                loss_components = fast_local_supervised_loss_components(outputs, labels)
+                loss_components = fast_local_supervised_loss_components(
+                    outputs,
+                    labels,
+                    inputs,
+                    loss_mode=loss_mode,
+                    action_loss_weight=action_loss_weight,
+                    discard_loss_weight=discard_loss_weight,
+                    claim_loss_weight=claim_loss_weight,
+                    action_label_smoothing=action_label_smoothing,
+                    discard_label_smoothing=discard_label_smoothing,
+                    claim_label_smoothing=claim_label_smoothing,
+                )
             batch_examples = int(labels[0].shape[0])
-            cross_entropy_sum += float(loss_components["total"].detach().cpu().item()) * batch_examples
+            selected_loss_sum += float(loss_components["total"].detach().cpu().item()) * batch_examples
+            for name in (
+                "head_sum",
+                "hierarchical_per_example",
+                "masked_hierarchical_nll",
+                "balanced_masked_hierarchical_ce",
+                "masked_action_loss",
+                "masked_claim_loss_conditional",
+                "masked_discard_loss_conditional",
+                "per_decision",
+            ):
+                value = loss_components.get(name)
+                if value is not None:
+                    loss_component_sums[name] = loss_component_sums.get(name, 0.0) + float(value.detach().cpu().item()) * batch_examples
             merge_metric_sums(metric_sums, batch_metric_sums({key: value.detach() for key, value in outputs.items()}, labels))
             evaluated_examples += batch_examples
             batch_count += 1
@@ -174,7 +213,11 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
 
     finalized = finalize_metric_sums(metric_sums)
     full_pass = not bool(args.max_batches)
-    cross_entropy_loss = cross_entropy_sum / max(1, evaluated_examples)
+    cross_entropy_loss = selected_loss_sum / max(1, evaluated_examples)
+    averaged_loss_components = {
+        name: value / max(1, evaluated_examples)
+        for name, value in loss_component_sums.items()
+    }
     output: dict[str, Any] = {
         "paper": "slide-side-resnet34-dueling",
         "checkpoint": str(args.checkpoint),
@@ -195,6 +238,13 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         "evaluated_examples": evaluated_examples,
         "l1_lambda": l1_lambda,
         "l2_lambda": l2_lambda,
+        "loss_mode": loss_mode,
+        "action_loss_weight": action_loss_weight,
+        "discard_loss_weight": discard_loss_weight,
+        "claim_loss_weight": claim_loss_weight,
+        "action_label_smoothing": action_label_smoothing,
+        "discard_label_smoothing": discard_label_smoothing,
+        "claim_label_smoothing": claim_label_smoothing,
         "elastic_net_l1_penalty": float(l1_penalty.detach().cpu().item()),
         "elastic_net_l2_penalty": float(l2_penalty.detach().cpu().item()),
         "regularization_loss": regularization_loss,
@@ -203,6 +253,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         "elapsed_seconds": time.time() - started,
         **finalized,
     }
+    output.update(averaged_loss_components)
     if args.metrics_out:
         Path(args.metrics_out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.metrics_out).write_text(json.dumps(output, indent=2, sort_keys=True), encoding="utf-8")
@@ -232,6 +283,17 @@ def main() -> int:
     parser.add_argument("--progress-every-batches", type=int, default=0)
     parser.add_argument("--l1-lambda", type=float, default=None)
     parser.add_argument("--l2-lambda", type=float, default=None)
+    parser.add_argument(
+        "--loss-mode",
+        choices=("head_sum", "hierarchical", "masked_hierarchical", "masked_hierarchical_balanced"),
+        default=None,
+    )
+    parser.add_argument("--action-loss-weight", type=float, default=None)
+    parser.add_argument("--discard-loss-weight", type=float, default=None)
+    parser.add_argument("--claim-loss-weight", type=float, default=None)
+    parser.add_argument("--action-label-smoothing", type=float, default=None)
+    parser.add_argument("--discard-label-smoothing", type=float, default=None)
+    parser.add_argument("--claim-label-smoothing", type=float, default=None)
     parser.add_argument("--v2-search-levels", type=int, default=1)
     parser.add_argument("--v2-use-official-fan", action="store_true")
     parser.add_argument("--v2-require-official-fan", action="store_true")
