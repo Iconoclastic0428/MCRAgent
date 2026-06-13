@@ -337,10 +337,7 @@ def test_slide_masked_hierarchical_loss_is_optimized_total():
     discard_logits = torch.zeros(n, len(TILE_NAMES))
     discard_logits[0, tile_id("T9")] = 20.0
     game = torch.zeros(n, 4, 24)
-    game[0, -1, -8 + ACTION_TO_INDEX["DISCARD"]] = 1.0
-    game[1, -1, -8 + ACTION_TO_INDEX["PONG"]] = 1.0
     sub_visible = torch.zeros(n, 4, 22, 34)
-    sub_visible[0, -1, 0, tile_id("W1")] = 1.0
 
     components = fast_local_supervised_loss_components(
         {
@@ -359,6 +356,8 @@ def test_slide_masked_hierarchical_loss_is_optimized_total():
     assert torch.isclose(components["total"], components["masked_hierarchical_nll"])
     assert components["total"] < 0.1
     assert components["legacy_head_sum_ce"] > 30.0
+    assert int(components["action_target_mask_repairs"].item()) == 2
+    assert int(components["discard_target_mask_repairs"].item()) == 1
 
 
 def test_slide_checkpoint_payload_records_resume_state():

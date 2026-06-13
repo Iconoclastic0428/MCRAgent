@@ -114,6 +114,7 @@ def fast_local_supervised_loss_components(
     legacy_head_sum = action_loss + claim_loss + discard_loss
     unmasked_hierarchical_loss = (action_sum + claim_sum + discard_sum) / example_count
     per_decision_loss = (action_sum + claim_sum + discard_sum) / decision_count
+    masked_components: dict[str, torch.Tensor] = {}
     if loss_mode == "head_sum":
         total = legacy_head_sum
         masked_hierarchical_loss = unmasked_hierarchical_loss
@@ -123,11 +124,12 @@ def fast_local_supervised_loss_components(
     elif loss_mode == "masked_hierarchical":
         if inputs is None:
             raise ValueError("masked_hierarchical loss requires training inputs for legal masks")
-        masked_hierarchical_loss = masked_hierarchical_loss_components(outputs, labels, inputs)["total"]
+        masked_components = masked_hierarchical_loss_components(outputs, labels, inputs)
+        masked_hierarchical_loss = masked_components["total"]
         total = masked_hierarchical_loss
     else:
         raise ValueError(f"unknown slide loss mode: {loss_mode!r}")
-    return {
+    result = {
         "action": action_loss,
         "claim": claim_loss,
         "discard": discard_loss,
@@ -143,6 +145,10 @@ def fast_local_supervised_loss_components(
         "claim_fraction": raw_claim_count.to(device=action_sum.device, dtype=action_sum.dtype) / example_count,
         "discard_fraction": raw_discard_count.to(device=action_sum.device, dtype=action_sum.dtype) / example_count,
     }
+    for name in ("action_target_mask_repairs", "discard_target_mask_repairs"):
+        if name in masked_components:
+            result[name] = masked_components[name]
+    return result
 
 
 def _large_negative_for_logits(logits: torch.Tensor) -> float:
@@ -171,6 +177,9 @@ def masked_hierarchical_loss_components(
     if sub_visible_tiles is None:
         raise ValueError("masked hierarchical loss requires sub_visible_tiles")
     action_mask = game_features[:, -1, ACTION_MASK_OFFSET : ACTION_MASK_OFFSET + len(ACTION_NAMES)] > 0
+    action_target_mask = F.one_hot(action_label, num_classes=len(ACTION_NAMES)).bool()
+    action_target_outside_mask = ~action_mask.gather(1, action_label[:, None]).squeeze(1)
+    action_mask = action_mask | action_target_mask
     masked_action_logits = _masked_logits(action_logits, action_mask)
     action_sum = F.cross_entropy(masked_action_logits, action_label, reduction="sum")
 
@@ -190,12 +199,18 @@ def masked_hierarchical_loss_components(
 
     discard_mask = action_label == DISCARD_ACTION_INDEX
     discard_sum = discard_logits.sum() * 0.0
+    discard_target_outside_mask = torch.zeros_like(discard_mask)
     if bool(discard_mask.any().item()):
         legal_discards = sub_visible_tiles[:, -1, HAND_SELF_VISIBLE_ROW, :DISCARD_SIZE] > 0
+        safe_discard_label = discard_label.clamp(0, DISCARD_SIZE - 1)
+        discard_target_mask = F.one_hot(safe_discard_label, num_classes=DISCARD_SIZE).bool()
+        discard_target_outside_mask = discard_mask & ~legal_discards.gather(1, safe_discard_label[:, None]).squeeze(1)
+        legal_discards = legal_discards | (discard_mask[:, None] & discard_target_mask)
         masked_discard_logits = _masked_logits(discard_logits[discard_mask], legal_discards[discard_mask])
         discard_sum = F.cross_entropy(masked_discard_logits, discard_label[discard_mask], reduction="sum")
 
     example_count = torch.as_tensor(action_label.numel(), device=action_sum.device, dtype=action_sum.dtype).clamp_min(1)
+    repair_dtype = action_sum.dtype
     return {
         "action": action_sum / example_count,
         "claim": claim_sum / example_count,
@@ -204,6 +219,8 @@ def masked_hierarchical_loss_components(
         "action_sum": action_sum,
         "claim_sum": claim_sum,
         "discard_sum": discard_sum,
+        "action_target_mask_repairs": action_target_outside_mask.sum().to(device=action_sum.device, dtype=repair_dtype),
+        "discard_target_mask_repairs": discard_target_outside_mask.sum().to(device=action_sum.device, dtype=repair_dtype),
     }
 
 
@@ -563,6 +580,8 @@ def train(args: argparse.Namespace) -> dict:
         total_ce_loss = 0.0
         total_legacy_head_sum_ce = 0.0
         total_masked_hierarchical_nll = 0.0
+        total_action_target_mask_repairs = 0.0
+        total_discard_target_mask_repairs = 0.0
         total_l1_penalty = 0.0
         total_l2_penalty = 0.0
         total_examples = 0
@@ -678,6 +697,12 @@ def train(args: argparse.Namespace) -> dict:
                     total_masked_hierarchical_nll += float(
                         loss_components.get("masked_hierarchical_nll", ce_loss).detach().item()
                     ) * batch_size
+                    total_action_target_mask_repairs += float(
+                        loss_components.get("action_target_mask_repairs", ce_loss.detach() * 0.0).detach().item()
+                    )
+                    total_discard_target_mask_repairs += float(
+                        loss_components.get("discard_target_mask_repairs", ce_loss.detach() * 0.0).detach().item()
+                    )
                     total_l1_penalty += float(l1_penalty.detach().item()) * batch_size
                     total_l2_penalty += float(l2_penalty.detach().item()) * batch_size
                     metric_outputs = {name: tensor.detach() for name, tensor in outputs.items()}
@@ -690,6 +715,8 @@ def train(args: argparse.Namespace) -> dict:
                     display_ce_loss_sum = total_ce_loss
                     display_legacy_head_sum_ce_sum = total_legacy_head_sum_ce
                     display_masked_hierarchical_nll_sum = total_masked_hierarchical_nll
+                    display_action_target_mask_repairs = total_action_target_mask_repairs
+                    display_discard_target_mask_repairs = total_discard_target_mask_repairs
                     display_l1_penalty_sum = total_l1_penalty
                     display_l2_penalty_sum = total_l2_penalty
                     display_examples = total_examples
@@ -704,6 +731,8 @@ def train(args: argparse.Namespace) -> dict:
                                 display_examples,
                                 display_legacy_head_sum_ce_sum,
                                 display_masked_hierarchical_nll_sum,
+                                display_action_target_mask_repairs,
+                                display_discard_target_mask_repairs,
                             ],
                             dtype=torch.float64,
                             device=device,
@@ -716,6 +745,8 @@ def train(args: argparse.Namespace) -> dict:
                         display_examples = int(loss_tensor[4].item())
                         display_legacy_head_sum_ce_sum = float(loss_tensor[5].item())
                         display_masked_hierarchical_nll_sum = float(loss_tensor[6].item())
+                        display_action_target_mask_repairs = float(loss_tensor[7].item())
+                        display_discard_target_mask_repairs = float(loss_tensor[8].item())
                         dist.all_reduce(display_grad_norm, op=dist.ReduceOp.MAX)
                     display_grad_norm_value = float(display_grad_norm.item())
                     display_denominator = max(1, display_examples)
@@ -733,6 +764,8 @@ def train(args: argparse.Namespace) -> dict:
                             "cross_entropy_loss": display_ce_loss_sum / display_denominator,
                             "legacy_head_sum_ce": display_legacy_head_sum_ce_sum / display_denominator,
                             "masked_hierarchical_nll": display_masked_hierarchical_nll_sum / display_denominator,
+                            "action_target_mask_repairs": int(display_action_target_mask_repairs),
+                            "discard_target_mask_repairs": int(display_discard_target_mask_repairs),
                             "elastic_net_l1_penalty": display_l1_penalty,
                             "elastic_net_l2_penalty": display_l2_penalty,
                             "regularization_loss": display_l1_penalty + display_l2_penalty,
@@ -768,6 +801,8 @@ def train(args: argparse.Namespace) -> dict:
         display_ce_loss_sum = total_ce_loss
         display_legacy_head_sum_ce_sum = total_legacy_head_sum_ce
         display_masked_hierarchical_nll_sum = total_masked_hierarchical_nll
+        display_action_target_mask_repairs = total_action_target_mask_repairs
+        display_discard_target_mask_repairs = total_discard_target_mask_repairs
         display_l1_penalty_sum = total_l1_penalty
         display_l2_penalty_sum = total_l2_penalty
         display_examples = total_examples
@@ -782,6 +817,8 @@ def train(args: argparse.Namespace) -> dict:
                     display_examples,
                     display_legacy_head_sum_ce_sum,
                     display_masked_hierarchical_nll_sum,
+                    display_action_target_mask_repairs,
+                    display_discard_target_mask_repairs,
                 ],
                 dtype=torch.float64,
                 device=device,
@@ -794,6 +831,8 @@ def train(args: argparse.Namespace) -> dict:
             display_examples = int(loss_tensor[4].item())
             display_legacy_head_sum_ce_sum = float(loss_tensor[5].item())
             display_masked_hierarchical_nll_sum = float(loss_tensor[6].item())
+            display_action_target_mask_repairs = float(loss_tensor[7].item())
+            display_discard_target_mask_repairs = float(loss_tensor[8].item())
             dist.all_reduce(display_grad_norm, op=dist.ReduceOp.MAX)
         display_grad_norm_value = float(display_grad_norm.item())
         display_denominator = max(1, display_examples)
@@ -810,6 +849,8 @@ def train(args: argparse.Namespace) -> dict:
                 "cross_entropy_loss": display_ce_loss_sum / display_denominator,
                 "legacy_head_sum_ce": display_legacy_head_sum_ce_sum / display_denominator,
                 "masked_hierarchical_nll": display_masked_hierarchical_nll_sum / display_denominator,
+                "action_target_mask_repairs": int(display_action_target_mask_repairs),
+                "discard_target_mask_repairs": int(display_discard_target_mask_repairs),
                 "elastic_net_l1_penalty": display_l1_penalty,
                 "elastic_net_l2_penalty": display_l2_penalty,
                 "regularization_loss": display_l1_penalty + display_l2_penalty,
