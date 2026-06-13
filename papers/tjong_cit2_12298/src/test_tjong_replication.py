@@ -364,8 +364,8 @@ def test_evaluate_slide_resnet_reports_full_pass_metrics():
         "epochs": [],
         "epochs_completed": 0,
         "global_batch": 0,
-        "l1_lambda": 1e-7,
-        "l2_lambda": 1e-5,
+        "elastic_net_l1_lambda": 1e-7,
+        "elastic_net_l2_lambda": 1e-5,
     }
     visible = torch.zeros(3, 4, 22, 34)
     game = torch.zeros(3, 4, 24)
@@ -454,6 +454,9 @@ def test_evaluate_slide_resnet_reports_full_pass_metrics():
     assert result["action_count"] == 3
     assert result["claim_count"] == 2
     assert result["discard_count"] == 1
+    assert result["l1_lambda"] == 1e-7
+    assert result["l2_lambda"] == 1e-5
+    assert result["regularization_loss"] > 0
     assert result["cross_entropy_loss"] > 0
     assert written_examples == 3
 

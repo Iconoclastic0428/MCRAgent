@@ -90,6 +90,13 @@ def _iter_eval_batches(dataset, args: argparse.Namespace):
     )
 
 
+def _checkpoint_metric_float(metrics: dict[str, Any], *names: str, default: float = 0.0) -> float:
+    for name in names:
+        if name in metrics and metrics[name] is not None:
+            return float(metrics[name])
+    return float(default)
+
+
 def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     configure_deterministic_eval(getattr(args, "seed", 0), strict=getattr(args, "strict_deterministic", False))
     if torch.cuda.is_available() and bool(args.allow_tf32):
@@ -123,8 +130,16 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     autocast_context = torch.amp.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled)
 
     checkpoint_metrics = checkpoint_payload.get("metrics") if isinstance(checkpoint_payload.get("metrics"), dict) else {}
-    l1_lambda = float(args.l1_lambda if args.l1_lambda is not None else checkpoint_metrics.get("l1_lambda", 0.0) or 0.0)
-    l2_lambda = float(args.l2_lambda if args.l2_lambda is not None else checkpoint_metrics.get("l2_lambda", 0.0) or 0.0)
+    l1_lambda = float(
+        args.l1_lambda
+        if args.l1_lambda is not None
+        else _checkpoint_metric_float(checkpoint_metrics, "elastic_net_l1_lambda", "l1_lambda")
+    )
+    l2_lambda = float(
+        args.l2_lambda
+        if args.l2_lambda is not None
+        else _checkpoint_metric_float(checkpoint_metrics, "elastic_net_l2_lambda", "l2_lambda")
+    )
     l1_penalty, l2_penalty = elastic_net_penalty(model, l1_lambda=l1_lambda, l2_lambda=l2_lambda)
     regularization_loss = float((l1_penalty + l2_penalty).detach().cpu().item())
 
