@@ -7,6 +7,7 @@ import argparse
 import pickle
 import sys
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -351,6 +352,22 @@ def split_tiles(tokens: list[str]) -> list[str]:
     return [token for token in tokens if token and token[0] in {"W", "B", "T", "F", "J", "H"}]
 
 
+@dataclass(frozen=True)
+class PreparedPolicyDecision:
+    request: str
+    input_text: str
+    hand: Counter[str]
+    player_id: int | None
+    candidates: list[str]
+    kind: str
+    drawn_tile: str | None = None
+    immediate_response: str | None = None
+
+    @property
+    def needs_model(self) -> bool:
+        return self.immediate_response is None and bool(self.candidates)
+
+
 class BotzonePolicy:
     def __init__(self, predictor: Predictor | None = None, fan_checker=None):
         self.predictor = predictor
@@ -363,6 +380,9 @@ class BotzonePolicy:
         self.flower_counts = [0, 0, 0, 0]
         self.wall_counts = [23, 23, 23, 23]
         self.next_draw_about_kong = False
+        self.last_claim_tile: str | None = None
+        self.last_claim_actor: int | None = None
+        self.last_public_action: str | None = None
         self.last_model_response: str | None = None
         self.last_overlay_response: str | None = None
         self.last_fallback_used = False
@@ -377,11 +397,138 @@ class BotzonePolicy:
             return None
         return OfficialFanChecker.default()
 
-    def respond(self, request: str) -> str:
+    def _reset_decision_flags(self) -> None:
         self.last_model_response = None
         self.last_overlay_response = None
         self.last_fallback_used = False
         self.last_illegal_prediction = False
+
+    def prepare_response(self, request: str) -> PreparedPolicyDecision:
+        """Advance request-side state and return legal candidates for batched inference.
+
+        The caller must finish the turn with ``commit_prepared_response``. This
+        split lets self-play actors prepare many pending decisions, batch them
+        through an inference server, then commit the selected legal responses
+        without reconstructing Botzone history for every action.
+        """
+
+        self._reset_decision_flags()
+        request = str(request)
+        tokens = request.strip().split()
+        input_text = self._input_text(request)
+        if not tokens:
+            return PreparedPolicyDecision(
+                request=request,
+                input_text=input_text,
+                hand=Counter(self.hand),
+                player_id=self.player_id,
+                candidates=[],
+                kind="immediate",
+                immediate_response="PASS",
+            )
+        if tokens[0] == "0" and len(tokens) >= 2:
+            self.player_id = int(tokens[1])
+            if len(tokens) >= 3:
+                self.quan = int(tokens[2])
+            return PreparedPolicyDecision(
+                request=request,
+                input_text=input_text,
+                hand=Counter(self.hand),
+                player_id=self.player_id,
+                candidates=[],
+                kind="immediate",
+                immediate_response="PASS",
+            )
+        if tokens[0] == "1":
+            self._load_initial_hand(tokens)
+            return PreparedPolicyDecision(
+                request=request,
+                input_text=input_text,
+                hand=Counter(self.hand),
+                player_id=self.player_id,
+                candidates=[],
+                kind="immediate",
+                immediate_response="PASS",
+            )
+        if tokens[0] == "2" and len(tokens) >= 2:
+            if self.player_id is not None:
+                self._record_wall_draw(self.player_id)
+            drawn_tile = tokens[1]
+            self.hand[drawn_tile] += 1
+            self.stats["draw_turns"] += 1
+            return PreparedPolicyDecision(
+                request=request,
+                input_text=input_text,
+                hand=Counter(self.hand),
+                player_id=self.player_id,
+                candidates=self._legal_responses(request),
+                kind="draw",
+                drawn_tile=drawn_tile,
+            )
+        if tokens[0] == "3":
+            self._record_public_event(tokens)
+            self.stats["reaction_turns"] += 1
+            return PreparedPolicyDecision(
+                request=request,
+                input_text=input_text,
+                hand=Counter(self.hand),
+                player_id=self.player_id,
+                candidates=self._legal_responses(request),
+                kind="reaction",
+            )
+        return PreparedPolicyDecision(
+            request=request,
+            input_text=input_text,
+            hand=Counter(self.hand),
+            player_id=self.player_id,
+            candidates=[],
+            kind="immediate",
+            immediate_response="PASS",
+        )
+
+    def commit_prepared_response(
+        self,
+        prepared: PreparedPolicyDecision,
+        response: str | None = None,
+        *,
+        model_response: str | None = None,
+    ) -> str:
+        if prepared.immediate_response is not None:
+            final_response = prepared.immediate_response
+        else:
+            predicted = (response or "PASS").strip() or "PASS"
+            self.last_model_response = model_response if model_response is not None else predicted
+            if prepared.kind == "draw":
+                self.stats["draw_model_predictions"] += 1
+            if predicted in prepared.candidates:
+                if predicted == "HU":
+                    self.stats["legal_hu_seen"] += 1
+                    self.stats["hu_taken"] += 1
+                if prepared.kind == "draw":
+                    self._apply_draw_response(predicted)
+                final_response = predicted
+            else:
+                self.last_illegal_prediction = True
+                self.stats["illegal_predictions"] += 1
+                self.last_fallback_used = True
+                self.stats["fallbacks"] += 1
+                if prepared.kind == "draw":
+                    fallback_tile = (
+                        prepared.drawn_tile
+                        if prepared.drawn_tile is not None and self.hand[prepared.drawn_tile]
+                        else self._first_tile()
+                    )
+                    final_response = f"PLAY {fallback_tile}"
+                    self._apply_draw_response(final_response)
+                else:
+                    final_response = "PASS"
+
+        self.history.append(f"REQ {prepared.request}")
+        self.history.append(f"RES {final_response}")
+        return final_response
+
+    def respond(self, request: str) -> str:
+        self._reset_decision_flags()
 
         tokens = request.strip().split()
         if not tokens:
@@ -430,24 +577,110 @@ class BotzonePolicy:
             actor = int(tokens[1])
         except ValueError:
             return
-        if tokens[2] == "DRAW":
+        action = tokens[2]
+        if action == "DRAW":
+            self.last_public_action = "DRAW"
             self._record_wall_draw(actor)
-        elif tokens[2] == "BUHUA":
+        elif action == "BUHUA":
+            self.last_public_action = "BUHUA"
             self._record_wall_draw(actor)
             if 0 <= actor < 4:
                 self.flower_counts[actor] += 1
-        elif tokens[2] == "PLAY":
+        elif action == "PLAY":
+            self.last_public_action = "PLAY"
             tile = request_event_tile(tokens)
             if tile:
                 self.visible_counts[tile] += 1
-        elif tokens[2] == "BUGANG" and len(tokens) >= 4:
+                self.last_claim_tile = tile
+                self.last_claim_actor = actor
+        elif action == "BUGANG" and len(tokens) >= 4:
+            self.last_public_action = "BUGANG"
             self.visible_counts[tokens[3]] += 1
-        elif tokens[2] == "GANG" and len(tokens) >= 4:
-            self.visible_counts[tokens[3]] = max(self.visible_counts[tokens[3]], 4)
-        elif tokens[2] == "PENG":
-            tile = request_event_tile(tokens)
-            if tile:
-                self.visible_counts[tile] += 2
+        elif action == "GANG":
+            self._record_public_gang(actor)
+            self.last_public_action = "GANG"
+        elif action == "PENG":
+            self._record_public_peng(actor, tokens)
+            self.last_public_action = "PENG"
+        elif action == "CHI":
+            self._record_public_chi(actor, tokens)
+            self.last_public_action = "CHI"
+
+    def _record_public_peng(self, actor: int, tokens: list[str]) -> None:
+        claimed = self.last_claim_tile
+        claimed_actor = self.last_claim_actor
+        discard = tokens[3] if len(tokens) >= 4 else None
+        if claimed:
+            self.visible_counts[claimed] += 2
+        if discard:
+            self.visible_counts[discard] += 1
+            self.last_claim_tile = discard
+            self.last_claim_actor = actor
+        if actor != self.player_id or not claimed:
+            return
+        self.packs.append({"type": "PENG", "tile": claimed, "offer": claimed_actor})
+        self.hand[claimed] -= 2
+        if discard:
+            self.hand[discard] -= 1
+        self._cleanup_hand()
+
+    def _record_public_chi(self, actor: int, tokens: list[str]) -> None:
+        claimed = self.last_claim_tile
+        middle = tokens[3] if len(tokens) >= 4 else None
+        discard = tokens[4] if len(tokens) >= 5 else None
+        if not claimed or not middle:
+            if discard:
+                self.visible_counts[discard] += 1
+            return
+        try:
+            sequence = [
+                f"{middle[0]}{int(middle[1]) - 1}",
+                middle,
+                f"{middle[0]}{int(middle[1]) + 1}",
+            ]
+            offer = int(claimed[1]) - int(middle[1]) + 1
+        except (IndexError, ValueError):
+            if discard:
+                self.visible_counts[discard] += 1
+            return
+        needed = Counter(sequence)
+        needed[claimed] -= 1
+        for tile, count in needed.items():
+            if count > 0:
+                self.visible_counts[tile] += count
+        if discard:
+            self.visible_counts[discard] += 1
+            self.last_claim_tile = discard
+            self.last_claim_actor = actor
+        if actor != self.player_id:
+            return
+        self.packs.append({"type": "CHI", "tile": middle, "offer": offer})
+        for tile, count in needed.items():
+            if count > 0:
+                self.hand[tile] -= count
+        if discard:
+            self.hand[discard] -= 1
+        self._cleanup_hand()
+
+    def _record_public_gang(self, actor: int) -> None:
+        claimed = (
+            self.last_claim_tile
+            if self.last_public_action in {"PLAY", "PENG", "CHI"}
+            else None
+        )
+        if claimed:
+            self.visible_counts[claimed] = max(self.visible_counts[claimed], 4)
+        if actor != self.player_id or not claimed:
+            return
+        self.packs.append({"type": "GANG", "tile": claimed, "offer": self.last_claim_actor})
+        self.next_draw_about_kong = True
+        self.hand[claimed] -= 3
+        self._cleanup_hand()
+
+    def _cleanup_hand(self) -> None:
+        for tile in list(self.hand):
+            if self.hand[tile] <= 0:
+                del self.hand[tile]
 
     def _input_text(self, request: str) -> str:
         return "\n".join([*self.history, f"REQ {request}"])
@@ -565,8 +798,6 @@ class BotzonePolicy:
                 if predicted == "HU":
                     self.stats["legal_hu_seen"] += 1
                     self.stats["hu_taken"] += 1
-                self._record_own_reaction_pack(request, predicted)
-                apply_response(self.hand, request, predicted)
                 return predicted
             self.last_illegal_prediction = True
             self.stats["illegal_predictions"] += 1
@@ -588,6 +819,7 @@ class BotzonePolicy:
         if len(parts) == 2 and parts[0].upper() in {"PLAY", "GANG", "BUGANG"}:
             action = parts[0].upper()
             tile = parts[1]
+            self.next_draw_about_kong = False
             if action == "GANG":
                 self.packs.append({"type": "GANG", "tile": tile, "offer": self.player_id or 0})
                 self.next_draw_about_kong = True
@@ -694,8 +926,9 @@ class BotzonePolicy:
             "flower_count": self.flower_counts[self.player_id],
             "is_self_draw": is_self_draw,
             "is_4th_tile": False,
-            "is_about_kong": self.next_draw_about_kong or bool(
-                tokens and len(tokens) >= 3 and tokens[2] == "BUGANG"
+            "is_about_kong": bool(
+                (is_self_draw and self.next_draw_about_kong)
+                or (tokens and len(tokens) >= 3 and tokens[2] == "BUGANG")
             ),
             "is_last": False,
             "seat_wind": self.player_id,

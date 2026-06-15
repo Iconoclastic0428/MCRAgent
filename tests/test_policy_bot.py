@@ -153,6 +153,48 @@ def test_policy_accepts_legal_model_draw_discard_and_updates_hand():
     assert "W4" in policy.hand
 
 
+def test_policy_prepare_commit_draw_updates_like_batched_actor():
+    policy = BotzonePolicy()
+    policy.respond("0 0 0")
+    policy.respond("1 0 0 0 0 W1 W2 W3 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2")
+
+    prepared = policy.prepare_response("2 W4")
+    response = policy.commit_prepared_response(prepared, "PLAY W2")
+
+    assert prepared.needs_model
+    assert "PLAY W2" in prepared.candidates
+    assert response == "PLAY W2"
+    assert "W2" not in policy.hand
+    assert "W4" in policy.hand
+    assert policy.history[-2:] == ["REQ 2 W4", "RES PLAY W2"]
+
+
+def test_policy_prepare_commit_reaction_updates_like_batched_actor():
+    policy = BotzonePolicy()
+    policy.respond("0 2 3")
+    policy.respond("1 0 0 0 0 W1 W1 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2 J3")
+
+    prepared = policy.prepare_response("3 1 PLAY W1")
+    response = policy.commit_prepared_response(prepared, "PENG B1")
+
+    assert prepared.needs_model
+    assert "PENG B1" in prepared.candidates
+    assert response == "PENG B1"
+    assert policy.hand["W1"] == 2
+    assert policy.hand["B1"] == 1
+    accepted = policy.prepare_response("3 2 PENG B1")
+    policy.commit_prepared_response(accepted, "PASS")
+    assert policy.hand["W1"] == 0
+    assert policy.hand["B1"] == 0
+    assert policy.packs[-1] == {"type": "PENG", "tile": "W1", "offer": 1}
+    assert policy.history[-4:] == [
+        "REQ 3 1 PLAY W1",
+        "RES PENG B1",
+        "REQ 3 2 PENG B1",
+        "RES PASS",
+    ]
+
+
 def test_policy_concealed_gang_removes_all_four_tiles_from_hand():
     policy = BotzonePolicy(FixedPredictor("GANG W1"))
     policy.respond("1 0 0 0 0 W1 W1 W1 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2")
@@ -192,7 +234,7 @@ def test_policy_passes_on_other_players_events_by_default():
     assert policy.respond("3 0 PLAY W1") == "PASS"
 
 
-def test_policy_accepts_legal_peng_reaction_and_updates_hand():
+def test_policy_accepts_legal_peng_reaction_after_public_confirmation():
     policy = BotzonePolicy(FixedPredictor("PENG B1"))
     policy.respond("0 2 3")
     policy.respond("1 0 0 0 0 W1 W1 B1 B2 B3 T1 T2 T3 F1 F2 J1 J2 J3")
@@ -200,8 +242,32 @@ def test_policy_accepts_legal_peng_reaction_and_updates_hand():
     response = policy.respond("3 1 PLAY W1")
 
     assert response == "PENG B1"
+    assert policy.hand["W1"] == 2
+    assert policy.hand["B1"] == 1
+    assert policy.respond("3 2 PENG B1") == "PASS"
     assert policy.hand["W1"] == 0
     assert policy.hand["B1"] == 0
+    assert policy.packs[-1] == {"type": "PENG", "tile": "W1", "offer": 1}
+
+
+def test_policy_does_not_commit_preempted_chi_reaction():
+    policy = BotzonePolicy(FixedPredictor("CHI B2 F1"))
+    policy.respond("0 1 0")
+    policy.respond("1 0 0 0 0 B1 B3 F1 W1 W2 W3 T1 T2 T3 F2 J1 J2 J3")
+
+    response = policy.respond("3 0 PLAY B2")
+
+    assert response == "CHI B2 F1"
+    assert policy.hand["B1"] == 1
+    assert policy.hand["B3"] == 1
+    assert policy.hand["F1"] == 1
+    assert policy.packs == []
+
+    assert policy.respond("3 2 PENG T9") == "PASS"
+    assert policy.hand["B1"] == 1
+    assert policy.hand["B3"] == 1
+    assert policy.hand["F1"] == 1
+    assert policy.packs == []
 
 
 def test_policy_rejects_illegal_peng_reaction_and_passes():
