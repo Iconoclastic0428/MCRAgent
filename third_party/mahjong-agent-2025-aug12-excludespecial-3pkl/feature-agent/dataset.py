@@ -152,6 +152,7 @@ class MahjongGBDataset(Dataset):
         special_matches_path="",
         exclude_special_matches=False,
         fan_features_folder="",
+        match_indices=None,
     ):
         with open(os.path.join(folder, "count.json"), "r", encoding="utf8") as f:
             all_match_samples = json.load(f)
@@ -160,7 +161,13 @@ class MahjongGBDataset(Dataset):
         self.total_samples = sum(all_match_samples)
         self.begin = int(begin * self.total_matches)
         self.end = int(end * self.total_matches)
-        self.base_match_samples = all_match_samples[self.begin : self.end]
+        if match_indices is None:
+            self.global_match_ids = list(range(self.begin, self.end))
+        else:
+            self.global_match_ids = [int(match_id) for match_id in match_indices]
+            self.begin = 0
+            self.end = len(self.global_match_ids)
+        self.base_match_samples = [all_match_samples[i] for i in self.global_match_ids]
         self.base_matches = len(self.base_match_samples)
         self.base_samples = sum(self.base_match_samples)
         self.folder = folder
@@ -194,7 +201,7 @@ class MahjongGBDataset(Dataset):
         self.excluded_special_samples = 0
         total = 0
         for local_match_id, sample_count in enumerate(self.base_match_samples):
-            global_match_id = self.begin + local_match_id
+            global_match_id = self.global_match_ids[local_match_id]
             if self.exclude_special_matches and global_match_id in self.special_match_indices:
                 self.excluded_special_matches += 1
                 self.excluded_special_samples += sample_count
@@ -221,12 +228,13 @@ class MahjongGBDataset(Dataset):
             bar_format="{l_bar}{bar:40}{r_bar}",
             disable=bool(tqdm_disable),
         ):
-            with np.load("%s/%d.npz" % (self.folder, local_match_id + self.begin)) as d:
+            global_match_id = self.global_match_ids[local_match_id]
+            with np.load("%s/%d.npz" % (self.folder, global_match_id)) as d:
                 for key in ("obs", "mask", "vec", "act"):
                     self.cache[key].append(d[key])
             if self.fan_features_folder:
                 with np.load(
-                    "%s/%d.npz" % (self.fan_features_folder, local_match_id + self.begin)
+                    "%s/%d.npz" % (self.fan_features_folder, global_match_id)
                 ) as d:
                     self.cache["fan_vec"].append(d["fan_vec"])
 
@@ -234,8 +242,9 @@ class MahjongGBDataset(Dataset):
         return self.samples
 
     def _load_sample(self, local_match_id, sample_id):
+        global_match_id = self.global_match_ids[local_match_id]
         if self.lazy:
-            with np.load("%s/%d.npz" % (self.folder, local_match_id + self.begin)) as d:
+            with np.load("%s/%d.npz" % (self.folder, global_match_id)) as d:
                 obs = d["obs"][sample_id]
                 mask = d["mask"][sample_id]
                 vec = d["vec"][sample_id]
@@ -243,7 +252,7 @@ class MahjongGBDataset(Dataset):
             fan_vec = None
             if self.fan_features_folder:
                 with np.load(
-                    "%s/%d.npz" % (self.fan_features_folder, local_match_id + self.begin)
+                    "%s/%d.npz" % (self.fan_features_folder, global_match_id)
                 ) as d:
                     fan_vec = d["fan_vec"][sample_id]
             return obs, mask, vec, act, fan_vec
@@ -259,7 +268,7 @@ class MahjongGBDataset(Dataset):
         )
 
     def _random_transform_id(self, local_match_id):
-        global_match_id = self.begin + local_match_id
+        global_match_id = self.global_match_ids[local_match_id]
         if global_match_id in self.special_match_indices:
             return 0
         # Preserve the old random suit-only behavior for callers that use augment=True.

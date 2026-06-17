@@ -55,6 +55,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--split-ratio", type=float, default=0.9)
     parser.add_argument("--test-ratio", type=float, default=0.0)
+    parser.add_argument("--split-mode", choices=("contiguous", "random"), default="contiguous")
     parser.add_argument("--seed", type=int, default=6088)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num-workers", type=int, default=0)
@@ -75,6 +76,9 @@ def parse_args():
     parser.add_argument("--slide-vec-dim", type=int, default=78)
     parser.add_argument("--slide-fpn-obs-planes", type=int, default=60)
     parser.add_argument("--slide-fpn-blocks", type=int, default=1)
+    parser.add_argument("--slide-fpn-residual", choices=("merged", "input"), default="merged")
+    parser.add_argument("--slide-fpn-use-vec", action="store_true")
+    parser.add_argument("--slide-fpn-vec-hidden", type=int, default=0)
     parser.add_argument("--fc-hidden", type=int, default=256)
     parser.add_argument("--max-train-batches", type=int, default=0)
     parser.add_argument("--max-val-batches", type=int, default=0)
@@ -156,6 +160,22 @@ def assert_feature_layout(dataset, name):
         raise RuntimeError(
             f"{name} observation has empty vec-fix tile attribute planes 60:85."
         )
+
+
+def build_match_splits(data_folder, split_ratio, validation_end, split_mode, seed):
+    with open(os.path.join(data_folder, "count.json"), "r", encoding="utf8") as f:
+        counts = json.load(f)
+    match_ids = np.arange(len(counts), dtype=np.int64)
+    if split_mode == "random":
+        rng = np.random.default_rng(seed)
+        match_ids = rng.permutation(match_ids)
+
+    train_end = int(split_ratio * len(match_ids))
+    validation_stop = int(validation_end * len(match_ids))
+    train_ids = match_ids[:train_end].tolist()
+    validation_ids = match_ids[train_end:validation_stop].tolist()
+    test_ids = match_ids[validation_stop:].tolist()
+    return train_ids, validation_ids, test_ids
 
 
 def log_epoch_metrics(writer, phase, epoch, loss, accuracy, stats):
@@ -243,12 +263,19 @@ def main():
         if SummaryWriter is not None
         else NoopWriter()
     )
+    train_match_ids, validation_match_ids, test_match_ids = build_match_splits(
+        args.data_folder,
+        args.split_ratio,
+        validation_end,
+        args.split_mode,
+        args.seed,
+    )
 
     print("[Loading Train dataset]")
     train_dataset = MahjongGBDataset(
         args.data_folder,
         0,
-        args.split_ratio,
+        args.split_ratio if args.split_mode == "contiguous" else 1,
         0,
         augment=not args.no_augment,
         lazy=args.lazy,
@@ -256,12 +283,13 @@ def main():
         special_matches_path=args.special_matches,
         exclude_special_matches=args.exclude_special_matches,
         fan_features_folder=args.fan_features_folder,
+        match_indices=None if args.split_mode == "contiguous" else train_match_ids,
     )
     print("[Loading Validation dataset]")
     validate_dataset = MahjongGBDataset(
         args.data_folder,
-        args.split_ratio,
-        validation_end,
+        args.split_ratio if args.split_mode == "contiguous" else 0,
+        validation_end if args.split_mode == "contiguous" else 1,
         0,
         augment=False,
         lazy=args.lazy,
@@ -269,13 +297,14 @@ def main():
         special_matches_path=args.special_matches,
         exclude_special_matches=args.exclude_special_matches,
         fan_features_folder=args.fan_features_folder,
+        match_indices=None if args.split_mode == "contiguous" else validation_match_ids,
     )
     test_dataset = None
     if args.test_ratio:
         print("[Loading Test dataset]")
         test_dataset = MahjongGBDataset(
             args.data_folder,
-            validation_end,
+            validation_end if args.split_mode == "contiguous" else 0,
             1,
             0,
             augment=False,
@@ -284,6 +313,7 @@ def main():
             special_matches_path=args.special_matches,
             exclude_special_matches=args.exclude_special_matches,
             fan_features_folder=args.fan_features_folder,
+            match_indices=None if args.split_mode == "contiguous" else test_match_ids,
         )
     assert_feature_layout(train_dataset, "train")
     assert_feature_layout(validate_dataset, "validation")
@@ -324,8 +354,15 @@ def main():
                 "obs_size": FeatureAgent.OBS_SIZE,
                 "slide_fpn_blocks": args.slide_fpn_blocks,
                 "slide_fpn_obs_planes": args.slide_fpn_obs_planes,
+                "slide_fpn_residual": args.slide_fpn_residual,
+                "slide_fpn_use_vec": args.slide_fpn_use_vec,
+                "slide_fpn_vec_hidden": args.slide_fpn_vec_hidden,
                 "slide_out_planes": args.slide_out_planes,
                 "slide_vec_dim": args.slide_vec_dim,
+                "split_mode": args.split_mode,
+                "split_seed": args.seed,
+                "train_match_id_head": train_match_ids[:5],
+                "validation_match_id_head": validation_match_ids[:5],
                 "vec_size": train_dataset.vec_size,
             },
             sort_keys=True,
@@ -367,9 +404,13 @@ def main():
     elif args.model_kind == "slide-fpn":
         model = SlideFPNModel(
             obs_dim=args.slide_fpn_obs_planes,
+            vec_dim=train_dataset.vec_size,
             hidden=args.hidden,
             num_fpn_blocks=args.slide_fpn_blocks,
             fc_hidden=args.fc_hidden,
+            residual_style=args.slide_fpn_residual,
+            use_vec=args.slide_fpn_use_vec,
+            vec_hidden=args.slide_fpn_vec_hidden,
         ).to(device)
     else:
         model = SelfVecModel(

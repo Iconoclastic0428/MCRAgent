@@ -16,8 +16,11 @@ from torch import nn
 
 
 class FPNBlock2D(nn.Module):
-    def __init__(self, hidden=128):
+    def __init__(self, hidden=128, residual_style="merged"):
         nn.Module.__init__(self)
+        if residual_style not in ("merged", "input"):
+            raise ValueError(f"Unsupported residual_style: {residual_style}")
+        self.residual_style = residual_style
         self._parallel = nn.ModuleList(
             [
                 nn.Sequential(
@@ -52,12 +55,16 @@ class FPNBlock2D(nn.Module):
         for branch in self._parallel[1:]:
             y = y + branch(x)
         y = self._merge(y)
-        return F.gelu(y + self._refine(y))
+        residual = x if self.residual_style == "input" else y
+        return F.gelu(residual + self._refine(y))
 
 
 class FPNBlock1D(nn.Module):
-    def __init__(self, hidden=128):
+    def __init__(self, hidden=128, residual_style="merged"):
         nn.Module.__init__(self)
+        if residual_style not in ("merged", "input"):
+            raise ValueError(f"Unsupported residual_style: {residual_style}")
+        self.residual_style = residual_style
         self._parallel = nn.ModuleList(
             [
                 nn.Sequential(
@@ -92,17 +99,31 @@ class FPNBlock1D(nn.Module):
         for branch in self._parallel[1:]:
             y = y + branch(x)
         y = self._merge(y)
-        return F.gelu(y + self._refine(y))
+        residual = x if self.residual_style == "input" else y
+        return F.gelu(residual + self._refine(y))
 
 
 class SlideFPNModel(nn.Module):
-    """FPN-style 60-plane model from the slide architecture."""
+    """FPN-style model from the slide architecture, with controlled ablations."""
 
-    def __init__(self, obs_dim=60, hidden=128, num_fpn_blocks=1, fc_hidden=0):
+    def __init__(
+        self,
+        obs_dim=60,
+        vec_dim=0,
+        hidden=128,
+        num_fpn_blocks=1,
+        fc_hidden=0,
+        residual_style="merged",
+        use_vec=False,
+        vec_hidden=0,
+    ):
         nn.Module.__init__(self)
         self.obs_dim = obs_dim
+        self.vec_dim = vec_dim
         self.hidden = hidden
         self.num_fpn_blocks = num_fpn_blocks
+        self.use_vec = use_vec
+        self.vec_hidden = vec_hidden if use_vec and vec_hidden > 0 else vec_dim
 
         self._input_2d = nn.Sequential(
             nn.Conv2d(obs_dim, hidden, 3, 1, 1, bias=False),
@@ -113,10 +134,10 @@ class SlideFPNModel(nn.Module):
             nn.GELU(),
         )
         self._fpn_2d = nn.ModuleList(
-            [FPNBlock2D(hidden) for _ in range(num_fpn_blocks)]
+            [FPNBlock2D(hidden, residual_style=residual_style) for _ in range(num_fpn_blocks)]
         )
         self._fpn_1d = nn.ModuleList(
-            [FPNBlock1D(hidden) for _ in range(num_fpn_blocks)]
+            [FPNBlock1D(hidden, residual_style=residual_style) for _ in range(num_fpn_blocks)]
         )
         self._post_projection = nn.Conv2d(hidden * 2, hidden, 1, 1, 0, bias=False)
         self._post_block = nn.Sequential(
@@ -126,14 +147,21 @@ class SlideFPNModel(nn.Module):
             nn.Conv2d(hidden, hidden, 3, 1, 1, bias=False),
             nn.BatchNorm2d(hidden),
         )
+        if self.use_vec and vec_hidden and vec_hidden > 0:
+            self._vec_adapter = nn.Sequential(nn.Linear(vec_dim, vec_hidden), nn.GELU())
+        elif self.use_vec:
+            self._vec_adapter = nn.Identity()
+        else:
+            self._vec_adapter = None
+        output_input_dim = hidden * 4 * 9 + (self.vec_hidden if self.use_vec else 0)
         if fc_hidden and fc_hidden > 0:
             self._output_layer = nn.Sequential(
-                nn.Linear(hidden * 4 * 9, fc_hidden),
+                nn.Linear(output_input_dim, fc_hidden),
                 nn.GELU(),
                 nn.Linear(fc_hidden, 235),
             )
         else:
-            self._output_layer = nn.Linear(hidden * 4 * 9, 235)
+            self._output_layer = nn.Linear(output_input_dim, 235)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d) or isinstance(m, nn.Conv1d) or isinstance(m, nn.Linear):
@@ -153,6 +181,9 @@ class SlideFPNModel(nn.Module):
         x = self._post_projection(x)
         x = F.gelu(x + self._post_block(x))
         x = torch.flatten(x, start_dim=1)
+        if self.use_vec:
+            vec = input_dict["obs"]["vec"].float()
+            x = torch.cat([x, self._vec_adapter(vec)], dim=1)
         x = self._output_layer(x)
 
         action_mask = input_dict["obs"]["action_mask"].float()
