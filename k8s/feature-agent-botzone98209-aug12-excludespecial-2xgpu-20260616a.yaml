@@ -1,0 +1,208 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: feature-agent-botzone98209-aug12-excludespecial-2xgpu-20260616a
+  namespace: nourish-sdsc
+  labels:
+    app: feature-agent
+    task: botzone98209-aug12-excludespecial-supervised
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 604800
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: feature-agent
+        task: botzone98209-aug12-excludespecial-supervised
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-L40S
+                      - NVIDIA-L40
+                      - NVIDIA-GeForce-RTX-4090
+                      - NVIDIA-GeForce-RTX-3090
+                      - NVIDIA-RTX-A6000
+                      - NVIDIA-RTX-A5000
+                      - NVIDIA-A40
+                      - NVIDIA-A10
+                      - NVIDIA-L4
+                      - NVIDIA-RTX-5000-Ada-Generation
+                      - NVIDIA-RTX-PRO-6000-Blackwell-Max-Q-Workstation-Edition
+                      - Tesla-V100-SXM2-32GB
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - rci-tide-gpu-01.sdsu.edu
+                      - rci-tide-gpu-02.sdsu.edu
+                      - rci-tide-gpu-03.sdsu.edu
+                      - rci-tide-gpu-04.sdsu.edu
+                      - rci-tide-gpu-05.sdsu.edu
+                      - rci-tide-gpu-06.sdsu.edu
+                      - rci-tide-gpu-07.sdsu.edu
+                      - rci-tide-gpu-08.sdsu.edu
+                      - rci-tide-gpu-09.sdsu.edu
+                      - rci-tide-gpu-10.sdsu.edu
+                      - rci-tide-gpu-11.sdsu.edu
+                      - rci-tide-gpu-12.sdsu.edu
+                      - rci-tide-gpu-13.sdsu.edu
+                      - rci-tide-gpu-14.sdsu.edu
+                      - rci-tide-gpu-15.sdsu.edu
+                      - rci-tide-gpu-16.sdsu.edu
+                      - rci-tide-gpu-17.sdsu.edu
+      containers:
+        - name: feature-agent-train
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+            - name: CUBLAS_WORKSPACE_CONFIG
+              value: ":4096:8"
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              DATA_ROOT=/data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+              BASE_RUN=feature_agent_botzone98209_2xgpu_20260615b
+              RUN=feature_agent_botzone98209_aug12_excludespecial_2xgpu_20260616a
+              OLD_AUG_RUN=feature_agent_botzone98209_aug12_2xgpu_20260615c
+              WORK=/tmp/${RUN}
+              SRC=/opt/feature-agent-src
+              TRANSCRIPT="${DATA_ROOT}/data/processed/${BASE_RUN}/botzone_2026_strong_ai_feature.txt"
+              VEC_DIR="${DATA_ROOT}/data/processed/${BASE_RUN}/data-vec"
+              SPECIAL_JSON="${DATA_ROOT}/data/processed/${RUN}/special_matches.json"
+              SPECIAL_SUMMARY="${DATA_ROOT}/runs/${RUN}/special_matches_summary.json"
+              OLD_SPECIAL_JSON="${DATA_ROOT}/data/processed/${OLD_AUG_RUN}/special_matches.json"
+              export RUN BASE_RUN OLD_AUG_RUN TRANSCRIPT VEC_DIR SPECIAL_JSON SPECIAL_SUMMARY OLD_SPECIAL_JSON
+              mkdir -p "${WORK}/feature-agent" "${DATA_ROOT}/runs/${RUN}" "${DATA_ROOT}/models/${RUN}" "${DATA_ROOT}/data/processed/${RUN}"
+              cp "${SRC}"/*.py "${WORK}/feature-agent/"
+              cd "${WORK}/feature-agent"
+              python -m pip install --no-cache-dir PyMahjongGB
+              python -m py_compile agent.py dataset.py detect_special_matches.py feature.py model.py parallel.py preprocess.py supervised.py
+              python - <<'PY'
+              import json
+              import os
+              from pathlib import Path
+              import numpy as np
+              import torch
+              from feature import FeatureAgent
+
+              vec_dir = Path(os.environ["VEC_DIR"])
+              transcript = Path(os.environ["TRANSCRIPT"])
+              counts = json.loads((vec_dir / "count.json").read_text())
+              with np.load(vec_dir / "0.npz") as d:
+                  shapes = {key: d[key].shape for key in d.files}
+              assert transcript.is_file() and transcript.stat().st_size > 0, transcript
+              assert len(counts) == 98209, len(counts)
+              assert sum(counts) == 5865816, sum(counts)
+              assert shapes["obs"][1:] == (85, 4, 9), shapes
+              assert shapes["mask"][1] == 235, shapes
+              assert shapes["vec"][1] == 117, shapes
+              assert FeatureAgent.OBS_SIZE == 85, FeatureAgent.OBS_SIZE
+              assert FeatureAgent.ACT_SIZE == 235, FeatureAgent.ACT_SIZE
+              assert "T9" in FeatureAgent.tuibudao_list
+              assert torch.cuda.is_available()
+              assert torch.cuda.device_count() >= 2
+              print(json.dumps({
+                  "run": os.environ["RUN"],
+                  "base_run": os.environ["BASE_RUN"],
+                  "torch": torch.__version__,
+                  "cuda": torch.cuda.is_available(),
+                  "device_count": torch.cuda.device_count(),
+                  "base_matches": len(counts),
+                  "base_samples": sum(counts),
+                  "first_shapes": shapes,
+                  "obs_size": FeatureAgent.OBS_SIZE,
+                  "act_size": FeatureAgent.ACT_SIZE,
+                  "vec_size": FeatureAgent.VEC_SIZE,
+                  "transcript_bytes": transcript.stat().st_size,
+                  "tuibudao_t9": "T9" in FeatureAgent.tuibudao_list,
+              }, sort_keys=True), flush=True)
+              PY
+              if [ -s "${OLD_SPECIAL_JSON}" ]; then
+                cp "${OLD_SPECIAL_JSON}" "${SPECIAL_JSON}"
+                cp "${OLD_SPECIAL_JSON}" "${SPECIAL_SUMMARY}"
+              else
+                python detect_special_matches.py --input "${TRANSCRIPT}" --output "${SPECIAL_JSON}" --summary-out "${SPECIAL_SUMMARY}"
+              fi
+              python - <<'PY'
+              import json
+              import os
+              from pathlib import Path
+
+              counts = json.loads((Path(os.environ["VEC_DIR"]) / "count.json").read_text())
+              special_payload = json.loads(Path(os.environ["SPECIAL_JSON"]).read_text())
+              special = {int(x) for x in special_payload["special_match_indices"]}
+              split = int(0.9 * len(counts))
+              train_special = sorted(i for i in special if i < split)
+              val_special = sorted(i for i in special if i >= split)
+              train_base_samples = sum(counts[:split])
+              val_base_samples = sum(counts[split:])
+              train_excluded_samples = sum(counts[i] for i in train_special)
+              val_excluded_samples = sum(counts[i] for i in val_special)
+              print(json.dumps({
+                  "special_match_count": len(special),
+                  "lvyise_match_count": len(special_payload.get("lvyise_match_indices", [])),
+                  "tuibudao_match_count": len(special_payload.get("tuibudao_match_indices", [])),
+                  "train_excluded_special_matches": len(train_special),
+                  "train_excluded_special_samples": train_excluded_samples,
+                  "validation_excluded_special_matches": len(val_special),
+                  "validation_excluded_special_samples": val_excluded_samples,
+                  "train_effective_samples_expected": (train_base_samples - train_excluded_samples) * 12,
+                  "validation_samples_expected": val_base_samples - val_excluded_samples,
+              }, sort_keys=True), flush=True)
+              PY
+              python supervised.py \
+                --data-folder "${VEC_DIR}" \
+                --version "${RUN}" \
+                --log-root "${DATA_ROOT}/models/feature_agent_checkpoints" \
+                --runs-root "${DATA_ROOT}/runs/feature_agent_tensorboard" \
+                --epochs 30 \
+                --batch-size 8192 \
+                --lr 0.0005 \
+                --split-ratio 0.9 \
+                --device cuda \
+                --data-parallel \
+                --num-workers 0 \
+                --no-augment \
+                --augment-mode all12 \
+                --special-matches "${SPECIAL_JSON}" \
+                --exclude-special-matches
+              cp "${DATA_ROOT}/models/feature_agent_checkpoints/${RUN}/final.pkl" "${DATA_ROOT}/models/${RUN}/final.pkl"
+          resources:
+            requests:
+              cpu: "16"
+              memory: 48Gi
+              ephemeral-storage: 20Gi
+              nvidia.com/gpu: 2
+            limits:
+              cpu: "19"
+              memory: 57Gi
+              ephemeral-storage: 80Gi
+              nvidia.com/gpu: 2
+          volumeMounts:
+            - name: feature-agent-src
+              mountPath: /opt/feature-agent-src
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: feature-agent-src
+          configMap:
+            name: feature-agent-src-botzone-aug12-excludespecial-20260616a
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

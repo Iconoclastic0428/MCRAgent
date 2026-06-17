@@ -1,0 +1,186 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: feature-agent-botzone98209-2xgpu-20260615b
+  namespace: nourish-sdsc
+  labels:
+    app: feature-agent
+    task: botzone98209-supervised
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 604800
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: feature-agent
+        task: botzone98209-supervised
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-L40S
+                      - NVIDIA-L40
+                      - NVIDIA-GeForce-RTX-4090
+                      - NVIDIA-GeForce-RTX-3090
+                      - NVIDIA-RTX-A6000
+                      - NVIDIA-RTX-A5000
+                      - NVIDIA-A40
+                      - NVIDIA-A10
+                      - NVIDIA-L4
+                      - NVIDIA-RTX-5000-Ada-Generation
+                      - NVIDIA-RTX-PRO-6000-Blackwell-Max-Q-Workstation-Edition
+                      - Tesla-V100-SXM2-32GB
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - rci-tide-gpu-01.sdsu.edu
+                      - rci-tide-gpu-02.sdsu.edu
+                      - rci-tide-gpu-03.sdsu.edu
+                      - rci-tide-gpu-04.sdsu.edu
+                      - rci-tide-gpu-05.sdsu.edu
+                      - rci-tide-gpu-06.sdsu.edu
+                      - rci-tide-gpu-07.sdsu.edu
+                      - rci-tide-gpu-08.sdsu.edu
+                      - rci-tide-gpu-09.sdsu.edu
+                      - rci-tide-gpu-10.sdsu.edu
+                      - rci-tide-gpu-11.sdsu.edu
+                      - rci-tide-gpu-12.sdsu.edu
+                      - rci-tide-gpu-13.sdsu.edu
+                      - rci-tide-gpu-14.sdsu.edu
+                      - rci-tide-gpu-15.sdsu.edu
+                      - rci-tide-gpu-16.sdsu.edu
+                      - rci-tide-gpu-17.sdsu.edu
+      containers:
+        - name: feature-agent-train
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+            - name: CUBLAS_WORKSPACE_CONFIG
+              value: ":4096:8"
+          command: ["sh", "-lc"]
+          args:
+            - |
+              set -eux
+              DATA_ROOT=/data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+              RUN=feature_agent_botzone98209_2xgpu_20260615b
+              BOTZONE_RAW="${DATA_ROOT}/data/raw/botzone_2026_strong_ai_raw.jsonl"
+              WORK=/tmp/${RUN}
+              SRC=/opt/feature-agent-src
+              TRANSCRIPT="${DATA_ROOT}/data/processed/${RUN}/botzone_2026_strong_ai_feature.txt"
+              VEC_DIR="${DATA_ROOT}/data/processed/${RUN}/data-vec"
+              CONVERT_SUMMARY="${DATA_ROOT}/runs/${RUN}/convert_summary.json"
+              export RUN BOTZONE_RAW VEC_DIR CONVERT_SUMMARY
+              mkdir -p "${WORK}/feature-agent" "${DATA_ROOT}/runs/${RUN}" "${DATA_ROOT}/models/${RUN}" "${DATA_ROOT}/data/processed/${RUN}"
+              cp "${SRC}"/*.py "${WORK}/feature-agent/"
+              cd "${WORK}/feature-agent"
+              python -m pip install --no-cache-dir PyMahjongGB
+              python -m py_compile agent.py botzone_jsonl_to_feature_txt.py dataset.py feature.py model.py parallel.py preprocess.py supervised.py
+              python - <<'PY'
+              import json
+              import os
+              import torch
+              import MahjongGB
+
+              print(json.dumps({
+                  "run": os.environ["RUN"],
+                  "torch": torch.__version__,
+                  "cuda": torch.cuda.is_available(),
+                  "device_count": torch.cuda.device_count(),
+              }, sort_keys=True), flush=True)
+              assert torch.cuda.is_available()
+              assert torch.cuda.device_count() >= 2
+              print("MahjongGB import ok", flush=True)
+              PY
+              test -s "${BOTZONE_RAW}"
+              case "${BOTZONE_RAW}" in
+                *tziakcha*|*Tziakcha*) echo "Refusing tziakcha input"; exit 2;;
+              esac
+              python - <<'PY'
+              import os
+              from pathlib import Path
+
+              raw = Path(os.environ["BOTZONE_RAW"])
+              lines = sum(1 for _ in raw.open("r", encoding="utf-8"))
+              size = raw.stat().st_size
+              assert lines == 98209, lines
+              print({"raw_bytes": size, "raw_records": lines}, flush=True)
+              PY
+              python botzone_jsonl_to_feature_txt.py --input "${BOTZONE_RAW}" --output "${TRANSCRIPT}" --summary-out "${CONVERT_SUMMARY}"
+              python - <<'PY'
+              import json
+              import os
+              from pathlib import Path
+
+              summary = json.loads(Path(os.environ["CONVERT_SUMMARY"]).read_text(encoding="utf-8"))
+              assert all("tziakcha" not in path.lower() for path in summary["inputs"]), summary
+              assert summary["records_seen"] == 98209, summary
+              assert summary["matches_written"] > 90000, summary
+              print("convert_preflight", json.dumps(summary, ensure_ascii=False, sort_keys=True), flush=True)
+              PY
+              python parallel.py --input "${TRANSCRIPT}" --output-dir "${VEC_DIR}" --workers 16
+              python - <<'PY'
+              import json
+              import os
+              from pathlib import Path
+
+              vec = Path(os.environ["VEC_DIR"])
+              counts = json.loads((vec / "count.json").read_text())
+              bytes_total = sum(path.stat().st_size for path in vec.rglob("*") if path.is_file())
+              assert counts and sum(counts) > 0
+              print("vector_preflight", json.dumps({
+                  "matches": len(counts),
+                  "samples": sum(counts),
+                  "bytes": bytes_total,
+              }, sort_keys=True), flush=True)
+              PY
+              python supervised.py \
+                --data-folder "${VEC_DIR}" \
+                --version "${RUN}" \
+                --log-root "${DATA_ROOT}/models/feature_agent_checkpoints" \
+                --runs-root "${DATA_ROOT}/runs/feature_agent_tensorboard" \
+                --epochs 30 \
+                --batch-size 8192 \
+                --lr 0.0005 \
+                --device cuda \
+                --data-parallel \
+                --num-workers 0 \
+                --no-augment
+              cp "${DATA_ROOT}/models/feature_agent_checkpoints/${RUN}/final.pkl" "${DATA_ROOT}/models/${RUN}/final.pkl"
+          resources:
+            requests:
+              cpu: "16"
+              memory: 48Gi
+              ephemeral-storage: 20Gi
+              nvidia.com/gpu: 2
+            limits:
+              cpu: "19"
+              memory: 57Gi
+              ephemeral-storage: 80Gi
+              nvidia.com/gpu: 2
+          volumeMounts:
+            - name: feature-agent-src
+              mountPath: /opt/feature-agent-src
+            - name: idl-data
+              mountPath: /data/idl
+      volumes:
+        - name: feature-agent-src
+          configMap:
+            name: feature-agent-src-botzone-20260615b
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc
