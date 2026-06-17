@@ -12,7 +12,7 @@ import torch
 import torch.nn.functional as F
 from dataset import MahjongGBDataset
 from feature import FeatureAgent
-from model import SelfVecModel, SlideStyleModel
+from model import SelfVecModel, SlideFPNModel, SlideStyleModel
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -64,11 +64,17 @@ def parse_args():
     parser.add_argument("--special-matches", default="")
     parser.add_argument("--exclude-special-matches", action="store_true")
     parser.add_argument("--fan-features-folder", default="")
-    parser.add_argument("--model-kind", choices=("selfvec", "slide"), default="selfvec")
+    parser.add_argument(
+        "--model-kind",
+        choices=("selfvec", "slide", "slide-fpn"),
+        default="selfvec",
+    )
     parser.add_argument("--hidden", type=int, default=128)
     parser.add_argument("--num-blocks", type=int, default=20)
     parser.add_argument("--slide-out-planes", type=int, default=8)
     parser.add_argument("--slide-vec-dim", type=int, default=78)
+    parser.add_argument("--slide-fpn-obs-planes", type=int, default=60)
+    parser.add_argument("--slide-fpn-blocks", type=int, default=1)
     parser.add_argument("--fc-hidden", type=int, default=256)
     parser.add_argument("--max-train-batches", type=int, default=0)
     parser.add_argument("--max-val-batches", type=int, default=0)
@@ -316,6 +322,8 @@ def main():
                 "model_kind": args.model_kind,
                 "num_blocks": args.num_blocks,
                 "obs_size": FeatureAgent.OBS_SIZE,
+                "slide_fpn_blocks": args.slide_fpn_blocks,
+                "slide_fpn_obs_planes": args.slide_fpn_obs_planes,
                 "slide_out_planes": args.slide_out_planes,
                 "slide_vec_dim": args.slide_vec_dim,
                 "vec_size": train_dataset.vec_size,
@@ -354,6 +362,13 @@ def main():
             num_blocks=args.num_blocks,
             out_planes=args.slide_out_planes,
             slide_vec_dim=args.slide_vec_dim,
+            fc_hidden=args.fc_hidden,
+        ).to(device)
+    elif args.model_kind == "slide-fpn":
+        model = SlideFPNModel(
+            obs_dim=args.slide_fpn_obs_planes,
+            hidden=args.hidden,
+            num_fpn_blocks=args.slide_fpn_blocks,
             fc_hidden=args.fc_hidden,
         ).to(device)
     else:
