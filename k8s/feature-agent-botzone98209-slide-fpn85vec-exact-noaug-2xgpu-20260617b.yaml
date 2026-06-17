@@ -1,11 +1,11 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: feature-agent-botzone98209-slide-fpn85vec-exact-noaug-2xgpu-20260617b
+  name: fa-98209-fpn85vec-noaug-2gpu-20260617b
   namespace: nourish-sdsc
   labels:
     app: feature-agent
-    task: botzone98209-slide-fpn85vec-exact-noaug-supervised
+    task: fpn85vec-noaug
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 604800
@@ -14,7 +14,7 @@ spec:
     metadata:
       labels:
         app: feature-agent
-        task: botzone98209-slide-fpn85vec-exact-noaug-supervised
+        task: fpn85vec-noaug
     spec:
       restartPolicy: Never
       tolerations:
