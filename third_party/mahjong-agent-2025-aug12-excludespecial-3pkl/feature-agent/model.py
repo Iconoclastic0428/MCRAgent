@@ -16,11 +16,8 @@ from torch import nn
 
 
 class FPNBlock2D(nn.Module):
-    def __init__(self, hidden=128, residual_style="merged"):
+    def __init__(self, hidden=128):
         nn.Module.__init__(self)
-        if residual_style not in ("merged", "input"):
-            raise ValueError(f"Unsupported residual_style: {residual_style}")
-        self.residual_style = residual_style
         self._parallel = nn.ModuleList(
             [
                 nn.Sequential(
@@ -42,29 +39,17 @@ class FPNBlock2D(nn.Module):
             nn.BatchNorm2d(hidden),
             nn.GELU(),
         )
-        self._refine = nn.Sequential(
-            nn.Conv2d(hidden, hidden, 3, 1, 1, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(hidden, hidden, 3, 1, 1, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(hidden, hidden, 3, 1, 1, bias=False),
-        )
 
     def forward(self, x):
         y = self._parallel[0](x)
         for branch in self._parallel[1:]:
             y = y + branch(x)
-        y = self._merge(y)
-        residual = x if self.residual_style == "input" else y
-        return F.gelu(residual + self._refine(y))
+        return self._merge(y)
 
 
 class FPNBlock1D(nn.Module):
-    def __init__(self, hidden=128, residual_style="merged"):
+    def __init__(self, hidden=128):
         nn.Module.__init__(self)
-        if residual_style not in ("merged", "input"):
-            raise ValueError(f"Unsupported residual_style: {residual_style}")
-        self.residual_style = residual_style
         self._parallel = nn.ModuleList(
             [
                 nn.Sequential(
@@ -86,7 +71,33 @@ class FPNBlock1D(nn.Module):
             nn.BatchNorm1d(hidden),
             nn.GELU(),
         )
-        self._refine = nn.Sequential(
+
+    def forward(self, x):
+        y = self._parallel[0](x)
+        for branch in self._parallel[1:]:
+            y = y + branch(x)
+        return self._merge(y)
+
+
+class SlideFPNResidual2D(nn.Module):
+    def __init__(self, hidden=128):
+        nn.Module.__init__(self)
+        self._body = nn.Sequential(
+            nn.Conv2d(hidden, hidden, 3, 1, 1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(hidden, hidden, 3, 1, 1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(hidden, hidden, 3, 1, 1, bias=False),
+        )
+
+    def forward(self, x):
+        return x + self._body(x)
+
+
+class SlideFPNResidual1D(nn.Module):
+    def __init__(self, hidden=128):
+        nn.Module.__init__(self)
+        self._body = nn.Sequential(
             nn.Conv1d(hidden, hidden, 3, 1, 1, bias=False),
             nn.ReLU(inplace=True),
             nn.Conv1d(hidden, hidden, 3, 1, 1, bias=False),
@@ -95,12 +106,7 @@ class FPNBlock1D(nn.Module):
         )
 
     def forward(self, x):
-        y = self._parallel[0](x)
-        for branch in self._parallel[1:]:
-            y = y + branch(x)
-        y = self._merge(y)
-        residual = x if self.residual_style == "input" else y
-        return F.gelu(residual + self._refine(y))
+        return x + self._body(x)
 
 
 class SlideFPNModel(nn.Module):
@@ -134,14 +140,23 @@ class SlideFPNModel(nn.Module):
             nn.GELU(),
         )
         self._fpn_2d = nn.ModuleList(
-            [FPNBlock2D(hidden, residual_style=residual_style) for _ in range(num_fpn_blocks)]
+            [FPNBlock2D(hidden) for _ in range(num_fpn_blocks)]
         )
         self._fpn_1d = nn.ModuleList(
-            [FPNBlock1D(hidden, residual_style=residual_style) for _ in range(num_fpn_blocks)]
+            [FPNBlock1D(hidden) for _ in range(num_fpn_blocks)]
         )
-        self._post_projection = nn.Conv2d(hidden * 2, hidden, 1, 1, 0, bias=False)
+        self._residual_2d = nn.ModuleList(
+            [SlideFPNResidual2D(hidden) for _ in range(num_fpn_blocks)]
+        )
+        self._residual_1d = nn.ModuleList(
+            [SlideFPNResidual1D(hidden) for _ in range(num_fpn_blocks)]
+        )
+        self._post_skip = nn.Sequential(
+            nn.Conv2d(hidden * 2, hidden, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(hidden),
+        )
         self._post_block = nn.Sequential(
-            nn.Conv2d(hidden, hidden, 3, 1, 1, bias=False),
+            nn.Conv2d(hidden * 2, hidden, 3, 1, 1, bias=False),
             nn.BatchNorm2d(hidden),
             nn.GELU(),
             nn.Conv2d(hidden, hidden, 3, 1, 1, bias=False),
@@ -172,14 +187,13 @@ class SlideFPNModel(nn.Module):
         obs = input_dict["obs"]["observation"].float()[:, : self.obs_dim]
         x2 = self._input_2d(obs)
         x1 = self._input_1d(obs.reshape(obs.size(0), self.obs_dim, 36))
-        for block in self._fpn_2d:
-            x2 = block(x2)
-        for block in self._fpn_1d:
-            x1 = block(x1)
+        for block, residual in zip(self._fpn_2d, self._residual_2d):
+            x2 = residual(block(x2))
+        for block, residual in zip(self._fpn_1d, self._residual_1d):
+            x1 = residual(block(x1))
         x1 = x1.reshape(obs.size(0), self.hidden, 4, 9)
         x = torch.cat([x2, x1], dim=1)
-        x = self._post_projection(x)
-        x = F.gelu(x + self._post_block(x))
+        x = self._post_skip(x) + self._post_block(x)
         x = torch.flatten(x, start_dim=1)
         if self.use_vec:
             vec = input_dict["obs"]["vec"].float()

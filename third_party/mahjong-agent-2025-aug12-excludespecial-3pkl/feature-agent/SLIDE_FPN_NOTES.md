@@ -6,6 +6,8 @@ This branch adds a network shaped after the provided slide:
 - 2D branch: `3*3` convolution to 128 channels, then FPN-style parallel `3*3` convolutions with dilation 1, 2, and 3.
 - 1D branch: flatten the `4*9` tile grid to length 36, then FPN-style parallel `3`, `5`, and `7` convolutions.
 - The 1D branch is reshaped back to `4*9`, concatenated with the 2D branch, passed through a final residual `3*3` block, flattened, and projected directly to 235 actions.
+- `FPNBlock2D` and `FPNBlock1D` now only implement the dashed green parallel FPN merge. The branch residual bodies are separate `Y + residual_body(Y)` modules, and there is no post-add activation.
+- The final fusion block consumes the full concatenated `[B,256,4,9]` tensor. Only the skip path uses a `1*1` projection to `[B,128,4,9]` before the residual add.
 - The model applies the same 235-dimensional legal action mask.
 
 The first training run should use the normal 98209 Botzone vector data, 90% train and 10% validation, without augmentation:
@@ -48,8 +50,10 @@ augmentation disabled but adds controls for the likely mismatches:
 - `audit_data_vec.py` checks the existing `.npz` files without rewriting them:
   target label inside action mask, action-family counts, candidate-count counts,
   samples per match, and tensor shapes.
-- `--slide-fpn-residual input` switches the FPN residual to the slide-like
-  input skip, instead of the first run's merged-activation skip.
+- `--slide-fpn-residual` is kept only for old manifest compatibility. The
+  current model always uses the slide-faithful fixed residual graph:
+  `FPNBlock -> branch residual body -> add`, followed by concatenation and a
+  projected final fusion skip.
 - `--slide-fpn-obs-planes 85` keeps the vec-fix tile-attribute planes.
 - `--slide-fpn-use-vec --slide-fpn-vec-hidden 128` concatenates a learned vector
   adapter after the flattened FPN features.
@@ -104,7 +108,6 @@ python supervised.py \
   --hidden 128 \
   --slide-fpn-obs-planes 85 \
   --slide-fpn-blocks 2 \
-  --slide-fpn-residual input \
   --slide-fpn-use-vec \
   --slide-fpn-vec-hidden 128 \
   --fc-hidden 256
