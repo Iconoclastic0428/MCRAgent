@@ -17,6 +17,15 @@ def _response_text(payload):
     return str(value).strip().upper()
 
 
+def _raw_claim_text(payload):
+    if not isinstance(payload, dict):
+        return ""
+    raw = str(payload.get("raw") or "").strip().upper()
+    if raw and raw != "PASS":
+        return raw
+    return _response_text(payload)
+
+
 def _responses_by_player(response_log):
     if not isinstance(response_log, dict) or "output" in response_log:
         return {}
@@ -46,7 +55,14 @@ def _response_source_for_player(primary_response_log, fallback_response_log, pla
 
 def _ignore_tokens(response_log, accepted_player, claimed_tile):
     tokens = []
-    for player, response in sorted(_responses_by_player(response_log).items()):
+    if not isinstance(response_log, dict) or "output" in response_log:
+        return tokens
+    responses = {
+        int(key): _raw_claim_text(payload)
+        for key, payload in response_log.items()
+        if str(key).isdigit()
+    }
+    for player, response in sorted(responses.items()):
         if player == accepted_player or not response or response == "PASS":
             continue
         parts = response.split()
@@ -170,6 +186,13 @@ def convert_record(record):
 
     match_id = record.get("match_id") or record.get("id") or "unknown"
     lines = [f"Match {match_id}"]
+    train_players = [
+        str(player)
+        for player in (record.get("train_players") or [])
+        if str(player).isdigit()
+    ]
+    if train_players:
+        lines.append("TrainPlayers " + " ".join(train_players))
     stats = Counter()
     saw_init = False
     saw_deal = False
@@ -177,6 +200,7 @@ def convert_record(record):
     prev_response_log = None
     last_discard = None
     skip_next_play = None
+    skip_next_meld = None
 
     for index, log in enumerate(logs):
         out = log.get("output") if isinstance(log, dict) else None
@@ -219,15 +243,16 @@ def convert_record(record):
             parts = response.split()
             if len(parts) >= 2 and parts[0] == "PLAY":
                 discard = parts[1]
+                lines.append(f"Player {player} Play {discard}")
                 if _next_output_is_play(logs, index, player, discard):
                     skip_next_play = (player, discard)
-                else:
-                    lines.append(f"Player {player} Play {discard}")
                 last_discard = discard
             elif len(parts) >= 2 and parts[0] == "BUGANG":
                 lines.append(f"Player {player} BuGang {parts[1]}")
+                skip_next_meld = ("BUGANG", player, parts[1])
             elif len(parts) >= 2 and parts[0] == "GANG":
                 lines.append(f"Player {player} AnGang {parts[1]}")
+                skip_next_meld = ("GANG", player, parts[1])
             elif response == "HU":
                 lines.append(f"Player {player} Hu {tile}")
                 lines.append(_score_line(record, display))
@@ -284,7 +309,10 @@ def convert_record(record):
                 player, response = _accepted_nonpass(response_source)
             parts = response.split()
             if len(parts) == 2 and parts[0] == "GANG":
-                lines.append(f"Player {player} AnGang {parts[1]}")
+                if skip_next_meld == ("GANG", player, parts[1]):
+                    skip_next_meld = None
+                else:
+                    lines.append(f"Player {player} AnGang {parts[1]}")
             elif response == "GANG" and last_discard is not None:
                 line = ["Player", str(player), "Gang", last_discard]
                 line += _ignore_tokens(response_source, player, last_discard)
@@ -296,7 +324,10 @@ def convert_record(record):
             if player is None or tile is None:
                 player = int(display["player"])
                 tile = display["tile"]
-            lines.append(f"Player {player} BuGang {tile}")
+            if skip_next_meld == ("BUGANG", player, tile):
+                skip_next_meld = None
+            else:
+                lines.append(f"Player {player} BuGang {tile}")
         elif action == "HU":
             response_source = None
             if "player" in display:
@@ -340,6 +371,11 @@ def parse_args():
     parser.add_argument("--output", required=True)
     parser.add_argument("--summary-out", default="")
     parser.add_argument("--max-records", type=int, default=0)
+    parser.add_argument(
+        "--allow-tziakcha-input",
+        action="store_true",
+        help="Allow paths containing 'tziakcha'. Use only after the records have been converted to Botzone-style JSONL.",
+    )
     return parser.parse_args()
 
 
@@ -347,7 +383,7 @@ def main():
     args = parse_args()
     inputs = [Path(path) for path in args.input]
     for path in inputs:
-        if "tziakcha" in str(path).lower():
+        if "tziakcha" in str(path).lower() and not args.allow_tziakcha_input:
             raise RuntimeError(f"Refusing non-Botzone/tziakcha input path: {path}")
 
     output = Path(args.output)

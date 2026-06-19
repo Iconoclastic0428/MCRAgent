@@ -10,7 +10,7 @@ import time
 import numpy as np
 import torch
 import torch.nn.functional as F
-from dataset import MahjongGBDataset
+from dataset import MahjongGBDataset, PackedMahjongGBDataset, build_packed_dataset
 from feature import FeatureAgent
 from model import SelfVecModel, SlideFPNModel, SlideStyleModel
 from torch.utils.data import DataLoader
@@ -65,6 +65,9 @@ def parse_args():
     parser.add_argument("--special-matches", default="")
     parser.add_argument("--exclude-special-matches", action="store_true")
     parser.add_argument("--fan-features-folder", default="")
+    parser.add_argument("--fan-shanten-replace-folder", default="")
+    parser.add_argument("--packed-cache-dir", default="")
+    parser.add_argument("--force-rebuild-packed-cache", action="store_true")
     parser.add_argument(
         "--model-kind",
         choices=("selfvec", "slide", "slide-fpn"),
@@ -76,14 +79,31 @@ def parse_args():
     parser.add_argument("--slide-vec-dim", type=int, default=78)
     parser.add_argument("--slide-fpn-obs-planes", type=int, default=60)
     parser.add_argument("--slide-fpn-blocks", type=int, default=1)
-    parser.add_argument("--slide-fpn-residual", choices=("merged", "input"), default="merged")
+    parser.add_argument(
+        "--slide-fpn-residual",
+        choices=("merged", "input"),
+        default="merged",
+        help="Deprecated compatibility flag. SlideFPN now uses the fixed slide-faithful residual graph.",
+    )
     parser.add_argument("--slide-fpn-use-vec", action="store_true")
     parser.add_argument("--slide-fpn-vec-hidden", type=int, default=0)
+    parser.add_argument(
+        "--slide-fpn-stem-mode",
+        choices=("preserve", "valid_width"),
+        default="preserve",
+    )
     parser.add_argument("--fc-hidden", type=int, default=256)
     parser.add_argument("--max-train-batches", type=int, default=0)
     parser.add_argument("--max-val-batches", type=int, default=0)
     parser.add_argument("--max-test-batches", type=int, default=0)
     parser.add_argument("--data-parallel", action="store_true")
+    parser.add_argument("--pin-memory", action="store_true")
+    parser.add_argument("--nonblocking-transfer", action="store_true")
+    parser.add_argument("--prefetch-factor", type=int, default=2)
+    parser.add_argument("--persistent-workers", action="store_true")
+    parser.add_argument("--cudnn-benchmark", action="store_true")
+    parser.add_argument("--init-checkpoint", default="")
+    parser.add_argument("--start-epoch", type=int, default=0)
     return parser.parse_args()
 
 
@@ -96,6 +116,71 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def configure_runtime(args):
+    if args.cudnn_benchmark:
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
+    if torch.cuda.is_available():
+        devices = []
+        for i in range(torch.cuda.device_count()):
+            props = torch.cuda.get_device_properties(i)
+            devices.append(
+                {
+                    "cuda_device": i,
+                    "name": torch.cuda.get_device_name(i),
+                    "total_memory_gib": props.total_memory / 1024**3,
+                    "major": props.major,
+                    "minor": props.minor,
+                    "multi_processor_count": props.multi_processor_count,
+                }
+            )
+        print("cuda_devices " + json.dumps(devices, sort_keys=True), flush=True)
+    print(
+        "runtime_config "
+        + json.dumps(
+            {
+                "cudnn_benchmark": torch.backends.cudnn.benchmark,
+                "cudnn_deterministic": torch.backends.cudnn.deterministic,
+                "nonblocking_transfer": args.nonblocking_transfer,
+                "pin_memory": args.pin_memory,
+                "prefetch_factor": args.prefetch_factor,
+                "persistent_workers": args.persistent_workers,
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+
+
+def make_loader(dataset, batch_size, shuffle, num_workers, args):
+    kwargs = {
+        "dataset": dataset,
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "num_workers": num_workers,
+        "pin_memory": args.pin_memory,
+    }
+    if num_workers > 0:
+        kwargs["persistent_workers"] = args.persistent_workers
+        kwargs["prefetch_factor"] = args.prefetch_factor
+    return DataLoader(**kwargs)
+
+
+def prepare_batch(batch, args, device, is_training):
+    non_blocking = bool(args.nonblocking_transfer)
+    obs = batch[0]
+    if args.model_kind == "slide-fpn":
+        obs = obs[:, : args.slide_fpn_obs_planes].contiguous()
+    obs_dict = {
+        "observation": obs.to(device, non_blocking=non_blocking),
+        "action_mask": batch[1].to(device, non_blocking=non_blocking),
+    }
+    if args.model_kind != "slide-fpn" or args.slide_fpn_use_vec:
+        obs_dict["vec"] = batch[2].to(device, non_blocking=non_blocking)
+    target = batch[3].long().to(device, non_blocking=non_blocking)
+    return {"is_training": is_training, "obs": obs_dict}, target
 
 
 def empty_category_stats():
@@ -178,6 +263,49 @@ def build_match_splits(data_folder, split_ratio, validation_end, split_mode, see
     return train_ids, validation_ids, test_ids
 
 
+def build_or_open_dataset(
+    args,
+    name,
+    begin,
+    end,
+    match_indices,
+    augment,
+    augment_mode,
+):
+    if args.packed_cache_dir:
+        if augment or augment_mode != "none":
+            raise RuntimeError("--packed-cache-dir currently supports only non-augmented datasets")
+        if args.fan_features_folder:
+            raise RuntimeError("--packed-cache-dir does not pack appended fan feature vectors")
+        split_cache_dir = os.path.join(args.packed_cache_dir, name)
+        build_packed_dataset(
+            args.data_folder,
+            split_cache_dir,
+            match_indices,
+            name,
+            special_matches_path=args.special_matches,
+            exclude_special_matches=args.exclude_special_matches,
+            fan_shanten_replace_folder=args.fan_shanten_replace_folder,
+            force=args.force_rebuild_packed_cache,
+        )
+        return PackedMahjongGBDataset(split_cache_dir)
+
+    return MahjongGBDataset(
+        args.data_folder,
+        begin,
+        end,
+        0,
+        augment=augment,
+        lazy=args.lazy,
+        augment_mode=augment_mode,
+        special_matches_path=args.special_matches,
+        exclude_special_matches=args.exclude_special_matches,
+        fan_features_folder=args.fan_features_folder,
+        fan_shanten_replace_folder=args.fan_shanten_replace_folder,
+        match_indices=None if args.split_mode == "contiguous" else match_indices,
+    )
+
+
 def log_epoch_metrics(writer, phase, epoch, loss, accuracy, stats):
     category_acc = category_accuracy(stats)
     writer.add_scalars("Loss", {phase: loss}, epoch)
@@ -204,7 +332,7 @@ def log_epoch_metrics(writer, phase, epoch, loss, accuracy, stats):
     )
 
 
-def evaluate_model(model, loader, device, desc, max_batches=0):
+def evaluate_model(model, loader, device, desc, args, max_batches=0):
     model.eval()
     correct = 0
     total_loss = 0.0
@@ -216,22 +344,15 @@ def evaluate_model(model, loader, device, desc, max_batches=0):
         bar_format="{l_bar}{bar:40}{r_bar}",
     )
     for batch_index, batch in enumerate(pbar):
-        input_dict = {
-            "is_training": False,
-            "obs": {
-                "observation": batch[0].to(device),
-                "action_mask": batch[1].to(device),
-                "vec": batch[2].to(device),
-            },
-        }
-        target = batch[3].long().to(device)
+        input_dict, target = prepare_batch(batch, args, device, is_training=False)
         with torch.no_grad():
             logits = model(input_dict)
             loss = F.cross_entropy(logits, target)
-            total_loss += loss.item() * batch[0].size(0)
+            batch_size = target.size(0)
+            total_loss += loss.item() * batch_size
             pred = logits.argmax(dim=1)
             correct += torch.eq(pred, target).sum().item()
-            total += batch[0].size(0)
+            total += batch_size
             update_category_stats(stats, pred, target)
             pbar.set_postfix(acc=f"{correct / total:.4f}", loss=f"{total_loss / total:.4f}")
 
@@ -244,6 +365,7 @@ def evaluate_model(model, loader, device, desc, max_batches=0):
 def main():
     args = parse_args()
     set_seed(args.seed)
+    configure_runtime(args)
 
     validation_end = 1.0 - args.test_ratio
     if not 0 < args.split_ratio < validation_end <= 1.0:
@@ -272,48 +394,36 @@ def main():
     )
 
     print("[Loading Train dataset]")
-    train_dataset = MahjongGBDataset(
-        args.data_folder,
+    train_dataset = build_or_open_dataset(
+        args,
+        "train",
         0,
         args.split_ratio if args.split_mode == "contiguous" else 1,
-        0,
+        train_match_ids,
         augment=not args.no_augment,
-        lazy=args.lazy,
         augment_mode=args.augment_mode,
-        special_matches_path=args.special_matches,
-        exclude_special_matches=args.exclude_special_matches,
-        fan_features_folder=args.fan_features_folder,
-        match_indices=None if args.split_mode == "contiguous" else train_match_ids,
     )
     print("[Loading Validation dataset]")
-    validate_dataset = MahjongGBDataset(
-        args.data_folder,
+    validate_dataset = build_or_open_dataset(
+        args,
+        "validation",
         args.split_ratio if args.split_mode == "contiguous" else 0,
         validation_end if args.split_mode == "contiguous" else 1,
-        0,
+        validation_match_ids,
         augment=False,
-        lazy=args.lazy,
         augment_mode="none",
-        special_matches_path=args.special_matches,
-        exclude_special_matches=args.exclude_special_matches,
-        fan_features_folder=args.fan_features_folder,
-        match_indices=None if args.split_mode == "contiguous" else validation_match_ids,
     )
     test_dataset = None
     if args.test_ratio:
         print("[Loading Test dataset]")
-        test_dataset = MahjongGBDataset(
-            args.data_folder,
+        test_dataset = build_or_open_dataset(
+            args,
+            "test",
             validation_end if args.split_mode == "contiguous" else 0,
             1,
-            0,
+            test_match_ids,
             augment=False,
-            lazy=args.lazy,
             augment_mode="none",
-            special_matches_path=args.special_matches,
-            exclude_special_matches=args.exclude_special_matches,
-            fan_features_folder=args.fan_features_folder,
-            match_indices=None if args.split_mode == "contiguous" else test_match_ids,
         )
     assert_feature_layout(train_dataset, "train")
     assert_feature_layout(validate_dataset, "validation")
@@ -347,20 +457,25 @@ def main():
                 if test_dataset is None
                 else test_dataset.excluded_special_samples,
                 "fan_feature_dim": train_dataset.fan_feature_dim,
+                "fan_shanten_replace_folder": args.fan_shanten_replace_folder,
                 "fc_hidden": args.fc_hidden,
                 "hidden": args.hidden,
+                "init_checkpoint": args.init_checkpoint,
                 "model_kind": args.model_kind,
                 "num_blocks": args.num_blocks,
                 "obs_size": FeatureAgent.OBS_SIZE,
+                "packed_cache_dir": args.packed_cache_dir,
                 "slide_fpn_blocks": args.slide_fpn_blocks,
                 "slide_fpn_obs_planes": args.slide_fpn_obs_planes,
                 "slide_fpn_residual": args.slide_fpn_residual,
+                "slide_fpn_stem_mode": args.slide_fpn_stem_mode,
                 "slide_fpn_use_vec": args.slide_fpn_use_vec,
                 "slide_fpn_vec_hidden": args.slide_fpn_vec_hidden,
                 "slide_out_planes": args.slide_out_planes,
                 "slide_vec_dim": args.slide_vec_dim,
                 "split_mode": args.split_mode,
                 "split_seed": args.seed,
+                "start_epoch": args.start_epoch,
                 "train_match_id_head": train_match_ids[:5],
                 "validation_match_id_head": validation_match_ids[:5],
                 "vec_size": train_dataset.vec_size,
@@ -370,26 +485,11 @@ def main():
         flush=True,
     )
 
-    loader = DataLoader(
-        dataset=train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-    )
-    vloader = DataLoader(
-        dataset=validate_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-    )
+    loader = make_loader(train_dataset, args.batch_size, True, args.num_workers, args)
+    vloader = make_loader(validate_dataset, args.batch_size, False, args.num_workers, args)
     test_loader = None
     if test_dataset is not None:
-        test_loader = DataLoader(
-            dataset=test_dataset,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=args.num_workers,
-        )
+        test_loader = make_loader(test_dataset, args.batch_size, False, args.num_workers, args)
 
     if args.model_kind == "slide":
         model = SlideStyleModel(
@@ -411,6 +511,7 @@ def main():
             residual_style=args.slide_fpn_residual,
             use_vec=args.slide_fpn_use_vec,
             vec_hidden=args.slide_fpn_vec_hidden,
+            stem_mode=args.slide_fpn_stem_mode,
         ).to(device)
     else:
         model = SelfVecModel(
@@ -419,6 +520,23 @@ def main():
             hidden=args.hidden,
             num_blocks=args.num_blocks,
         ).to(device)
+    if args.init_checkpoint:
+        checkpoint = torch.load(args.init_checkpoint, map_location=device)
+        if any(key.startswith("module.") for key in checkpoint):
+            checkpoint = {key.removeprefix("module."): value for key, value in checkpoint.items()}
+        model.load_state_dict(checkpoint)
+        print(
+            "init_checkpoint "
+            + json.dumps(
+                {
+                    "path": args.init_checkpoint,
+                    "start_epoch": args.start_epoch,
+                    "loaded_keys": len(checkpoint),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
     if args.data_parallel:
         if args.device != "cuda":
             raise RuntimeError("--data-parallel requires --device cuda")
@@ -433,7 +551,7 @@ def main():
     training_start = time.time()
     epoch_durations = []
 
-    for epoch in range(args.epochs):
+    for epoch in range(args.start_epoch, args.epochs):
         epoch_start = time.time()
         print(f"[Epoch {epoch}]", flush=True)
         state_dict = (
@@ -454,26 +572,19 @@ def main():
             bar_format="{l_bar:20}{bar:40}{r_bar}",
         )
         for batch_index, batch in enumerate(pbar):
-            input_dict = {
-                "is_training": True,
-                "obs": {
-                    "observation": batch[0].to(device),
-                    "action_mask": batch[1].to(device),
-                    "vec": batch[2].to(device),
-                },
-            }
-            target = batch[3].long().to(device)
+            input_dict, target = prepare_batch(batch, args, device, is_training=True)
             logits = model(input_dict)
             loss = F.cross_entropy(logits, target)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
 
-            total_loss += loss.item() * batch[0].size(0)
+            batch_size = target.size(0)
+            total_loss += loss.item() * batch_size
             pred = logits.argmax(dim=1)
             correct += torch.eq(pred, target).sum().item()
-            total += batch[0].size(0)
+            total += batch_size
             update_category_stats(train_category_stats, pred, target)
             pbar.set_postfix(acc=f"{correct / total:.4f}", loss=f"{total_loss / total:.4f}")
 
@@ -489,6 +600,7 @@ def main():
             vloader,
             device,
             f"Validation Epoch {epoch}",
+            args,
             args.max_val_batches,
         )
         log_epoch_metrics(
@@ -532,6 +644,7 @@ def main():
             test_loader,
             device,
             "Test Final",
+            args,
             args.max_test_batches,
         )
         log_epoch_metrics(writer, "Test", args.epochs - 1, test_loss, test_acc, test_category_stats)

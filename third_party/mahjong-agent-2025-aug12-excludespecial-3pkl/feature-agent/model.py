@@ -122,21 +122,41 @@ class SlideFPNModel(nn.Module):
         residual_style="merged",
         use_vec=False,
         vec_hidden=0,
+        stem_mode="preserve",
     ):
         nn.Module.__init__(self)
+        if stem_mode not in ("preserve", "valid_width"):
+            raise ValueError("stem_mode must be 'preserve' or 'valid_width'")
         self.obs_dim = obs_dim
         self.vec_dim = vec_dim
         self.hidden = hidden
         self.num_fpn_blocks = num_fpn_blocks
         self.use_vec = use_vec
         self.vec_hidden = vec_hidden if use_vec and vec_hidden > 0 else vec_dim
+        self.stem_mode = stem_mode
+        self.spatial_h = 4
+        self.spatial_w = 7 if stem_mode == "valid_width" else 9
 
         self._input_2d = nn.Sequential(
-            nn.Conv2d(obs_dim, hidden, 3, 1, 1, bias=False),
+            nn.Conv2d(
+                obs_dim,
+                hidden,
+                3,
+                1,
+                (1, 0) if stem_mode == "valid_width" else 1,
+                bias=False,
+            ),
             nn.GELU(),
         )
         self._input_1d = nn.Sequential(
-            nn.Conv1d(obs_dim, hidden, 3, 1, 1, bias=False),
+            nn.Conv1d(
+                obs_dim,
+                hidden,
+                3,
+                1,
+                0 if stem_mode == "valid_width" else 1,
+                bias=False,
+            ),
             nn.GELU(),
         )
         self._fpn_2d = nn.ModuleList(
@@ -168,7 +188,10 @@ class SlideFPNModel(nn.Module):
             self._vec_adapter = nn.Identity()
         else:
             self._vec_adapter = None
-        output_input_dim = hidden * 4 * 9 + (self.vec_hidden if self.use_vec else 0)
+        output_input_dim = (
+            hidden * self.spatial_h * self.spatial_w
+            + (self.vec_hidden if self.use_vec else 0)
+        )
         if fc_hidden and fc_hidden > 0:
             self._output_layer = nn.Sequential(
                 nn.Linear(output_input_dim, fc_hidden),
@@ -186,12 +209,22 @@ class SlideFPNModel(nn.Module):
         self.train(mode=input_dict.get("is_training", False))
         obs = input_dict["obs"]["observation"].float()[:, : self.obs_dim]
         x2 = self._input_2d(obs)
-        x1 = self._input_1d(obs.reshape(obs.size(0), self.obs_dim, 36))
+        if self.stem_mode == "valid_width":
+            batch = obs.size(0)
+            x1 = obs.permute(0, 2, 1, 3).contiguous()
+            x1 = self._input_1d(x1.view(batch * 4, self.obs_dim, 9))
+        else:
+            batch = obs.size(0)
+            x1 = self._input_1d(obs.reshape(batch, self.obs_dim, 36))
         for block, residual in zip(self._fpn_2d, self._residual_2d):
             x2 = residual(block(x2))
         for block, residual in zip(self._fpn_1d, self._residual_1d):
             x1 = residual(block(x1))
-        x1 = x1.reshape(obs.size(0), self.hidden, 4, 9)
+        if self.stem_mode == "valid_width":
+            x1 = x1.view(batch, 4, self.hidden, self.spatial_w)
+            x1 = x1.permute(0, 2, 1, 3).contiguous()
+        else:
+            x1 = x1.reshape(batch, self.hidden, 4, 9)
         x = torch.cat([x2, x1], dim=1)
         x = self._post_skip(x) + self._post_block(x)
         x = torch.flatten(x, start_dim=1)

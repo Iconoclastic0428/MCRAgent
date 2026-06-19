@@ -14,14 +14,14 @@ from tqdm import tqdm
 FEATURE_FILES = [
     ("paixing", "paixing.npz"),
     ("hupaizuhe", "hupaizuhe.npz"),
-    ("wumenqi", "五门齐.npz"),
-    ("hunyise", "混一色.npz"),
-    ("quandaiyao", "全带幺.npz"),
-    ("qingyise", "清一色.npz"),
-    ("wufanhu", "无番和.npz"),
-    ("dayu5", "大于五.npz"),
-    ("xiaoyu5", "小于五.npz"),
-    ("tuibudao", "推不倒.npz"),
+    ("wumenqi", "\u4e94\u95e8\u9f50.npz"),
+    ("hunyise", "\u6df7\u4e00\u8272.npz"),
+    ("quandaiyao", "\u5168\u5e26\u5e7a.npz"),
+    ("qingyise", "\u6e05\u4e00\u8272.npz"),
+    ("wufanhu", "\u65e0\u756a\u548c.npz"),
+    ("dayu5", "\u5927\u4e8e\u4e94.npz"),
+    ("xiaoyu5", "\u5c0f\u4e8e\u4e94.npz"),
+    ("tuibudao", "\u63a8\u4e0d\u5012.npz"),
     ("other_hupaizuhe", "other_hupaizuhe.npz"),
 ]
 
