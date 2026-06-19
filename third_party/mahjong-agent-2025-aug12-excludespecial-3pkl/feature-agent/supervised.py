@@ -53,6 +53,7 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=8192)
     parser.add_argument("--lr", type=float, default=5e-4)
+    parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--split-ratio", type=float, default=0.9)
     parser.add_argument("--test-ratio", type=float, default=0.0)
     parser.add_argument("--split-mode", choices=("contiguous", "random"), default="contiguous")
@@ -479,6 +480,7 @@ def main():
                 "train_match_id_head": train_match_ids[:5],
                 "validation_match_id_head": validation_match_ids[:5],
                 "vec_size": train_dataset.vec_size,
+                "weight_decay": args.weight_decay,
             },
             sort_keys=True,
         ),
@@ -547,7 +549,9 @@ def main():
     total_params = sum(p.numel() for p in model.parameters())
     print(f"\n[Total number of parameters] {total_params}\n", flush=True)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+    )
     training_start = time.time()
     epoch_durations = []
 
