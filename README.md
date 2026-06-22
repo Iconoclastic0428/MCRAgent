@@ -23,9 +23,8 @@ or TUIBUDAO hands are kept unaugmented. The promoted model uses:
 
 ## Source Layout
 
-- `third_party/mahjong-agent-2025-aug12-excludespecial-3pkl/feature-agent/`
-  contains the architecture, feature construction, preprocessing, dataset,
-  training loop, and validation helpers for this model.
+- `feature-agent/` contains the architecture, feature construction,
+  preprocessing, dataset, training loop, and validation helpers for this model.
 - `scripts/feature_agent_checkpoint_json_bot.py` loads the promoted checkpoint
   as a Botzone-compatible JSON/text policy.
 - `scripts/feature_repo_json_runtime.py` replays Botzone requests into the
@@ -56,7 +55,7 @@ The process reads Botzone text requests from stdin and emits Botzone responses.
 ## Training Entry Point
 
 ```powershell
-cd third_party\mahjong-agent-2025-aug12-excludespecial-3pkl\feature-agent
+cd feature-agent
 python supervised.py `
   --data-folder <botzone98209_vec_dir> `
   --augment-mode all12 `

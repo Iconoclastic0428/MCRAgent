@@ -15,12 +15,7 @@ from feature_repo_json_runtime import ReplayFeatureJsonBot, WORKSPACE_ROOT, main
 FEATURE_AGENT_DIR = Path(
     os.environ.get(
         "MCR_FEATURE_AGENT_DIR",
-        str(
-            WORKSPACE_ROOT
-            / "third_party"
-            / "mahjong-agent-2025-aug12-excludespecial-3pkl"
-            / "feature-agent"
-        ),
+        str(WORKSPACE_ROOT / "feature-agent"),
     )
 )
 DEFAULT_CHECKPOINT = (

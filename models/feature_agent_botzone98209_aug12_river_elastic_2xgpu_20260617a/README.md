@@ -15,7 +15,7 @@ Checkpoint:
 Use with:
 
 ```powershell
-$env:MCR_FEATURE_AGENT_DIR="D:\MCR_Agent\third_party\mahjong-agent-2025-aug12-excludespecial-3pkl\feature-agent"
+$env:MCR_FEATURE_AGENT_DIR="D:\MCR_Agent\feature-agent"
 $env:MCR_FEATURE_AGENT_CHECKPOINT="D:\MCR_Agent\models\feature_agent_botzone98209_aug12_river_elastic_2xgpu_20260617a\16.pkl"
 $env:MCR_FEATURE_AGENT_RIVER="1"
 python D:\MCR_Agent\scripts\feature_agent_checkpoint_json_bot.py --protocol text
@@ -24,7 +24,7 @@ python D:\MCR_Agent\scripts\feature_agent_checkpoint_json_bot.py --protocol text
 Training entry point:
 
 ```powershell
-cd D:\MCR_Agent\third_party\mahjong-agent-2025-aug12-excludespecial-3pkl\feature-agent
+cd D:\MCR_Agent\feature-agent
 python supervised.py `
   --data-folder <botzone98209_vec_dir> `
   --augment-mode all12 `
