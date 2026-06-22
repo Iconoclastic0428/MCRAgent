@@ -1,1 +1,2 @@
 models/feature_agent_botzone98209_aug12_excludespecial_2xgpu_20260616a/*.pkl filter=lfs diff=lfs merge=lfs -text
+models/feature_agent_botzone98209_aug12_river_elastic_2xgpu_20260617a/*.pkl filter=lfs diff=lfs merge=lfs -text

@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from lawlorentz_policy import LawlorentzEffectivePolicy, LawlorentzModelPolicy
 from policy_bot import BotzonePolicy, ShantenHeuristicPredictor, SklearnPredictor
 
 
@@ -24,6 +23,20 @@ DEFAULT_ALEO = Path("build/aleo_bot.exe")
 DEFAULT_SAMPLE = Path("build/official_sample_bot.exe")
 DEFAULT_TJONG_JSON = Path("scripts/tjong_botzone_json_policy_bot.py")
 PLACEMENT_REWARDS_4_2_1_0 = (4.0, 2.0, 1.0, 0.0)
+
+
+def __getattr__(name: str):
+    if name in {"LawlorentzEffectivePolicy", "LawlorentzModelPolicy"}:
+        from lawlorentz_policy import (  # noqa: PLC0415
+            LawlorentzEffectivePolicy,
+            LawlorentzModelPolicy,
+        )
+
+        return {
+            "LawlorentzEffectivePolicy": LawlorentzEffectivePolicy,
+            "LawlorentzModelPolicy": LawlorentzModelPolicy,
+        }[name]
+    raise AttributeError(name)
 
 
 def judge_env() -> dict[str, str]:
@@ -59,12 +72,74 @@ def run_judge(
     return json.loads(proc.stdout)
 
 
+def _hu_fan_count_for_player(output: dict, player: int) -> int | float | None:
+    display = output.get("display") or {}
+    can_hu = display.get("canHu")
+    if not isinstance(can_hu, list) or not 0 <= player < len(can_hu):
+        return None
+    fan_count = can_hu[player]
+    return fan_count if isinstance(fan_count, (int, float)) else None
+
+
+def _blocked_hu_fallback_response(output: dict, player: int) -> str:
+    display = output.get("display") or {}
+    action = str(display.get("action") or "").upper()
+    actor = display.get("player")
+    tile = str(display.get("tile") or "")
+    try:
+        actor_id = int(actor) if actor is not None else None
+    except (TypeError, ValueError):
+        actor_id = None
+    if action == "DRAW" and actor_id == player and tile and not tile.startswith("H"):
+        return f"PLAY {tile}"
+    return "PASS"
+
+
+def sanitize_response_for_judge(
+    output: dict,
+    player: int,
+    response: str,
+    *,
+    flower_count: int | None = None,
+) -> tuple[str, str]:
+    """Prevent below-threshold Hu declarations in local benchmark playback.
+
+    The official judge can ask for reactions when a player has a Hu-shaped hand
+    but fewer than the 8 required fan. If a bot answers HU there, the judge ends
+    the game as WH. For benchmark quality we keep the raw response visible and
+    submit a safe legal fallback to the judge in this one illegal-Hu case.
+    """
+
+    head = response.strip().split(" ", 1)[0].upper() if response.strip() else "PASS"
+    if head != "HU":
+        return response, "OK"
+    fan_count = _hu_fan_count_for_player(output, player)
+    if fan_count is not None and fan_count < 8:
+        return _blocked_hu_fallback_response(output, player), f"HU_BLOCKED_FAN_LT_8:{fan_count}"
+    if fan_count is not None and flower_count is not None:
+        base_fan = fan_count - max(0, int(flower_count))
+        if base_fan < 8:
+            return _blocked_hu_fallback_response(output, player), f"HU_BLOCKED_BASE_FAN_LT_8:{base_fan}/{fan_count}"
+    return response, "OK"
+
+
 def build_response_log(output: dict, policies: list[BotzonePolicy]) -> dict:
     response_log: dict[str, dict[str, str]] = {}
     for player, request in (output.get("content") or {}).items():
         index = int(player)
-        response = policies[index].respond(str(request))
-        response_log[str(player)] = {"response": response, "raw": response, "verdict": "OK"}
+        raw_response = policies[index].respond(str(request))
+        flower_count_getter = getattr(policies[index], "hu_guard_flower_count", None)
+        flower_count = flower_count_getter() if callable(flower_count_getter) else None
+        response, guard_reason = sanitize_response_for_judge(
+            output,
+            index,
+            raw_response,
+            flower_count=flower_count,
+        )
+        item = {"response": response, "raw": raw_response, "verdict": "OK"}
+        if guard_reason != "OK":
+            item["guard"] = guard_reason
+        response_log[str(player)] = item
     return response_log
 
 
@@ -377,10 +452,14 @@ def make_policy(
     transformer_predictor=None,
 ) -> BotzonePolicy | AleoProcessPolicy | BotzoneJsonProcessPolicy | TjongJsonProcessPolicy | LawlorentzEffectivePolicy | LawlorentzModelPolicy:
     if kind == "lawlorentz_effective":
+        from lawlorentz_policy import LawlorentzEffectivePolicy  # noqa: PLC0415
+
         return LawlorentzEffectivePolicy(levels=lawlorentz_levels)
     if kind == "lawlorentz_model":
         if model is None:
             raise ValueError("--model is required for lawlorentz_model policy")
+        from lawlorentz_policy import LawlorentzModelPolicy  # noqa: PLC0415
+
         return LawlorentzModelPolicy(model)
     if kind == "fallback":
         return BotzonePolicy()

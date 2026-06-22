@@ -26,13 +26,14 @@ from MahjongGB import (
 
 class FeatureAgent(MahjongGBAgent):
     """
-    observation: 85*4*9
+    observation: 185*4*9
         (men+quan+hand4)*4*9
         前两个维度表示门风和场风，后四个维度表示手牌信息。
         `OBS` 先是被组织为 60*36 的二维张量格式，随后 self._obs() 返回时，会被转换为 60*4*9 的三维张量格式。
         36个维度依次为 W(1-9, 万) T(1-9, 筒) B(1-9, 饼) [F(1-4, 风) J(1-3, 箭)]
         The first 60 channels are game-state planes; channels 60-84 are the
         vec-fix tile attribute one-hot planes used by the improved method.
+        Channels 85-184 add 25 river-property planes for each of 4 players.
         风向的记录依照如下规则：
         0 1 2 3 -> 东 南 西 北
 
@@ -59,6 +60,10 @@ class FeatureAgent(MahjongGBAgent):
     def get_leixing_offset(self, tile):
         return "WTBFJ".index(tile[0])  # 0-4
 
+    TILE_PROPERTY_SIZE = 25
+    RIVER_PLAYER_COUNT = 4
+    RIVER_PROPERTY_SIZE = TILE_PROPERTY_SIZE * RIVER_PLAYER_COUNT
+
     class OFFSET_OBS:
         KE = 0  # +4, 玩家副露信息-刻子，4 玩家
         SHUN = 4  # +4, 玩家副露信息-顺子, 4 玩家
@@ -78,8 +83,9 @@ class FeatureAgent(MahjongGBAgent):
         IS_ZIPAI = 82  # +1，是否为字牌
         IS_TUIBUDAO = 83  # +1，是否为推不倒的牌
         IS_LVYISE = 84  # +1，是否为绿一色的牌
+        RIVER_PROPERTY = 85  # +100, 25 tile-property planes for each player's river
 
-    OBS_SIZE = 85
+    OBS_SIZE = 185
 
     class OFFSET_ACT:
         Pass = 0  # 过
@@ -185,6 +191,27 @@ class FeatureAgent(MahjongGBAgent):
             self.obs[self.OFFSET_OBS.IS_TUIBUDAO, self.OFFSET_TILE[tile]] = 1
         for tile in self.lvyise_list:
             self.obs[self.OFFSET_OBS.IS_LVYISE, self.OFFSET_TILE[tile]] = 1
+
+    def _tile_property_offsets(self, tile):
+        offsets = [
+            self.get_dianshu_offset(tile),
+            16 + self.get_leixing_offset(tile),
+        ]
+        if tile in self.yaojiu_list:
+            offsets.append(21)
+        if tile in self.zipai_list:
+            offsets.append(22)
+        if tile in self.tuibudao_list:
+            offsets.append(23)
+        if tile in self.lvyise_list:
+            offsets.append(24)
+        return offsets
+
+    def _add_river_property(self, player, tile, delta=1):
+        base = self.OFFSET_OBS.RIVER_PROPERTY + player * self.TILE_PROPERTY_SIZE
+        tile_id = self.OFFSET_TILE[tile]
+        for property_offset in self._tile_property_offsets(tile):
+            self.obs[base + property_offset, tile_id] += delta
 
     def request2obs(self, request):
         """
@@ -356,6 +383,7 @@ class FeatureAgent(MahjongGBAgent):
             # 时序衰减
             # self.obs[self.OFFSET_OBS.PLAY + p, :] *= 0.9
             self.obs[self.OFFSET_OBS.PLAY + p, self.OFFSET_TILE[self.curTile]] += 1
+            self._add_river_property(p, self.curTile)
 
             if p == 3:
                 self.obs[self.OFFSET_OBS.LAST, :] = 0

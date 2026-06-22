@@ -4,9 +4,7 @@
 import itertools
 import json
 import os
-import shutil
 from bisect import bisect_right
-from pathlib import Path
 
 import numpy as np
 from torch.utils.data import Dataset
@@ -126,6 +124,58 @@ def _build_static_obs_planes():
 
 STATIC_OBS_PLANES = _build_static_obs_planes()
 
+BASE_OBS_SIZE = 85
+TILE_PROPERTY_SIZE = 25
+RIVER_PLAYER_COUNT = 4
+RIVER_PROPERTY_OFFSET = BASE_OBS_SIZE
+EXTENDED_OBS_SIZE = BASE_OBS_SIZE + TILE_PROPERTY_SIZE * RIVER_PLAYER_COUNT
+PLAY_OFFSET = 16
+STATIC_PROPERTY_OFFSET = 60
+
+FAN_MIRROR_SWAP_NAME_PAIRS = (
+    ("dayu5", "xiaoyu5"),
+    ("quanda", "quanxiao"),
+    ("大于五", "小于五"),
+    ("全大", "全小"),
+    ("all_large", "all_small"),
+    ("greater_than_five", "less_than_five"),
+)
+
+
+def _append_river_property_planes(obs):
+    if obs.shape[0] == EXTENDED_OBS_SIZE:
+        out = obs.copy()
+        base_obs = out[:BASE_OBS_SIZE]
+    elif obs.shape[0] == BASE_OBS_SIZE:
+        base_obs = obs
+        out = None
+    else:
+        raise ValueError(
+            f"Unsupported observation channels {obs.shape[0]}; "
+            f"expected {BASE_OBS_SIZE} or {EXTENDED_OBS_SIZE}."
+        )
+
+    play_planes = base_obs.reshape(BASE_OBS_SIZE, 36)[
+        PLAY_OFFSET : PLAY_OFFSET + RIVER_PLAYER_COUNT
+    ]
+    property_planes = STATIC_OBS_PLANES.reshape(TILE_PROPERTY_SIZE, 36).astype(
+        base_obs.dtype, copy=False
+    )
+    river_planes = (
+        play_planes[:, None, :] * property_planes[None, :, :]
+    ).reshape(RIVER_PLAYER_COUNT * TILE_PROPERTY_SIZE, 4, 9)
+
+    if out is None:
+        return np.concatenate(
+            [base_obs, river_planes.astype(base_obs.dtype, copy=False)],
+            axis=0,
+        )
+    out[
+        RIVER_PROPERTY_OFFSET : RIVER_PROPERTY_OFFSET
+        + RIVER_PLAYER_COUNT * TILE_PROPERTY_SIZE
+    ] = river_planes
+    return out
+
 
 def _load_special_matches(path):
     if not path:
@@ -141,6 +191,15 @@ def _load_special_matches(path):
     return {int(value) for value in values}
 
 
+def _action_is_legal(mask, act):
+    try:
+        action = int(act)
+    except (TypeError, ValueError):
+        return False
+    mask = np.asarray(mask).reshape(-1)
+    return 0 <= action < mask.shape[0] and mask[action] > 0
+
+
 class MahjongGBDataset(Dataset):
     def __init__(
         self,
@@ -154,8 +213,6 @@ class MahjongGBDataset(Dataset):
         special_matches_path="",
         exclude_special_matches=False,
         fan_features_folder="",
-        fan_shanten_replace_folder="",
-        match_indices=None,
     ):
         with open(os.path.join(folder, "count.json"), "r", encoding="utf8") as f:
             all_match_samples = json.load(f)
@@ -164,22 +221,18 @@ class MahjongGBDataset(Dataset):
         self.total_samples = sum(all_match_samples)
         self.begin = int(begin * self.total_matches)
         self.end = int(end * self.total_matches)
-        if match_indices is None:
-            self.global_match_ids = list(range(self.begin, self.end))
-        else:
-            self.global_match_ids = [int(match_id) for match_id in match_indices]
-            self.begin = 0
-            self.end = len(self.global_match_ids)
-        self.base_match_samples = [all_match_samples[i] for i in self.global_match_ids]
+        self.base_match_samples = all_match_samples[self.begin : self.end]
         self.base_matches = len(self.base_match_samples)
         self.base_samples = sum(self.base_match_samples)
         self.folder = folder
         self.lazy = lazy
         self.fan_features_folder = fan_features_folder
-        self.fan_shanten_replace_folder = fan_shanten_replace_folder
         self.fan_feature_dim = 0
         self.fan_feature_names = []
         self._fan_swap_pairs = []
+        self._lazy_cache_limit = 128
+        self._lazy_match_cache = {}
+        self._lazy_match_cache_order = []
 
         if augment and augment_mode == "none":
             augment_mode = "random_suit"
@@ -194,15 +247,9 @@ class MahjongGBDataset(Dataset):
             self.fan_feature_dim = int(meta["feature_dim"])
             self._fan_swap_pairs = [
                 (self.fan_feature_names.index(a), self.fan_feature_names.index(b))
-                for a, b in (("dayu5", "xiaoyu5"),)
+                for a, b in FAN_MIRROR_SWAP_NAME_PAIRS
                 if a in self.fan_feature_names and b in self.fan_feature_names
             ]
-        if fan_shanten_replace_folder:
-            meta_path = os.path.join(fan_shanten_replace_folder, "meta.json")
-            with open(meta_path, "r", encoding="utf8") as f:
-                meta = json.load(f)
-            if int(meta["vec_dim"]) != 117:
-                raise ValueError(meta)
         self.vec_size = 117 + self.fan_feature_dim
 
         self.expanded_matches = []
@@ -211,7 +258,7 @@ class MahjongGBDataset(Dataset):
         self.excluded_special_samples = 0
         total = 0
         for local_match_id, sample_count in enumerate(self.base_match_samples):
-            global_match_id = self.global_match_ids[local_match_id]
+            global_match_id = self.begin + local_match_id
             if self.exclude_special_matches and global_match_id in self.special_match_indices:
                 self.excluded_special_matches += 1
                 self.excluded_special_samples += sample_count
@@ -238,44 +285,49 @@ class MahjongGBDataset(Dataset):
             bar_format="{l_bar}{bar:40}{r_bar}",
             disable=bool(tqdm_disable),
         ):
-            global_match_id = self.global_match_ids[local_match_id]
-            with np.load("%s/%d.npz" % (self.folder, global_match_id)) as d:
+            with np.load("%s/%d.npz" % (self.folder, local_match_id + self.begin)) as d:
                 for key in ("obs", "mask", "vec", "act"):
                     self.cache[key].append(d[key])
             if self.fan_features_folder:
                 with np.load(
-                    "%s/%d.npz" % (self.fan_features_folder, global_match_id)
+                    "%s/%d.npz" % (self.fan_features_folder, local_match_id + self.begin)
                 ) as d:
                     self.cache["fan_vec"].append(d["fan_vec"])
-            if self.fan_shanten_replace_folder:
-                with np.load(
-                    "%s/%d.npz" % (self.fan_shanten_replace_folder, global_match_id)
-                ) as d:
-                    self.cache["vec"][-1] = d["vec"]
 
     def __len__(self):
         return self.samples
 
     def _load_sample(self, local_match_id, sample_id):
-        global_match_id = self.global_match_ids[local_match_id]
+        global_match_id = local_match_id + self.begin
         if self.lazy:
-            with np.load("%s/%d.npz" % (self.folder, global_match_id)) as d:
-                obs = d["obs"][sample_id]
-                mask = d["mask"][sample_id]
-                vec = d["vec"][sample_id]
-                act = d["act"][sample_id]
+            cached = self._lazy_match_cache.get(global_match_id)
+            if cached is None:
+                with np.load("%s/%d.npz" % (self.folder, global_match_id)) as d:
+                    cached = {
+                        "obs": d["obs"],
+                        "mask": d["mask"],
+                        "vec": d["vec"],
+                        "act": d["act"],
+                        "fan_vec": None,
+                    }
+                if self.fan_features_folder:
+                    with np.load("%s/%d.npz" % (self.fan_features_folder, global_match_id)) as d:
+                        cached["fan_vec"] = d["fan_vec"]
+                self._lazy_match_cache[global_match_id] = cached
+                self._lazy_match_cache_order.append(global_match_id)
+                while len(self._lazy_match_cache_order) > self._lazy_cache_limit:
+                    stale = self._lazy_match_cache_order.pop(0)
+                    self._lazy_match_cache.pop(stale, None)
             fan_vec = None
-            if self.fan_features_folder:
-                with np.load(
-                    "%s/%d.npz" % (self.fan_features_folder, global_match_id)
-                ) as d:
-                    fan_vec = d["fan_vec"][sample_id]
-            if self.fan_shanten_replace_folder:
-                with np.load(
-                    "%s/%d.npz" % (self.fan_shanten_replace_folder, global_match_id)
-                ) as d:
-                    vec = d["vec"][sample_id]
-            return obs, mask, vec, act, fan_vec
+            if cached["fan_vec"] is not None:
+                fan_vec = cached["fan_vec"][sample_id]
+            return (
+                cached["obs"][sample_id],
+                cached["mask"][sample_id],
+                cached["vec"][sample_id],
+                cached["act"][sample_id],
+                fan_vec,
+            )
         fan_vec = None
         if self.fan_features_folder:
             fan_vec = self.cache["fan_vec"][local_match_id][sample_id]
@@ -288,7 +340,7 @@ class MahjongGBDataset(Dataset):
         )
 
     def _random_transform_id(self, local_match_id):
-        global_match_id = self.global_match_ids[local_match_id]
+        global_match_id = self.begin + local_match_id
         if global_match_id in self.special_match_indices:
             return 0
         # Preserve the old random suit-only behavior for callers that use augment=True.
@@ -296,9 +348,13 @@ class MahjongGBDataset(Dataset):
 
     def _apply_transform(self, obs, mask, vec, act, transform_id):
         table = TRANSFORM_TABLES[transform_id]
-        obs_flat = obs.reshape((obs.shape[0], 36))
-        transformed_obs = obs_flat[:, table["tile_inverse"]].reshape(obs.shape).copy()
-        transformed_obs[60:85] = STATIC_OBS_PLANES
+        base_obs = obs[:BASE_OBS_SIZE]
+        obs_flat = base_obs.reshape((BASE_OBS_SIZE, 36))
+        transformed_obs = obs_flat[:, table["tile_inverse"]].reshape(base_obs.shape).copy()
+        transformed_obs[
+            STATIC_PROPERTY_OFFSET : STATIC_PROPERTY_OFFSET + TILE_PROPERTY_SIZE
+        ] = STATIC_OBS_PLANES
+        transformed_obs = _append_river_property_planes(transformed_obs)
         transformed_mask = mask[table["action_inverse"]].copy()
         transformed_vec = vec[table["vec_inverse"]].copy()
         transformed_act = int(table["action_old_to_new"][int(act)])
@@ -324,215 +380,30 @@ class MahjongGBDataset(Dataset):
         if index < 0 or index >= self.samples:
             raise IndexError(index)
 
-        expanded_match_id = bisect_right(self.match_offsets, index, 0, self.matches) - 1
-        local_match_id, transform_id = self.expanded_matches[expanded_match_id]
-        sample_id = index - self.match_offsets[expanded_match_id]
+        original_index = index
+        max_attempts = min(self.samples, 1024)
+        for _ in range(max_attempts):
+            expanded_match_id = bisect_right(self.match_offsets, index, 0, self.matches) - 1
+            local_match_id, transform_id = self.expanded_matches[expanded_match_id]
+            sample_id = index - self.match_offsets[expanded_match_id]
 
-        obs, mask, vec, act, fan_vec = self._load_sample(local_match_id, sample_id)
-        if self.augment_mode == "random_suit":
-            transform_id = self._random_transform_id(local_match_id)
-        if transform_id:
-            obs, mask, vec, act = self._apply_transform(obs, mask, vec, act, transform_id)
-        fan_vec = self._transform_fan_vec(fan_vec, transform_id)
-        vec = self._append_fan_vec(vec, fan_vec)
-        return obs, mask, vec, act
-
-
-def _packed_meta_path(folder):
-    return Path(folder) / "meta.json"
-
-
-def _packed_arrays_exist(folder):
-    folder = Path(folder)
-    return all((folder / name).exists() for name in ("obs.npy", "mask.npy", "vec.npy", "act.npy", "meta.json"))
-
-
-def _load_npz_arrays(folder, match_id, fan_shanten_replace_folder=""):
-    with np.load("%s/%d.npz" % (folder, match_id)) as d:
-        obs = d["obs"]
-        mask = d["mask"]
-        vec = d["vec"]
-        act = d["act"]
-    if fan_shanten_replace_folder:
-        with np.load("%s/%d.npz" % (fan_shanten_replace_folder, match_id)) as d:
-            vec = d["vec"]
-    return obs, mask, vec, act
-
-
-def _read_count(folder):
-    with open(os.path.join(folder, "count.json"), "r", encoding="utf8") as f:
-        return json.load(f)
-
-
-def _validate_packed_metadata(cache_dir, expected):
-    meta_path = _packed_meta_path(cache_dir)
-    if not meta_path.exists():
-        return False
-    with open(meta_path, "r", encoding="utf8") as f:
-        actual = json.load(f)
-    for key, value in expected.items():
-        if actual.get(key) != value:
-            return False
-    return True
-
-
-def build_packed_dataset(
-    source_folder,
-    cache_dir,
-    match_indices,
-    split_name,
-    special_matches_path="",
-    exclude_special_matches=False,
-    fan_shanten_replace_folder="",
-    force=False,
-):
-    """Pack many per-match npz files into reusable mmap-backed .npy arrays."""
-
-    if special_matches_path:
-        special_match_indices = _load_special_matches(special_matches_path)
-    else:
-        special_match_indices = set()
-    counts = _read_count(source_folder)
-    selected_match_ids = []
-    excluded_special_matches = 0
-    excluded_special_samples = 0
-    for match_id in [int(value) for value in match_indices]:
-        if exclude_special_matches and match_id in special_match_indices:
-            excluded_special_matches += 1
-            excluded_special_samples += int(counts[match_id])
-            continue
-        selected_match_ids.append(match_id)
-    total_samples = int(sum(counts[match_id] for match_id in selected_match_ids))
-
-    expected_meta = {
-        "format": "mahjong-agent-packed-v1",
-        "source_folder": os.path.abspath(source_folder),
-        "split_name": split_name,
-        "match_count": len(selected_match_ids),
-        "sample_count": total_samples,
-        "first_match_id": None if not selected_match_ids else selected_match_ids[0],
-        "last_match_id": None if not selected_match_ids else selected_match_ids[-1],
-        "exclude_special_matches": bool(exclude_special_matches),
-        "excluded_special_matches": excluded_special_matches,
-        "excluded_special_samples": excluded_special_samples,
-        "fan_shanten_replace_folder": os.path.abspath(fan_shanten_replace_folder)
-        if fan_shanten_replace_folder
-        else "",
-    }
-    cache_dir = Path(cache_dir)
-    if not force and _packed_arrays_exist(cache_dir) and _validate_packed_metadata(cache_dir, expected_meta):
-        return str(cache_dir)
-
-    if total_samples <= 0:
-        raise RuntimeError(f"{split_name} packed dataset would be empty")
-
-    first_match = selected_match_ids[0]
-    sample_obs, sample_mask, sample_vec, sample_act = _load_npz_arrays(
-        source_folder, first_match, fan_shanten_replace_folder
-    )
-    tmp_dir = cache_dir.with_name(cache_dir.name + ".tmp-%d" % os.getpid())
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir)
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    obs_out = np.lib.format.open_memmap(
-        tmp_dir / "obs.npy",
-        mode="w+",
-        dtype=sample_obs.dtype,
-        shape=(total_samples,) + tuple(sample_obs.shape[1:]),
-    )
-    mask_out = np.lib.format.open_memmap(
-        tmp_dir / "mask.npy",
-        mode="w+",
-        dtype=sample_mask.dtype,
-        shape=(total_samples,) + tuple(sample_mask.shape[1:]),
-    )
-    vec_out = np.lib.format.open_memmap(
-        tmp_dir / "vec.npy",
-        mode="w+",
-        dtype=sample_vec.dtype,
-        shape=(total_samples,) + tuple(sample_vec.shape[1:]),
-    )
-    act_out = np.lib.format.open_memmap(
-        tmp_dir / "act.npy",
-        mode="w+",
-        dtype=sample_act.dtype,
-        shape=(total_samples,) + tuple(sample_act.shape[1:]),
-    )
-
-    offset = 0
-    for match_id in tqdm(
-        selected_match_ids,
-        desc=("packing %s" % split_name).ljust(20),
-        bar_format="{l_bar}{bar:40}{r_bar}",
-    ):
-        obs, mask, vec, act = _load_npz_arrays(source_folder, match_id, fan_shanten_replace_folder)
-        next_offset = offset + int(act.shape[0])
-        obs_out[offset:next_offset] = obs
-        mask_out[offset:next_offset] = mask
-        vec_out[offset:next_offset] = vec
-        act_out[offset:next_offset] = act
-        offset = next_offset
-    if offset != total_samples:
-        raise RuntimeError(f"packed {offset} samples, expected {total_samples}")
-
-    for array in (obs_out, mask_out, vec_out, act_out):
-        array.flush()
-    expected_meta.update(
-        {
-            "obs_shape": list(obs_out.shape),
-            "mask_shape": list(mask_out.shape),
-            "vec_shape": list(vec_out.shape),
-            "act_shape": list(act_out.shape),
-            "obs_dtype": str(obs_out.dtype),
-            "mask_dtype": str(mask_out.dtype),
-            "vec_dtype": str(vec_out.dtype),
-            "act_dtype": str(act_out.dtype),
-        }
-    )
-    with open(tmp_dir / "meta.json", "w", encoding="utf8") as f:
-        json.dump(expected_meta, f, indent=2, sort_keys=True)
-
-    if cache_dir.exists():
-        if force:
-            shutil.rmtree(cache_dir)
-        else:
-            backup_dir = cache_dir.with_name(cache_dir.name + ".stale-%d" % os.getpid())
-            cache_dir.rename(backup_dir)
-    tmp_dir.rename(cache_dir)
-    return str(cache_dir)
-
-
-class PackedMahjongGBDataset(Dataset):
-    """Memory-mapped dataset built once from the per-match npz files."""
-
-    def __init__(self, cache_dir):
-        self.cache_dir = Path(cache_dir)
-        with open(self.cache_dir / "meta.json", "r", encoding="utf8") as f:
-            self.meta = json.load(f)
-        self.obs = np.load(self.cache_dir / "obs.npy", mmap_mode="r")
-        self.mask = np.load(self.cache_dir / "mask.npy", mmap_mode="r")
-        self.vec = np.load(self.cache_dir / "vec.npy", mmap_mode="r")
-        self.act = np.load(self.cache_dir / "act.npy", mmap_mode="r")
-        self.samples = int(self.meta["sample_count"])
-        self.base_matches = int(self.meta["match_count"])
-        self.base_samples = self.samples
-        self.matches = self.base_matches
-        self.total_matches = self.base_matches
-        self.total_samples = self.samples
-        self.fan_feature_dim = 0
-        self.fan_feature_names = []
-        self.vec_size = int(self.vec.shape[1])
-        self.special_match_indices = set()
-        self.excluded_special_matches = int(self.meta.get("excluded_special_matches", 0))
-        self.excluded_special_samples = int(self.meta.get("excluded_special_samples", 0))
-
-    def __len__(self):
-        return self.samples
-
-    def __getitem__(self, index):
-        if index < 0:
-            index += self.samples
-        if index < 0 or index >= self.samples:
-            raise IndexError(index)
-        return self.obs[index], self.mask[index], self.vec[index], self.act[index]
+            obs, mask, vec, act, fan_vec = self._load_sample(local_match_id, sample_id)
+            if not _action_is_legal(mask, act):
+                index = (index + 1) % self.samples
+                continue
+            if self.augment_mode == "random_suit":
+                transform_id = self._random_transform_id(local_match_id)
+            if transform_id:
+                obs, mask, vec, act = self._apply_transform(obs, mask, vec, act, transform_id)
+                if not _action_is_legal(mask, act):
+                    index = (index + 1) % self.samples
+                    continue
+            else:
+                obs = _append_river_property_planes(obs)
+            fan_vec = self._transform_fan_vec(fan_vec, transform_id)
+            vec = self._append_fan_vec(vec, fan_vec)
+            return obs, mask, vec, act
+        raise RuntimeError(
+            "could not find a legal labeled sample near index %d after %d attempts"
+            % (original_index, max_attempts)
+        )
