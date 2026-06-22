@@ -5,12 +5,12 @@ Promoted final checkpoint for the Botzone 98,209-game feature-agent run with:
 - 185 OBS planes: the 85-plane vec-fix feature set plus 25 river planes for each of 4 players.
 - Mixed-kernel input support enabled in `SelfVecModel`.
 - Dueling value/advantage output head enabled.
-- 12x suit/number augmentation with special-hand exclusions preserved.
+- 12x suit/number augmentation with LVYISE and TUIBUDAO special-hand exclusions preserved.
 
 Checkpoint:
 
 - `16.pkl`
-- SHA256: `2B982A838A15D9632F85FFDEEE993105E077C5D92D236800140819607D9E2F3D`
+- SHA256: `2b982a838a15d9632f85ffdeee993105e077c5d92d236800140819607d9e2f3d`
 
 Use with:
 
@@ -39,6 +39,6 @@ python supervised.py `
 
 The training code uses contiguous 90/10 train/validation match splits by
 default, validates the target action against the legal mask, and preserves
-special `绿一色` / `推不倒` games during the 12x augmentation pass. It applies
-elastic regularization as `L1 = 0.01 * lr` and `L2 = 0.1 * lr`, with AdamW
+LVYISE/TUIBUDAO games during the 12x augmentation pass. It applies elastic
+regularization as `L1 = 0.01 * lr` and `L2 = 0.1 * lr`, with AdamW
 `weight_decay=0.0`.

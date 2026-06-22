@@ -1,44 +1,73 @@
-# MCRAgent
+# MCRAgent River-Elastic Feature Agent
 
-Local research workspace for Chinese Standard Mahjong / MCR Botzone agents.
+This branch contains the final promoted feature-agent model and only the code
+needed to reproduce, load, and evaluate it.
 
-The current implementation is reset to a Lawlorentz-first policy:
+## Final Checkpoint
 
-- `external/Chinese-Standard-Mahjong-DRL` supplies the Botzone text protocol state updates, 71-channel observation shape, and 235-action legal mask.
-- `scripts/lawlorentz_policy.py` applies the MCR effective-tile rule as the base draw-discard scorer.
-- `HU` is emitted only through legal masked actions that satisfy the MahjongGB fan gate; incidental fan sources are disabled for future-structure scoring.
-- Old generated model, run, and distribution artifacts under `models/`, `runs/`, and `dist/` are not promotion candidates after the reset.
+- Model: `models/feature_agent_botzone98209_aug12_river_elastic_2xgpu_20260617a/16.pkl`
+- SHA256: `2b982a838a15d9632f85ffdeee993105e077c5d92d236800140819607d9e2f3d`
+- Git LFS is used for the checkpoint.
 
-Promoted final feature-agent baseline:
+The checkpoint is the river-elastic epoch-16 model trained from the Botzone
+98209-game dataset with 12x suit/number augmentation. Games containing LVYISE
+or TUIBUDAO hands are kept unaugmented. The promoted model uses:
 
-- `models/feature_agent_botzone98209_aug12_river_elastic_2xgpu_20260617a/16.pkl`
-  is the promoted final checkpoint.
-- The matching training/architecture code lives in
-  `third_party/mahjong-agent-2025-aug12-excludespecial-3pkl/feature-agent`.
-- This river-elastic epoch-16 feature-agent uses 185 OBS planes, the mixed
-  kernel input option, and the dueling output head.
-- `scripts/feature_agent_checkpoint_json_bot.py` is the reusable Botzone
-  JSON/text wrapper for local official-judge evaluation of this checkpoint.
-- `advisor_service.model_advisor.DEFAULT_TRANSFORMER_MODEL` remains the
-  fallback transformer checkpoint at
-  `models/transformer_candidate_finetune_medbest_l40_20260529a.pt`.
-- `models/qadv_reranker_medbest_v1_terminal_best.pt` remains the transformer
-  fallback QADV reranker at validation-selected `qadv_lambda=0.10`.
-- The QADV-v1 promotion is based on the saved GPT Pro historical-terminal plan:
-  lambda zero reproduces the base model, Hu/mask safety is clean, terminal Q
-  separates positive and negative historical returns, and validation/test
-  CHAGA relaxed metrics do not regress.
-- The Chrome extension remains read-only; it observes tziakcha traffic and
-  displays recommendations from the local advisor service.
+- 185 observation planes: the 85-plane vec-fix OBS representation plus
+  25 river-property planes for each of four players.
+- The original 117-dimensional VEC feature vector.
+- Mixed-kernel input.
+- Dueling value/advantage output head.
+- AdamW with elastic regularization in training:
+  `L1 = 0.01 * lr`, `L2 = 0.1 * lr`.
 
-Useful commands:
+## Source Layout
+
+- `third_party/mahjong-agent-2025-aug12-excludespecial-3pkl/feature-agent/`
+  contains the architecture, feature construction, preprocessing, dataset,
+  training loop, and validation helpers for this model.
+- `scripts/feature_agent_checkpoint_json_bot.py` loads the promoted checkpoint
+  as a Botzone-compatible JSON/text policy.
+- `scripts/feature_repo_json_runtime.py` replays Botzone requests into the
+  feature-agent runtime.
+- `scripts/benchmark_json_policies.py` runs seat-rotated local benchmarks
+  against persistent JSON/text policy wrappers.
+
+## Quick Smoke Test
 
 ```powershell
-python -m pytest tests -q --basetemp tmp\pytest
-python -m advisor_service.server --port 8765 --local-only
-python scripts\feature_agent_checkpoint_json_bot.py --protocol text
-python scripts\official_judge_match.py --policy lawlorentz_effective --lawlorentz-levels 1 --opponent sample --games 4 --raw data\raw\botzone_mcr_sample.jsonl --max-turns 500 --out runs\lawlorentz_effective_sample_smoke4.json
-python scripts\evaluate_lawlorentz_effective_all_datasets.py --games-per-dataset 4 --lawlorentz-levels 1 --out runs\lawlorentz_effective_all_datasets_report_4each.json
+'{}' | python scripts\feature_agent_checkpoint_json_bot.py
 ```
 
-Datasets and protocol/interface code remain repo-local. Generated artifacts stay out of git unless deliberately selected for a source-focused handoff.
+Expected response:
+
+```json
+{"response": "PASS"}
+```
+
+## Text-Mode Policy
+
+```powershell
+python scripts\feature_agent_checkpoint_json_bot.py --protocol text
+```
+
+The process reads Botzone text requests from stdin and emits Botzone responses.
+
+## Training Entry Point
+
+```powershell
+cd third_party\mahjong-agent-2025-aug12-excludespecial-3pkl\feature-agent
+python supervised.py `
+  --data-folder <botzone98209_vec_dir> `
+  --augment-mode all12 `
+  --special-matches <lv_yi_se_tui_bu_dao_special_matches.json> `
+  --split-ratio 0.9 `
+  --test-ratio 0 `
+  --batch-size 8192 `
+  --lr 0.0005 `
+  --mixed-kernel-input `
+  --dueling-head
+```
+
+The dataset folder is expected to contain preprocessed feature-agent NPZ data
+with the 185-plane river-elastic OBS layout.
