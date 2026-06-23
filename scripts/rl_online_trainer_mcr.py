@@ -80,7 +80,7 @@ def main() -> int:
         iteration += 1
         drained = drain_actor_buffer(workdir, iteration)
         replay_dirs = [Path(args.offline_replay)]
-        replay_dirs.extend(path.parent for path in drained)
+        replay_dirs.extend(sorted({path.parent for path in drained}))
         out = workdir / "trainer" / "checkpoints" / f"iter_{iteration:06d}"
         cmd = [
             sys.executable,

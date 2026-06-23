@@ -58,6 +58,66 @@ def ci95(values: list[float]) -> tuple[float | None, float | None]:
     return mean - delta, mean + delta
 
 
+def promotion_decision(payload: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    reasons: list[str] = []
+    score_ci = payload.get("average_score_ci95") or (None, None)
+    lower_ci = score_ci[0] if isinstance(score_ci, (list, tuple)) and score_ci else None
+    score_margin = float(args.promotion_score_margin)
+    if lower_ci is None:
+        reasons.append("missing_score_ci95")
+    elif float(lower_ci) <= score_margin:
+        reasons.append("score_ci95_lower_not_above_margin")
+
+    deal_in = payload.get("deal_in_rate")
+    champion_deal_in = payload.get("champion_deal_in_rate")
+    if deal_in is None or champion_deal_in is None:
+        reasons.append("missing_deal_in_rate")
+    elif float(deal_in) > float(champion_deal_in) + float(args.promotion_deal_in_tolerance):
+        reasons.append("deal_in_rate_above_champion_tolerance")
+
+    hu_rate = payload.get("hu_rate")
+    champion_hu_rate = payload.get("champion_hu_rate")
+    if hu_rate is None or champion_hu_rate is None:
+        reasons.append("missing_hu_rate")
+    elif float(hu_rate) < float(champion_hu_rate) - float(args.promotion_hu_tolerance):
+        reasons.append("hu_rate_below_champion_tolerance")
+
+    blocked_hu = payload.get("blocked_hu_rate")
+    if blocked_hu is None:
+        reasons.append("missing_blocked_hu_rate")
+    elif float(blocked_hu) > float(args.promotion_blocked_hu_max):
+        reasons.append("blocked_hu_rate_above_limit")
+
+    invalid_response = payload.get("invalid_response_rate")
+    if invalid_response is None:
+        reasons.append("missing_invalid_response_rate")
+    elif float(invalid_response) > float(args.promotion_invalid_response_max):
+        reasons.append("invalid_response_rate_above_limit")
+
+    agreement = payload.get("top1_agreement_with_base")
+    if agreement is None:
+        reasons.append("missing_top1_agreement")
+    elif float(agreement) < float(args.promotion_min_top1_agreement):
+        reasons.append("top1_agreement_below_minimum")
+
+    return {
+        "decision": "promote" if not reasons else "reject",
+        "reasons": reasons,
+        "gates": {
+            "score_ci95_lower_must_exceed": score_margin,
+            "deal_in_rate_max": (
+                None
+                if champion_deal_in is None
+                else float(champion_deal_in) + float(args.promotion_deal_in_tolerance)
+            ),
+            "hu_rate_min": None if champion_hu_rate is None else float(champion_hu_rate) - float(args.promotion_hu_tolerance),
+            "blocked_hu_rate_max": float(args.promotion_blocked_hu_max),
+            "invalid_response_rate_max": float(args.promotion_invalid_response_max),
+            "top1_agreement_min": float(args.promotion_min_top1_agreement),
+        },
+    }
+
+
 def model_policy_stats(
     rows: list[dict[str, Any]],
     *,
@@ -109,6 +169,12 @@ def main() -> int:
     parser.add_argument("--out", required=True)
     parser.add_argument("--legal-dueling-mean", action="store_true")
     parser.add_argument("--max-turns", type=int, default=500)
+    parser.add_argument("--promotion-score-margin", type=float, default=0.0)
+    parser.add_argument("--promotion-deal-in-tolerance", type=float, default=0.005)
+    parser.add_argument("--promotion-hu-tolerance", type=float, default=0.005)
+    parser.add_argument("--promotion-blocked-hu-max", type=float, default=0.001)
+    parser.add_argument("--promotion-invalid-response-max", type=float, default=0.0)
+    parser.add_argument("--promotion-min-top1-agreement", type=float, default=0.75)
     args = parser.parse_args()
 
     initdata_items = load_initdata(Path(args.raw), limit=int(args.games_per_seat))
@@ -201,6 +267,10 @@ def main() -> int:
     self_draw = 0
     discard_hu = 0
     deal_in = 0
+    champion_hu = 0
+    champion_self_draw = 0
+    champion_discard_hu = 0
+    champion_deal_in = 0
     first_place = 0
     huang = 0
     terminal_actions = Counter()
@@ -218,9 +288,18 @@ def main() -> int:
                     self_draw += 1
                 else:
                     discard_hu += 1
-            elif item["hu_kind"] == "discard" and item["deal_in"] == seat:
+            if item["winner"] is not None and item["winner"] != seat:
+                champion_hu += 1
+                if item["hu_kind"] == "self_draw":
+                    champion_self_draw += 1
+                else:
+                    champion_discard_hu += 1
+            if item["hu_kind"] == "discard" and item["deal_in"] == seat:
                 deal_in += 1
+            if item["hu_kind"] == "discard" and item["deal_in"] is not None and item["deal_in"] != seat:
+                champion_deal_in += 1
     n = len(results)
+    champion_appearances = n * 3
     policy_stats = model_policy_stats(
         candidate_rows,
         candidate_checkpoint=Path(args.candidate_checkpoint),
@@ -242,6 +321,11 @@ def main() -> int:
         "self_draw_rate": self_draw / n if n else None,
         "discard_hu_rate": discard_hu / n if n else None,
         "deal_in_rate": deal_in / n if n else None,
+        "champion_appearances": champion_appearances,
+        "champion_hu_rate": champion_hu / champion_appearances if champion_appearances else None,
+        "champion_self_draw_rate": champion_self_draw / champion_appearances if champion_appearances else None,
+        "champion_discard_hu_rate": champion_discard_hu / champion_appearances if champion_appearances else None,
+        "champion_deal_in_rate": champion_deal_in / champion_appearances if champion_appearances else None,
         "huang_rate": huang / n if n else None,
         "blocked_hu_rate": candidate_blocked / candidate_decisions if candidate_decisions else 0.0,
         "invalid_response_rate": terminal_actions.get("WA", 0) / n if n else None,
@@ -250,6 +334,7 @@ def main() -> int:
         "elapsed_s": time.time() - start,
         "results": results,
     }
+    payload["promotion_decision"] = promotion_decision(payload, args)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
