@@ -1,0 +1,181 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fa-rl-cql-base16-v1-1g-20260623a
+  namespace: nourish-sdsc
+  labels:
+    app: feature-agent
+    task: rl-cql-base16-offline
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 21600
+  ttlSecondsAfterFinished: 172800
+  template:
+    metadata:
+      labels:
+        app: feature-agent
+        task: rl-cql-base16-offline
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values:
+                      - NVIDIA-L40S
+                      - NVIDIA-L40
+                      - NVIDIA-GeForce-RTX-4090
+                      - NVIDIA-GeForce-RTX-3090
+                      - NVIDIA-RTX-A6000
+                      - NVIDIA-RTX-A5000
+                      - NVIDIA-A40
+                      - NVIDIA-A10
+                      - NVIDIA-L4
+                      - NVIDIA-RTX-5000-Ada-Generation
+                      - NVIDIA-RTX-PRO-6000-Blackwell-Max-Q-Workstation-Edition
+                      - Tesla-V100-SXM2-32GB
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - rci-tide-gpu-01.sdsu.edu
+                      - rci-tide-gpu-02.sdsu.edu
+                      - rci-tide-gpu-03.sdsu.edu
+                      - rci-tide-gpu-04.sdsu.edu
+                      - rci-tide-gpu-05.sdsu.edu
+                      - rci-tide-gpu-06.sdsu.edu
+                      - rci-tide-gpu-07.sdsu.edu
+                      - rci-tide-gpu-08.sdsu.edu
+                      - rci-tide-gpu-09.sdsu.edu
+                      - rci-tide-gpu-10.sdsu.edu
+                      - rci-tide-gpu-11.sdsu.edu
+                      - rci-tide-gpu-12.sdsu.edu
+                      - rci-tide-gpu-13.sdsu.edu
+                      - rci-tide-gpu-14.sdsu.edu
+                      - rci-tide-gpu-15.sdsu.edu
+                      - rci-tide-gpu-16.sdsu.edu
+                      - rci-tide-gpu-17.sdsu.edu
+      containers:
+        - name: train
+          image: docker.io/zpliang/documentsegementation:latest
+          imagePullPolicy: Always
+          command: ["bash", "-lc"]
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+            - name: CUBLAS_WORKSPACE_CONFIG
+              value: ":4096:8"
+          resources:
+            requests:
+              cpu: "4"
+              memory: 12Gi
+              ephemeral-storage: 12Gi
+              nvidia.com/gpu: 1
+            limits:
+              cpu: "4"
+              memory: 12Gi
+              ephemeral-storage: 12Gi
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - name: feature-agent-src
+              mountPath: /opt/feature-agent-src
+            - name: idl-data
+              mountPath: /data/idl
+          args:
+            - |
+              set -euxo pipefail
+              DATA_ROOT=/data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527
+              RUN=rl_cql_base16_v1_20260623a
+              WORK=/tmp/${RUN}
+              FEATURE_DIR=${WORK}/feature-agent
+              REPLAY_ROOT=${DATA_ROOT}/runs/rl_base16_offline_play_1536_20260623a/shards
+              CKPT=${DATA_ROOT}/models/feature_agent_checkpoints/feature_agent_botzone98209_aug12_river_elastic_2xgpu_20260617a/16.pkl
+              OUT=${DATA_ROOT}/models/${RUN}
+              mkdir -p "${FEATURE_DIR}" "${OUT}"
+              cp /opt/feature-agent-src/*.py "${FEATURE_DIR}/"
+              cd "${FEATURE_DIR}"
+              python -m pip install --no-cache-dir PyMahjongGB
+              python -m py_compile feature.py model.py rl_dataset.py rl_model_utils.py train_cql_mcr.py
+              test -s "${CKPT}"
+              REPLAY_ARGS=""
+              for i in $(seq 0 15); do
+                test -d "${REPLAY_ROOT}/shard_${i}"
+                test -s "${REPLAY_ROOT}/shard_${i}/summary.json"
+                REPLAY_ARGS="${REPLAY_ARGS} ${REPLAY_ROOT}/shard_${i}"
+              done
+              export REPLAY_ROOT
+              python - <<'PY'
+              import json
+              import os
+              from pathlib import Path
+              import numpy as np
+
+              root = Path(os.environ["REPLAY_ROOT"])
+              npzs = sorted(root.glob("shard_*/shard_*.npz"))
+              summaries = sorted(root.glob("shard_*/summary.json"))
+              total_games = 0
+              total_transitions = 0
+              shard_rows = []
+              for summary in summaries:
+                  data = json.loads(summary.read_text())
+                  total_games += int(data["total_games"])
+                  total_transitions += int(data["total_transitions"])
+              for shard in npzs:
+                  with np.load(shard) as data:
+                      n = int(data["action"].shape[0])
+                      assert data["obs"].shape[1:] == (185, 4, 9), data["obs"].shape
+                      assert data["vec"].shape[1:] == (117,), data["vec"].shape
+                      assert data["mask"].shape[1:] == (235,), data["mask"].shape
+                      assert n == data["mask"].shape[0]
+                      assert np.all(data["mask"][np.arange(n), data["action"]] > 0)
+                      shard_rows.append(n)
+              batch_size = 8192
+              obs_batch_gib = batch_size * 185 * 4 * 9 * 4 / (1024 ** 3)
+              print(json.dumps({
+                  "event": "rl_cql_preflight",
+                  "replay_root": str(root),
+                  "summary_files": len(summaries),
+                  "npz_files": len(npzs),
+                  "total_games": total_games,
+                  "total_transitions_from_summaries": total_transitions,
+                  "total_transitions_from_npz": sum(shard_rows),
+                  "batch_size": batch_size,
+                  "obs_batch_gib_float32": obs_batch_gib,
+                  "memory_request_gib": 12,
+                  "estimated_primary_batch_request_ratio": obs_batch_gib / 12,
+              }, sort_keys=True), flush=True)
+              PY
+              python train_cql_mcr.py \
+                --replay ${REPLAY_ARGS} \
+                --init-checkpoint "${CKPT}" \
+                --out "${OUT}" \
+                --epochs 3 \
+                --batch-size 8192 \
+                --lr 2e-5 \
+                --gamma 1.0 \
+                --alpha-cql 2.0 \
+                --beta-kl 0.5 \
+                --beta-bc 0.1 \
+                --temperature-kl 1.0 \
+                --legal-dueling-mean \
+                --freeze-mode head \
+                --grad-clip 1.0 \
+                --save-every-updates 1000 \
+                --device cuda \
+                --num-workers 0 \
+                --log-every 1
+      volumes:
+        - name: feature-agent-src
+          configMap:
+            name: mcr-rl-feature-agent-src-20260623a
+        - name: idl-data
+          persistentVolumeClaim:
+            claimName: llama-model-pvc

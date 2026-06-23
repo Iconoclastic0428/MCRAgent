@@ -63,11 +63,17 @@ class DuelingHead(nn.Module):
         self._advantage = nn.Linear(current_dim, action_dim)
         self._value = nn.Linear(current_dim, 1)
 
-    def forward(self, x):
+    def forward(self, x, legal_mask=None):
         x = self._trunk(x)
         advantage = self._advantage(x)
         value = self._value(x)
-        return value + advantage - advantage.mean(dim=1, keepdim=True)
+        if legal_mask is None:
+            advantage_mean = advantage.mean(dim=1, keepdim=True)
+        else:
+            legal = legal_mask.bool()
+            denom = legal.sum(dim=1, keepdim=True).clamp_min(1)
+            advantage_mean = advantage.masked_fill(~legal, 0.0).sum(dim=1, keepdim=True) / denom
+        return value + advantage - advantage_mean
 
 
 class SelfVecModel(nn.Module):
@@ -129,6 +135,10 @@ class SelfVecModel(nn.Module):
         self.train(mode=input_dict.get("is_training", False))
         obs = input_dict["obs"]["observation"].float()
         vec = input_dict["obs"]["vec"].float()
+        action_mask = input_dict["obs"]["action_mask"].float()
+        legal_dueling_mean = bool(input_dict.get("legal_dueling_mean", False))
+        return_raw_logits = bool(input_dict.get("return_raw_logits", False))
+        return_features = bool(input_dict.get("return_features", False))
         x = self._input_layer(obs)
         for block in self._hidden_layers:
             x = x + block(x)
@@ -137,12 +147,24 @@ class SelfVecModel(nn.Module):
         x = torch.flatten(x, start_dim=1)
         # 链接 x 和 vec, 4608 + 117 = 4725
         x = torch.cat([x, vec], dim=1)
+        features = x
         # FC
-        x = self._output_layer(x)
+        if self.dueling_head:
+            x = self._output_layer(
+                x,
+                legal_mask=action_mask if legal_dueling_mean else None,
+            )
+        else:
+            x = self._output_layer(x)
 
-        action_mask = input_dict["obs"]["action_mask"].float()
         inf_mask = torch.clamp(torch.log(action_mask), -1e38, 1e38)
-        return x + inf_mask
+        masked_q = x + inf_mask
+        if not return_raw_logits:
+            return masked_q
+        out = {"raw_q": x, "masked_q": masked_q}
+        if return_features:
+            out["features"] = features
+        return out
 
 
 class SlideStyleModel(nn.Module):
