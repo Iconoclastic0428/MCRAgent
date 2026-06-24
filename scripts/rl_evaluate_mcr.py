@@ -60,6 +60,51 @@ def ci95(values: list[float]) -> tuple[float | None, float | None]:
 
 def promotion_decision(payload: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     reasons: list[str] = []
+    if bool(getattr(args, "use_paired_delta", False)):
+        score_ci = payload.get("average_score_delta_ci95") or (None, None)
+        lower_ci = score_ci[0] if isinstance(score_ci, (list, tuple)) and score_ci else None
+        score_margin = float(args.promotion_score_margin)
+        if lower_ci is None:
+            reasons.append("missing_score_delta_ci95")
+        elif float(lower_ci) <= score_margin:
+            reasons.append("score_delta_ci95_lower_not_above_margin")
+
+        hu_delta = payload.get("hu_rate_delta")
+        if hu_delta is None:
+            reasons.append("missing_hu_rate_delta")
+        elif float(hu_delta) < -float(args.promotion_hu_tolerance):
+            reasons.append("hu_rate_delta_below_tolerance")
+
+        deal_in_delta = payload.get("deal_in_rate_delta")
+        if deal_in_delta is None:
+            reasons.append("missing_deal_in_rate_delta")
+        elif float(deal_in_delta) > float(args.promotion_deal_in_tolerance):
+            reasons.append("deal_in_rate_delta_above_tolerance")
+
+        blocked_hu = payload.get("blocked_hu_rate")
+        if blocked_hu is None:
+            reasons.append("missing_blocked_hu_rate")
+        elif float(blocked_hu) > float(args.promotion_blocked_hu_max):
+            reasons.append("blocked_hu_rate_above_limit")
+
+        invalid_response = payload.get("invalid_response_rate")
+        if invalid_response is None:
+            reasons.append("missing_invalid_response_rate")
+        elif float(invalid_response) > float(args.promotion_invalid_response_max):
+            reasons.append("invalid_response_rate_above_limit")
+
+        return {
+            "decision": "promote" if not reasons else "reject",
+            "reasons": reasons,
+            "gates": {
+                "score_delta_ci95_lower_must_exceed": score_margin,
+                "hu_rate_delta_min": -float(args.promotion_hu_tolerance),
+                "deal_in_rate_delta_max": float(args.promotion_deal_in_tolerance),
+                "blocked_hu_rate_max": float(args.promotion_blocked_hu_max),
+                "invalid_response_rate_max": float(args.promotion_invalid_response_max),
+            },
+        }
+
     score_ci = payload.get("average_score_ci95") or (None, None)
     lower_ci = score_ci[0] if isinstance(score_ci, (list, tuple)) and score_ci else None
     score_margin = float(args.promotion_score_margin)
@@ -163,6 +208,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidate-checkpoint", required=True)
     parser.add_argument("--champion-checkpoint", default=str(DEFAULT_CHECKPOINT))
+    parser.add_argument("--paired-baseline-checkpoint")
+    parser.add_argument("--use-paired-delta", action="store_true")
     parser.add_argument("--raw", default=str(WORKSPACE_ROOT / "data" / "eval" / "botzone_mcr_first64_suit_permuted_384.jsonl"))
     parser.add_argument("--judge", default=str(WORKSPACE_ROOT / "build" / "official_judge" / "mcr_judge.exe"))
     parser.add_argument("--games-per-seat", type=int, default=512)
@@ -183,6 +230,7 @@ def main() -> int:
     start = time.time()
     candidate_rows: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
+    paired_results: list[dict[str, Any]] = []
     candidate_blocked = 0
     candidate_decisions = 0
     for candidate_seat in range(4):
@@ -208,6 +256,30 @@ def main() -> int:
                 )
             policies.append(policy)
         assert candidate_policy is not None
+        paired_policies: list[LoggingFeaturePolicy] = []
+        paired_policy: LoggingFeaturePolicy | None = None
+        if args.use_paired_delta:
+            paired_checkpoint = args.paired_baseline_checkpoint or args.champion_checkpoint
+            for seat in range(4):
+                if seat == candidate_seat:
+                    policy = LoggingFeaturePolicy(
+                        paired_checkpoint,
+                        record=False,
+                        policy_name="paired_baseline",
+                        legal_dueling_mean=args.legal_dueling_mean,
+                        seed=3000 + seat,
+                    )
+                    paired_policy = policy
+                else:
+                    policy = LoggingFeaturePolicy(
+                        args.champion_checkpoint,
+                        record=False,
+                        policy_name="champion",
+                        legal_dueling_mean=False,
+                        seed=4000 + seat,
+                    )
+                paired_policies.append(policy)
+            assert paired_policy is not None
         for game_index, initdata in enumerate(initdata_items):
             game_id = candidate_seat * len(initdata_items) + game_index
             rows, result = run_game(
@@ -233,19 +305,69 @@ def main() -> int:
             if winner is not None:
                 kind, deal_in = infer_hu_kind(scores, winner)
             rewards = placement_rewards_from_scores(scores)
-            results.append(
-                {
-                    "candidate_seat": candidate_seat,
-                    "game_index": game_index,
-                    "scores": scores,
-                    "candidate_score": scores[candidate_seat],
-                    "candidate_reward_4_2_1_0": rewards[candidate_seat],
-                    "terminal_action": action,
-                    "winner": winner,
-                    "hu_kind": kind,
-                    "deal_in": deal_in,
-                }
-            )
+            item = {
+                "candidate_seat": candidate_seat,
+                "game_index": game_index,
+                "scores": scores,
+                "candidate_score": scores[candidate_seat],
+                "candidate_reward_4_2_1_0": rewards[candidate_seat],
+                "terminal_action": action,
+                "winner": winner,
+                "hu_kind": kind,
+                "deal_in": deal_in,
+            }
+            results.append(item)
+            if args.use_paired_delta:
+                assert paired_policy is not None
+                _, baseline_result = run_game(
+                    initdata=initdata,
+                    policies=paired_policies,
+                    trainee=paired_policy,
+                    game_id=100_000_000 + game_id,
+                    judge=Path(args.judge),
+                    reward_scale=64.0,
+                    reward_clip=4.0,
+                    max_turns=int(args.max_turns),
+                )
+                baseline_scores = [float(value) for value in baseline_result["scores"]]
+                baseline_display = baseline_result["display"]
+                baseline_action = str(baseline_display.get("action") or "UNKNOWN")
+                baseline_winner = (
+                    int(baseline_display["player"])
+                    if baseline_action == "HU" and baseline_display.get("player") is not None
+                    else None
+                )
+                baseline_kind = None
+                baseline_deal_in = None
+                if baseline_winner is not None:
+                    baseline_kind, baseline_deal_in = infer_hu_kind(baseline_scores, baseline_winner)
+                baseline_first = (
+                    baseline_scores[candidate_seat] == max(baseline_scores)
+                    and baseline_scores[candidate_seat] > 0
+                )
+                candidate_first = scores[candidate_seat] == max(scores) and scores[candidate_seat] > 0
+                paired_results.append(
+                    {
+                        "candidate_seat": candidate_seat,
+                        "game_index": game_index,
+                        "candidate_score": scores[candidate_seat],
+                        "baseline_score": baseline_scores[candidate_seat],
+                        "score_delta": scores[candidate_seat] - baseline_scores[candidate_seat],
+                        "candidate_hu": 1 if winner == candidate_seat else 0,
+                        "baseline_hu": 1 if baseline_winner == candidate_seat else 0,
+                        "hu_delta": (1 if winner == candidate_seat else 0)
+                        - (1 if baseline_winner == candidate_seat else 0),
+                        "candidate_deal_in": 1 if kind == "discard" and deal_in == candidate_seat else 0,
+                        "baseline_deal_in": (
+                            1 if baseline_kind == "discard" and baseline_deal_in == candidate_seat else 0
+                        ),
+                        "deal_in_delta": (1 if kind == "discard" and deal_in == candidate_seat else 0)
+                        - (1 if baseline_kind == "discard" and baseline_deal_in == candidate_seat else 0),
+                        "candidate_first_place": 1 if candidate_first else 0,
+                        "baseline_first_place": 1 if baseline_first else 0,
+                        "first_place_delta": (1 if candidate_first else 0) - (1 if baseline_first else 0),
+                    }
+                )
             print(
                 json.dumps(
                     {
@@ -310,6 +432,12 @@ def main() -> int:
     payload = {
         "candidate_checkpoint": str(Path(args.candidate_checkpoint).resolve()),
         "champion_checkpoint": str(Path(args.champion_checkpoint).resolve()),
+        "paired_baseline_checkpoint": (
+            None
+            if not args.use_paired_delta
+            else str(Path(args.paired_baseline_checkpoint or args.champion_checkpoint).resolve())
+        ),
+        "use_paired_delta": bool(args.use_paired_delta),
         "raw": str(Path(args.raw).resolve()),
         "games": n,
         "games_per_seat_loaded": len(initdata_items),
@@ -334,6 +462,23 @@ def main() -> int:
         "elapsed_s": time.time() - start,
         "results": results,
     }
+    if args.use_paired_delta:
+        score_deltas = [float(item["score_delta"]) for item in paired_results]
+        hu_deltas = [float(item["hu_delta"]) for item in paired_results]
+        deal_in_deltas = [float(item["deal_in_delta"]) for item in paired_results]
+        first_place_deltas = [float(item["first_place_delta"]) for item in paired_results]
+        paired_n = len(paired_results)
+        payload.update(
+            {
+                "paired_games": paired_n,
+                "average_score_delta": sum(score_deltas) / paired_n if paired_n else None,
+                "average_score_delta_ci95": ci95(score_deltas),
+                "hu_rate_delta": sum(hu_deltas) / paired_n if paired_n else None,
+                "deal_in_rate_delta": sum(deal_in_deltas) / paired_n if paired_n else None,
+                "first_place_rate_delta": sum(first_place_deltas) / paired_n if paired_n else None,
+                "paired_results": paired_results,
+            }
+        )
     payload["promotion_decision"] = promotion_decision(payload, args)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

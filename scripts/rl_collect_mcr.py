@@ -197,10 +197,14 @@ class LoggingFeaturePolicy(ReplayFeatureJsonBot):
         game_id: int,
         reward_scale: float,
         reward_clip: float,
+        initdata_index: int = -1,
+        initdata_offset: int = 0,
+        baseline_score: float = 0.0,
     ) -> list[dict[str, Any]]:
         seat = int(self.seat_wind if self.seat_wind is not None else -1)
         terminal_score = float(scores[seat]) if 0 <= seat < len(scores) else 0.0
         reward = max(-reward_clip, min(reward_clip, terminal_score / reward_scale))
+        relative_reward = max(-reward_clip, min(reward_clip, (terminal_score - float(baseline_score)) / reward_scale))
         action = str(display.get("action") or "").upper()
         tag = 0
         if action == "HU" and display.get("player") is not None:
@@ -219,8 +223,13 @@ class LoggingFeaturePolicy(ReplayFeatureJsonBot):
         for index, item in enumerate(self.pending_transitions):
             out = dict(item)
             out["reward"] = float(reward)
+            out["absolute_reward"] = float(reward)
+            out["baseline_score"] = float(baseline_score)
+            out["relative_reward"] = float(relative_reward)
             out["steps_to_done"] = int(done - index - 1)
             out["game_id"] = int(game_id)
+            out["initdata_index"] = int(initdata_index)
+            out["initdata_offset"] = int(initdata_offset)
             out["terminal_score"] = float(terminal_score)
             out["terminal_tag"] = int(tag)
             finalized.append(out)
@@ -285,9 +294,14 @@ class ShardWriter:
             mask=mask,
             action=action,
             reward=np.asarray([row["reward"] for row in rows], dtype=np.float32),
+            absolute_reward=np.asarray([row.get("absolute_reward", row["reward"]) for row in rows], dtype=np.float32),
+            baseline_score=np.asarray([row.get("baseline_score", 0.0) for row in rows], dtype=np.float32),
+            relative_reward=np.asarray([row.get("relative_reward", row["reward"]) for row in rows], dtype=np.float32),
             steps_to_done=np.asarray([row["steps_to_done"] for row in rows], dtype=np.int32),
             seat=np.asarray([row["seat"] for row in rows], dtype=np.int8),
             game_id=np.asarray([row["game_id"] for row in rows], dtype=np.int64),
+            initdata_index=np.asarray([row.get("initdata_index", -1) for row in rows], dtype=np.int64),
+            initdata_offset=np.asarray([row.get("initdata_offset", 0) for row in rows], dtype=np.int64),
             terminal_score=np.asarray([row["terminal_score"] for row in rows], dtype=np.float32),
             terminal_tag=np.asarray([row["terminal_tag"] for row in rows], dtype=np.int8),
         )
@@ -305,6 +319,9 @@ def run_game(
     reward_scale: float,
     reward_clip: float,
     max_turns: int,
+    initdata_index: int = -1,
+    initdata_offset: int = 0,
+    baseline_score: float = 0.0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     log: list[dict[str, Any]] = []
     trainee.start_game()
@@ -316,6 +333,9 @@ def run_game(
                 scores=scores,
                 display=output.get("display") or {},
                 game_id=game_id,
+                initdata_index=initdata_index,
+                initdata_offset=initdata_offset,
+                baseline_score=baseline_score,
                 reward_scale=reward_scale,
                 reward_clip=reward_clip,
             )
@@ -345,6 +365,7 @@ def main() -> int:
     parser.add_argument("--shard-size", type=int, default=8192)
     parser.add_argument("--max-turns", type=int, default=500)
     parser.add_argument("--legal-dueling-mean", action="store_true")
+    parser.add_argument("--baseline-score-table")
     args = parser.parse_args()
 
     if str(args.seats).lower() == "all":
@@ -361,6 +382,10 @@ def main() -> int:
     )
     if not initdata_items:
         raise RuntimeError(f"no initdata loaded from {args.raw}")
+    baseline_entries: dict[str, Any] = {}
+    if args.baseline_score_table:
+        baseline_payload = json.loads(Path(args.baseline_score_table).read_text(encoding="utf-8"))
+        baseline_entries = dict(baseline_payload.get("entries") or {})
     out_dir = Path(args.out)
     writer = ShardWriter(out_dir, int(args.shard_size))
     metadata = {
@@ -378,6 +403,7 @@ def main() -> int:
         "temperature": float(args.temperature),
         "top_p": float(args.top_p),
         "legal_dueling_mean": bool(args.legal_dueling_mean),
+        "baseline_score_table": None if not args.baseline_score_table else str(Path(args.baseline_score_table).resolve()),
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "config.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -416,7 +442,15 @@ def main() -> int:
         assert trainee is not None
         try:
             for game_index, initdata in enumerate(initdata_items):
-                game_id = trainee_seat * 1_000_000_000 + int(args.initdata_offset) + game_index
+                initdata_index = int(args.initdata_offset) + game_index
+                game_id = trainee_seat * 1_000_000_000 + initdata_index
+                baseline_key = f"{initdata_index}:{trainee_seat}"
+                if baseline_entries:
+                    if baseline_key not in baseline_entries:
+                        raise KeyError(f"baseline score table missing {baseline_key}")
+                    baseline_score = float(baseline_entries[baseline_key]["score"])
+                else:
+                    baseline_score = 0.0
                 rows, result = run_game(
                     initdata=initdata,
                     policies=policies,
@@ -426,6 +460,9 @@ def main() -> int:
                     reward_scale=float(args.reward_scale),
                     reward_clip=float(args.reward_clip),
                     max_turns=int(args.max_turns),
+                    initdata_index=initdata_index,
+                    initdata_offset=int(args.initdata_offset),
+                    baseline_score=baseline_score,
                 )
                 writer.add_many(rows)
                 total_games += 1

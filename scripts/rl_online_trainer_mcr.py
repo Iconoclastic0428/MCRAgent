@@ -60,9 +60,12 @@ def main() -> int:
     parser.add_argument("--alpha-cql", type=float, default=0.5)
     parser.add_argument("--beta-kl", type=float, default=0.5)
     parser.add_argument("--beta-bc", type=float, default=0.1)
+    parser.add_argument("--reward-key", choices=("reward", "absolute_reward", "relative_reward"), default="relative_reward")
     parser.add_argument("--updates-per-iteration", type=int, default=1000)
-    parser.add_argument("--eval-every-iterations", type=int, default=5)
+    parser.add_argument("--eval-every-iterations", type=int, default=1)
     parser.add_argument("--promotion-games-per-seat", type=int, default=512)
+    parser.add_argument("--paired-baseline-checkpoint")
+    parser.add_argument("--min-score-delta-ci-lower", type=float, default=0.0)
     parser.add_argument("--raw", required=True)
     parser.add_argument("--judge", required=True)
     parser.add_argument("--once", action="store_true")
@@ -71,9 +74,14 @@ def main() -> int:
     workdir = Path(args.workdir)
     param_dir = workdir / "params"
     param_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(args.init_checkpoint, param_dir / "current.pkl")
-    shutil.copy2(args.init_checkpoint, param_dir / "champion.pkl")
-    write_version(param_dir, 0, "current.pkl", "initialized from base16")
+    champion_path = param_dir / "champion.pkl"
+    current_path = param_dir / "current.pkl"
+    challenger_path = param_dir / "challenger.pkl"
+    if not champion_path.exists():
+        shutil.copy2(args.init_checkpoint, champion_path)
+    if not current_path.exists():
+        shutil.copy2(champion_path, current_path)
+    write_version(param_dir, 0, "current.pkl", "initialized from champion")
 
     iteration = 0
     while True:
@@ -88,7 +96,7 @@ def main() -> int:
             "--replay",
             *[str(path) for path in replay_dirs],
             "--init-checkpoint",
-            str(param_dir / "current.pkl"),
+            str(current_path),
             "--out",
             str(out),
             "--batch-size",
@@ -103,13 +111,73 @@ def main() -> int:
             str(args.beta_kl),
             "--beta-bc",
             str(args.beta_bc),
+            "--reward-key",
+            str(args.reward_key),
             "--max-updates",
             str(args.updates_per_iteration),
             "--legal-dueling-mean",
         ]
         subprocess.run(cmd, check=True)
-        shutil.copy2(out / "final.pkl", param_dir / "current.pkl")
-        write_version(param_dir, iteration, "current.pkl", f"online iteration {iteration}")
+        shutil.copy2(out / "final.pkl", challenger_path)
+        decision = "reject"
+        reasons = ["evaluation_not_run"]
+        eval_json = None
+        if int(args.eval_every_iterations) > 0 and iteration % int(args.eval_every_iterations) == 0:
+            eval_dir = workdir / "trainer" / "evals"
+            eval_dir.mkdir(parents=True, exist_ok=True)
+            eval_json = eval_dir / f"iter_{iteration:06d}.json"
+            eval_cmd = [
+                sys.executable,
+                str(WORKSPACE_ROOT / "scripts" / "rl_evaluate_mcr.py"),
+                "--candidate-checkpoint",
+                str(challenger_path),
+                "--champion-checkpoint",
+                str(champion_path),
+                "--paired-baseline-checkpoint",
+                str(args.paired_baseline_checkpoint or champion_path),
+                "--use-paired-delta",
+                "--raw",
+                str(args.raw),
+                "--judge",
+                str(args.judge),
+                "--games-per-seat",
+                str(args.promotion_games_per_seat),
+                "--promotion-score-margin",
+                str(args.min_score_delta_ci_lower),
+                "--legal-dueling-mean",
+                "--out",
+                str(eval_json),
+            ]
+            subprocess.run(eval_cmd, check=True)
+            payload = json.loads(eval_json.read_text(encoding="utf-8"))
+            promotion = payload.get("promotion_decision") or {}
+            decision = str(promotion.get("decision") or "reject")
+            reasons = list(promotion.get("reasons") or [])
+        if decision == "promote":
+            shutil.copy2(challenger_path, champion_path)
+            shutil.copy2(challenger_path, current_path)
+            notes = f"online iteration {iteration} promoted"
+        else:
+            shutil.copy2(champion_path, current_path)
+            notes = f"online iteration {iteration} rejected: {', '.join(reasons) if reasons else 'no reason'}"
+        decision_payload = {
+            "iteration": iteration,
+            "decision": decision,
+            "reasons": reasons,
+            "challenger": str(challenger_path),
+            "champion": str(champion_path),
+            "current": str(current_path),
+            "eval_json": None if eval_json is None else str(eval_json),
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        decisions_dir = workdir / "trainer" / "decisions"
+        decisions_dir.mkdir(parents=True, exist_ok=True)
+        (decisions_dir / f"iter_{iteration:06d}.json").write_text(
+            json.dumps(decision_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(json.dumps({"event": "online_iteration_decision", **decision_payload}, ensure_ascii=False), flush=True)
+        write_version(param_dir, iteration, "current.pkl", notes)
         if args.once:
             return 0
         time.sleep(1)

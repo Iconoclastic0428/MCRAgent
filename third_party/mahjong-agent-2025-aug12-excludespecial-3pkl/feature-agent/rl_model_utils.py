@@ -7,8 +7,18 @@ from typing import Any
 
 import torch
 
-from feature import FeatureAgent
 from model import SelfVecModel
+
+try:
+    from feature import FeatureAgent
+
+    OBS_SIZE = FeatureAgent.OBS_SIZE
+    VEC_SIZE = FeatureAgent.VEC_SIZE
+except ModuleNotFoundError as exc:
+    if exc.name != "MahjongGB":
+        raise
+    OBS_SIZE = 185
+    VEC_SIZE = 117
 
 
 def strip_module_prefix(state: dict[str, Any]) -> dict[str, Any]:
@@ -25,8 +35,8 @@ def load_selfvec_model(
     dueling_head: bool = True,
 ) -> SelfVecModel:
     model = SelfVecModel(
-        obs_dim=FeatureAgent.OBS_SIZE,
-        vec_dim=FeatureAgent.VEC_SIZE,
+        obs_dim=OBS_SIZE,
+        vec_dim=VEC_SIZE,
         mixed_kernel_input=mixed_kernel_input,
         dueling_head=dueling_head,
     )

@@ -1,0 +1,14 @@
+{
+  "checkpoint": "/data/idl/mcr_agent_transformer_20260527_0029/mcr_transformer_sync_20260527/models/rl_cql_base16_v1_20260623c/final.pkl",
+  "decision": "reject",
+  "reason": "negative_score_and_hu_rate_drop",
+  "average_score": -1.23,
+  "hu_rate": 0.2168,
+  "baseline_hu_rate": 0.2376,
+  "hu_rate_delta": -0.0208,
+  "top1_agreement_with_base": 0.9701,
+  "blocked_hu_rate": 0.0,
+  "invalid_response_rate": 0.0,
+  "allowed_for_online_seed": false,
+  "allowed_for_promotion": false
+}

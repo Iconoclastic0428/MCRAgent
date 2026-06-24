@@ -13,7 +13,7 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 THIS_DIR = Path(__file__).resolve().parent
 if str(THIS_DIR) not in sys.path:
@@ -65,12 +65,14 @@ def top1_agreement(q_a: torch.Tensor, q_b: torch.Tensor) -> float:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--replay", nargs="+", required=True)
+    parser.add_argument("--replay-weights", help="Comma-separated source weights matching --replay, e.g. 0.5,0.25,0.25.")
     parser.add_argument("--init-checkpoint", default=str(DEFAULT_CHECKPOINT))
     parser.add_argument("--out", required=True)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=8192)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--gamma", type=float, default=1.0)
+    parser.add_argument("--reward-key", choices=("reward", "absolute_reward", "relative_reward"), default="reward")
     parser.add_argument("--alpha-cql", type=float, default=2.0)
     parser.add_argument("--beta-kl", type=float, default=0.5)
     parser.add_argument("--beta-bc", type=float, default=0.1)
@@ -91,11 +93,20 @@ def main() -> int:
     metrics_path = out_dir / "metrics.jsonl"
     device = torch.device(args.device)
 
-    dataset = MCRReplayDataset([Path(item) for item in args.replay])
+    replay_weights = None
+    if args.replay_weights:
+        replay_weights = [float(part) for part in str(args.replay_weights).split(",") if part.strip()]
+    dataset = MCRReplayDataset([Path(item) for item in args.replay], replay_weights=replay_weights)
+    sampler = None
+    shuffle = True
+    if replay_weights is not None:
+        sampler = WeightedRandomSampler(dataset.sample_weights(), num_samples=len(dataset), replacement=True)
+        shuffle = False
     loader = DataLoader(
         dataset,
         batch_size=int(args.batch_size),
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=sampler,
         num_workers=int(args.num_workers),
         pin_memory=(device.type == "cuda"),
         drop_last=False,
@@ -134,7 +145,7 @@ def main() -> int:
                 vec = batch["vec"]
                 mask = batch["mask"].bool()
                 action = batch["action"].long()
-                reward = batch["reward"].float()
+                reward = batch[str(args.reward_key)].float()
                 steps = batch["steps_to_done"].float()
                 target = (float(args.gamma) ** steps) * reward
 
